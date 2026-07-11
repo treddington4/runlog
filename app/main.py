@@ -76,7 +76,11 @@ def manual_sync_garmin():
         n = garmin_sync.sync_garmin_activities(limit=SYNC_LIMIT)
         return {"synced": n}
     except Exception as e:
-        raise HTTPException(400, str(e))
+        msg = str(e)
+        if "429" in msg or "not supported between instances" in msg:
+            msg = ("Garmin is rate-limiting login attempts from this network right now "
+                   "(this is common with the unofficial API). Wait a while before retrying.")
+        raise HTTPException(400, msg)
 
 
 # ---------- Runs CRUD ----------
@@ -87,6 +91,7 @@ def _run_to_dict(r: Run):
         "elevGainFt": r.elev_gain_ft, "avgHR": r.avg_hr, "maxHR": r.max_hr,
         "avgCadence": r.avg_cadence, "avgPaceSecPerMi": r.avg_pace_sec_per_mi,
         "isTreadmill": r.is_treadmill, "tempF": r.temp_f, "weatherCondition": r.weather_condition,
+        "heatIndexF": r.heat_index_f, "wetBulbF": r.wet_bulb_f,
         "suggestedType": r.suggested_type, "type": r.type_override or r.suggested_type,
         "rpe": r.rpe, "notes": r.notes,
         "splits": json.loads(r.splits_json or "[]"),

@@ -27,6 +27,8 @@ class Run(Base):
     is_treadmill = Column(Boolean, default=False)
     temp_f = Column(Float, nullable=True)
     weather_condition = Column(String, nullable=True)
+    heat_index_f = Column(Float, nullable=True)
+    wet_bulb_f = Column(Float, nullable=True)
     suggested_type = Column(String, default="Easy")
     type_override = Column(String, nullable=True)
     rpe = Column(Integer, nullable=True)
@@ -54,3 +56,19 @@ class SyncMeta(Base):
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     Base.metadata.create_all(engine)
+    _migrate_add_missing_columns()
+
+
+def _migrate_add_missing_columns():
+    """SQLAlchemy's create_all() only creates tables that don't exist yet — it
+    won't add new columns to a table that's already there. Since this project
+    has no migration framework, patch that gap with a plain ALTER TABLE for
+    any model column SQLite doesn't have yet."""
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(runs)")}
+        for col in Run.__table__.columns:
+            if col.name not in existing:
+                col_type = "TEXT" if isinstance(col.type, (String, Text)) else \
+                    "INTEGER" if isinstance(col.type, (Integer, Boolean)) else "REAL"
+                conn.exec_driver_sql(f"ALTER TABLE runs ADD COLUMN {col.name} {col_type}")
+        conn.commit()

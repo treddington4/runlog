@@ -190,12 +190,12 @@ def sync_activities(limit: int = 10):
                     } for l in laps_resp.json()]
                     intervals_json = json.dumps(detect_intervals(raw_laps))
 
-            temp_f, condition = None, None
+            temp_f, condition, heat_index_f, wet_bulb_f = None, None, None, None
             if not is_treadmill:
                 latlng = act.get("start_latlng") or []
                 start_dt = datetime.fromisoformat(act["start_date_local"].replace("Z", ""))
                 if len(latlng) == 2:
-                    temp_f, condition = get_historical_weather(
+                    temp_f, condition, heat_index_f, wet_bulb_f = get_historical_weather(
                         latlng[0], latlng[1], start_dt.strftime("%Y-%m-%d"), start_dt.hour
                     )
 
@@ -217,6 +217,8 @@ def sync_activities(limit: int = 10):
             run.is_treadmill = is_treadmill
             run.temp_f = temp_f
             run.weather_condition = condition
+            run.heat_index_f = heat_index_f
+            run.wet_bulb_f = wet_bulb_f
             run.suggested_type = run_type
             run.splits_json = json.dumps(splits)
             run.intervals_json = intervals_json

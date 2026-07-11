@@ -80,11 +80,11 @@ def sync_garmin_activities(limit: int = 10):
             except Exception:
                 start_dt = datetime.now()
 
-            temp_f, condition = None, None
+            temp_f, condition, heat_index_f, wet_bulb_f = None, None, None, None
             if not is_treadmill:
                 lat, lon = act.get("startLatitude"), act.get("startLongitude")
                 if lat and lon:
-                    temp_f, condition = get_historical_weather(
+                    temp_f, condition, heat_index_f, wet_bulb_f = get_historical_weather(
                         lat, lon, start_dt.strftime("%Y-%m-%d"), start_dt.hour
                     )
 
@@ -104,6 +104,8 @@ def sync_garmin_activities(limit: int = 10):
             run.is_treadmill = is_treadmill
             run.temp_f = temp_f
             run.weather_condition = condition
+            run.heat_index_f = heat_index_f
+            run.wet_bulb_f = wet_bulb_f
             run.suggested_type = run_type
             run.splits_json = json.dumps(splits)
             run.intervals_json = intervals_json

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RunLog</title>
+<link rel="stylesheet" href="/style.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div>
+        <h1 class="title">RUN<span class="accent">LOG</span></h1>
+        <div class="subtitle" id="race-countdown"></div>
+      </div>
+      <div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" id="connect-btn">Connect Strava</button>
+          <button class="btn" id="sync-btn">Sync from Strava</button>
+        </div>
+        <div class="sync-meta" id="sync-meta">Never synced</div>
+        <div class="err" id="sync-err"></div>
+      </div>
+    </div>
+
+    <div class="stat-strip">
+      <div class="stat-card"><div class="stat-label">This week</div><div class="stat-value" id="stat-week">--</div></div>
+      <div class="stat-card"><div class="stat-label">Avg pace (all)</div><div class="stat-value" id="stat-pace">--</div></div>
+      <div class="stat-card"><div class="stat-label">Runs logged</div><div class="stat-value" id="stat-count">--</div></div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="runs">Runs</button>
+      <button class="tab" data-tab="insights">Insights</button>
+    </div>
+
+    <div id="runs-tab"></div>
+    <div id="insights-tab" style="display:none"></div>
+    <div id="empty-state" class="empty-state" style="display:none">
+      No runs yet. Click <b style="color:var(--text)">Sync from Strava</b> to pull in your recent activities, weather, and splits.
+    </div>
+  </div>
+
+  <div id="modal-root"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

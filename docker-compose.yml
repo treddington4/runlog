@@ -1,0 +1,21 @@
+services:
+  runlog:
+    build: .
+    container_name: runlog
+    ports:
+      - "8000:8000"
+    environment:
+      - STRAVA_CLIENT_ID=${STRAVA_CLIENT_ID}
+      - STRAVA_CLIENT_SECRET=${STRAVA_CLIENT_SECRET}
+      - STRAVA_REDIRECT_URI=${STRAVA_REDIRECT_URI:-http://localhost:8000/auth/strava/callback}
+      - SYNC_INTERVAL_HOURS=${SYNC_INTERVAL_HOURS:-6}
+      - SYNC_ACTIVITY_LIMIT=${SYNC_ACTIVITY_LIMIT:-10}
+      - GARMIN_EMAIL=${GARMIN_EMAIL:-}
+      - GARMIN_PASSWORD=${GARMIN_PASSWORD:-}
+      - DB_PATH=/data/runlog.db
+    volumes:
+      - runlog_data:/data
+    restart: unless-stopped
+
+volumes:
+  runlog_data:

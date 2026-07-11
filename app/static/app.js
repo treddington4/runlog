@@ -15,6 +15,8 @@ let runs = [];
 let expandedId = null;
 let currentTab = "runs";
 let charts = [];
+let filterMode = "rolling7"; // 'rolling7' | 'week' | 'all'
+let filterAnchor = todayMidnight();
 
 // ---------- Helpers ----------
 function paceStr(sec) {
@@ -45,6 +47,31 @@ function gapSecPerMi(pace, elevFt, distMi) {
   return pace / (minettiCost(grade) / minettiCost(0));
 }
 function daysUntil(d) { return Math.ceil((d - new Date()) / 86400000); }
+function todayMidnight() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+function startOfWeek(d) { // Monday-anchored
+  const dow = (d.getDay() + 6) % 7;
+  return addDays(d, -dow);
+}
+function fmtRangeLabel(start, end) {
+  const opts = { month: "short", day: "numeric" };
+  return `${start.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}`;
+}
+function currentFilterRange() {
+  if (filterMode === "week") {
+    const start = startOfWeek(filterAnchor);
+    return { start, end: addDays(start, 6) };
+  }
+  return { start: addDays(filterAnchor, -6), end: filterAnchor }; // rolling7
+}
+function filteredRuns() {
+  if (filterMode === "all") return runs;
+  const { start, end } = currentFilterRange();
+  return runs.filter((r) => {
+    const d = new Date(r.date + "T00:00:00");
+    return d >= start && d <= end;
+  });
+}
 
 // ---------- Data loading ----------
 async function loadRuns() {
@@ -97,9 +124,54 @@ document.querySelectorAll(".tab").forEach((tab) => {
     currentTab = tab.dataset.tab;
     document.getElementById("runs-tab").style.display = currentTab === "runs" ? "block" : "none";
     document.getElementById("insights-tab").style.display = currentTab === "insights" ? "block" : "none";
+    document.getElementById("settings-tab").style.display = currentTab === "settings" ? "block" : "none";
+    document.getElementById("filter-bar").style.display = currentTab === "settings" ? "none" : "flex";
+    if (currentTab === "settings") {
+      document.getElementById("empty-state").style.display = "none";
+      renderSettingsTab();
+    } else {
+      render();
+    }
+  };
+});
+
+// ---------- Filter bar ----------
+function updateFilterBar() {
+  const navEl = document.getElementById("filter-nav");
+  if (filterMode === "all") {
+    navEl.style.visibility = "hidden";
+    return;
+  }
+  navEl.style.visibility = "visible";
+  const { start, end } = currentFilterRange();
+  document.getElementById("filter-range").textContent = fmtRangeLabel(start, end);
+  document.getElementById("filter-next").disabled = end >= todayMidnight();
+}
+
+document.querySelectorAll(".filter-mode").forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll(".filter-mode").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    filterMode = btn.dataset.mode;
+    filterAnchor = todayMidnight();
+    updateFilterBar();
     render();
   };
 });
+
+document.getElementById("filter-prev").onclick = () => {
+  filterAnchor = addDays(filterAnchor, -7);
+  updateFilterBar();
+  render();
+};
+
+document.getElementById("filter-next").onclick = () => {
+  const today = todayMidnight();
+  filterAnchor = addDays(filterAnchor, 7);
+  if (filterAnchor > today) filterAnchor = today;
+  updateFilterBar();
+  render();
+};
 
 // ---------- Render ----------
 function render() {
@@ -120,13 +192,19 @@ function render() {
 
   document.getElementById("empty-state").style.display = runs.length === 0 ? "block" : "none";
 
-  if (currentTab === "runs") renderRunsTab(); else renderInsightsTab();
+  if (currentTab === "runs") renderRunsTab();
+  else if (currentTab === "insights") renderInsightsTab();
 }
 
 function renderRunsTab() {
   const el = document.getElementById("runs-tab");
   el.innerHTML = "";
-  runs.forEach((run) => {
+  const data = filteredRuns();
+  if (data.length === 0 && runs.length > 0) {
+    el.innerHTML = `<div class="empty-chart">No runs in this range.</div>`;
+    return;
+  }
+  data.forEach((run) => {
     const card = document.createElement("div");
     card.className = "run-card";
     card.style.borderLeft = `4px solid ${tempColor(run.tempF)}`;
@@ -294,13 +372,19 @@ function chartCardHTML(title, sub, canvasId, height = 200) {
 function renderInsightsTab() {
   destroyCharts();
   const el = document.getElementById("insights-tab");
+  const data = filteredRuns();
 
-  const outdoor = runs.filter((r) => !r.isTreadmill && r.tempF != null);
-  const perfData = [...runs].sort((a, b) => (a.date < b.date ? -1 : 1)).filter((r) => r.avgPaceSecPerMi);
-  const cadPaceData = runs.filter((r) => r.avgCadence && r.avgPaceSecPerMi);
+  if (data.length === 0 && runs.length > 0) {
+    el.innerHTML = `<div class="empty-chart">No runs in this range.</div>`;
+    return;
+  }
+
+  const outdoor = data.filter((r) => !r.isTreadmill && r.tempF != null);
+  const perfData = [...data].sort((a, b) => (a.date < b.date ? -1 : 1)).filter((r) => r.avgPaceSecPerMi);
+  const cadPaceData = data.filter((r) => r.avgCadence && r.avgPaceSecPerMi);
 
   const weekly = {};
-  runs.forEach((r) => {
+  data.forEach((r) => {
     const d = new Date(r.date);
     const monday = new Date(d); monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
     const key = monday.toISOString().slice(0, 10);
@@ -400,7 +484,63 @@ function tempScatter(canvasId, data, label, color, unit, tickFmt, reverse = fals
   }));
 }
 
+// ---------- Settings ----------
+async function renderSettingsTab() {
+  const el = document.getElementById("settings-tab");
+  const [stravaStatus, syncMeta, garminStatus, config] = await Promise.all([
+    fetch("/api/strava/status").then((r) => r.json()),
+    fetch("/api/sync/meta").then((r) => r.json()),
+    fetch("/api/garmin/status").then((r) => r.json()),
+    fetch("/api/config").then((r) => r.json()),
+  ]);
+
+  const fmtMeta = (m) => m.lastSyncedAt
+    ? `${new Date(m.lastSyncedAt).toLocaleString()} · ${m.lastCount} run${m.lastCount === 1 ? "" : "s"}`
+    : "Never synced";
+
+  el.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-title">Strava</div>
+      <div class="settings-row"><span class="settings-label">Status</span>
+        <span class="settings-value"><span class="status-dot" style="background:${stravaStatus.connected ? "var(--good)" : "var(--hot)"}"></span>${stravaStatus.connected ? "Connected" : "Not connected"}</span></div>
+      <div class="settings-row"><span class="settings-label">Last synced</span><span class="settings-value">${fmtMeta(syncMeta.strava)}</span></div>
+      ${syncMeta.strava.lastError ? `<div class="settings-row"><span class="settings-label">Last error</span><span class="settings-value" style="color:var(--hot)">${syncMeta.strava.lastError}</span></div>` : ""}
+    </div>
+    <div class="settings-section">
+      <div class="settings-title">Garmin <span style="color:var(--faint);font-weight:400">(optional, unofficial)</span></div>
+      <div class="settings-row"><span class="settings-label">Status</span>
+        <span class="settings-value"><span class="status-dot" style="background:${garminStatus.configured ? "var(--good)" : "var(--faint)"}"></span>${garminStatus.configured ? "Configured" : "Not configured"}</span></div>
+      ${!garminStatus.configured ? `<div class="settings-row"><span class="settings-label"></span><span class="settings-value" style="color:var(--faint)">Set GARMIN_EMAIL / GARMIN_PASSWORD in .env, then restart the container</span></div>` : ""}
+      <div class="settings-row"><span class="settings-label">Last synced</span><span class="settings-value">${fmtMeta(syncMeta.garmin)}</span></div>
+      ${syncMeta.garmin.lastError ? `<div class="settings-row"><span class="settings-label">Last error</span><span class="settings-value" style="color:var(--hot)">${syncMeta.garmin.lastError}</span></div>` : ""}
+      <button class="btn" id="settings-garmin-sync-btn" style="margin-top:10px" ${garminStatus.configured ? "" : "disabled"}>Sync Garmin Now</button>
+    </div>
+    <div class="settings-section">
+      <div class="settings-title">Sync schedule</div>
+      <div class="settings-row"><span class="settings-label">Auto-sync interval</span><span class="settings-value">Every ${config.syncIntervalHours}h (Strava only)</span></div>
+      <div class="settings-row"><span class="settings-label">Activities per sync</span><span class="settings-value">${config.syncActivityLimit}</span></div>
+    </div>
+  `;
+
+  const btn = document.getElementById("settings-garmin-sync-btn");
+  if (btn) {
+    btn.onclick = async () => {
+      btn.textContent = "Syncing…";
+      btn.disabled = true;
+      try {
+        await fetch("/api/sync/garmin", { method: "POST" });
+      } catch (e) {
+        // network-level failures aside, server-side outcomes are persisted via sync_meta
+        // and will show up in the re-rendered panel below regardless.
+      }
+      await loadRuns();
+      await renderSettingsTab();
+    };
+  }
+}
+
 // ---------- Init ----------
 loadRuns();
 checkStravaStatus();
 loadSyncMeta();
+updateFilterBar();

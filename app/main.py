@@ -112,6 +112,18 @@ def sync_meta():
     return {"strava": info("strava"), "garmin": info("garmin")}
 
 
+# ---------- Settings ----------
+@app.get("/api/garmin/status")
+def garmin_status():
+    configured = bool(os.environ.get("GARMIN_EMAIL")) and bool(os.environ.get("GARMIN_PASSWORD"))
+    return {"configured": configured}
+
+
+@app.get("/api/config")
+def get_config():
+    return {"syncIntervalHours": SYNC_INTERVAL_HOURS, "syncActivityLimit": SYNC_LIMIT}
+
+
 # ---------- Runs CRUD ----------
 def _run_to_dict(r: Run):
     return {

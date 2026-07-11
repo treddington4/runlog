@@ -40,12 +40,18 @@
       <div class="filter-modes">
         <button class="filter-mode active" data-mode="rolling7">7 Days</button>
         <button class="filter-mode" data-mode="week">Week</button>
+        <button class="filter-mode" data-mode="custom">Custom</button>
         <button class="filter-mode" data-mode="all">All</button>
       </div>
       <div class="filter-nav" id="filter-nav">
         <button class="filter-arrow" id="filter-prev">‹</button>
         <span class="filter-range" id="filter-range"></span>
         <button class="filter-arrow" id="filter-next">›</button>
+      </div>
+      <div class="filter-custom" id="filter-custom" style="display:none">
+        <input type="date" id="custom-start" class="filter-date-input" />
+        <span class="filter-range">to</span>
+        <input type="date" id="custom-end" class="filter-date-input" />
       </div>
     </div>
 

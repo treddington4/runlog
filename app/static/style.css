@@ -56,6 +56,10 @@ body {
   width: 26px; height: 26px; border-radius: 6px; cursor: pointer; font-size: 14px; line-height: 1; }
 .filter-arrow:disabled { color: var(--faint); cursor: default; opacity: 0.5; }
 .filter-range { color: var(--muted); font-size: 12px; font-family: 'JetBrains Mono', monospace; min-width: 120px; text-align: center; }
+.filter-custom { display: flex; align-items: center; gap: 8px; }
+.filter-date-input { background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 5px 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+.filter-date-input::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
 
 .settings-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
   padding: 16px; margin-top: 16px; }

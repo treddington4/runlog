@@ -15,8 +15,10 @@ let runs = [];
 let expandedId = null;
 let currentTab = "runs";
 let charts = [];
-let filterMode = "rolling7"; // 'rolling7' | 'week' | 'all'
+let filterMode = "rolling7"; // 'rolling7' | 'week' | 'custom' | 'all'
 let filterAnchor = todayMidnight();
+let customStart = addDays(todayMidnight(), -29);
+let customEnd = todayMidnight();
 
 // ---------- Helpers ----------
 function paceStr(sec) {
@@ -57,10 +59,17 @@ function fmtRangeLabel(start, end) {
   const opts = { month: "short", day: "numeric" };
   return `${start.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}`;
 }
+function toDateInputValue(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 function currentFilterRange() {
   if (filterMode === "week") {
     const start = startOfWeek(filterAnchor);
     return { start, end: addDays(start, 6) };
+  }
+  if (filterMode === "custom") {
+    return { start: customStart, end: customEnd };
   }
   return { start: addDays(filterAnchor, -6), end: filterAnchor }; // rolling7
 }
@@ -138,11 +147,18 @@ document.querySelectorAll(".tab").forEach((tab) => {
 // ---------- Filter bar ----------
 function updateFilterBar() {
   const navEl = document.getElementById("filter-nav");
-  if (filterMode === "all") {
-    navEl.style.visibility = "hidden";
+  const customEl = document.getElementById("filter-custom");
+
+  navEl.style.display = filterMode === "rolling7" || filterMode === "week" ? "flex" : "none";
+  customEl.style.display = filterMode === "custom" ? "flex" : "none";
+
+  if (filterMode === "custom") {
+    document.getElementById("custom-start").value = toDateInputValue(customStart);
+    document.getElementById("custom-end").value = toDateInputValue(customEnd);
     return;
   }
-  navEl.style.visibility = "visible";
+  if (filterMode === "all") return;
+
   const { start, end } = currentFilterRange();
   document.getElementById("filter-range").textContent = fmtRangeLabel(start, end);
   document.getElementById("filter-next").disabled = end >= todayMidnight();
@@ -170,6 +186,16 @@ document.getElementById("filter-next").onclick = () => {
   filterAnchor = addDays(filterAnchor, 7);
   if (filterAnchor > today) filterAnchor = today;
   updateFilterBar();
+  render();
+};
+
+document.getElementById("custom-start").onchange = (e) => {
+  if (e.target.value) customStart = new Date(e.target.value + "T00:00:00");
+  render();
+};
+
+document.getElementById("custom-end").onchange = (e) => {
+  if (e.target.value) customEnd = new Date(e.target.value + "T00:00:00");
   render();
 };
 

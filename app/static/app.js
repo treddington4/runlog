@@ -156,11 +156,14 @@ function renderRunsTab() {
           ${run.avgCadence != null ? `<div class="mini-stat">👣 ${Math.round(run.avgCadence)} spm</div>` : ""}
           ${run.elevGainFt != null ? `<div class="mini-stat">⛰ ${Math.round(run.elevGainFt)} ft</div>` : ""}
           ${run.elevGainFt != null && run.distanceMi ? `<div class="mini-stat" style="color:rgb(76,201,240)">⚡ GAP ${paceStr(gapSecPerMi(run.avgPaceSecPerMi, run.elevGainFt, run.distanceMi))}</div>` : ""}
+          ${run.rpe != null ? `<div class="mini-stat">📊 RPE ${run.rpe}</div>` : ""}
+        </div>
+        ${run.tempF != null || run.heatIndexF != null || run.wetBulbF != null ? `
+        <div class="mini-stats weather-stats">
           ${run.tempF != null ? `<div class="mini-stat" style="color:${tempColor(run.tempF)}">${run.tempF >= 75 ? "🔥" : "❄️"} ${Math.round(run.tempF)}°F${run.weatherCondition ? " · " + run.weatherCondition : ""}</div>` : ""}
           ${run.heatIndexF != null && Math.round(run.heatIndexF) !== Math.round(run.tempF) ? `<div class="mini-stat" style="color:${tempColor(run.heatIndexF)}">🥵 HI ${Math.round(run.heatIndexF)}°F</div>` : ""}
           ${run.wetBulbF != null ? `<div class="mini-stat">💧 WB ${Math.round(run.wetBulbF)}°F</div>` : ""}
-          ${run.rpe != null ? `<div class="mini-stat">📊 RPE ${run.rpe}</div>` : ""}
-        </div>
+        </div>` : ""}
         <div class="card-footer">
           <button class="edit-link" data-edit="${run.id}">✎ edit</button>
           <span>${isOpen ? "▲" : "▼"}</span>

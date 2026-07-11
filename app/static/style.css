@@ -53,6 +53,7 @@ body {
 .run-dist { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700; text-align: right; }
 .run-pace { color: var(--muted); font-size: 12px; text-align: right; }
 .mini-stats { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
+.mini-stats.weather-stats { margin-top: 6px; }
 .mini-stat { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; font-family: 'JetBrains Mono', monospace; }
 .card-footer { display: flex; justify-content: flex-end; margin-top: 6px; gap: 10px; align-items: center; }
 .edit-link { background: none; border: none; color: var(--faint); font-size: 11px; cursor: pointer; }

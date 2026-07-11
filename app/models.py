@@ -53,6 +53,26 @@ class SyncMeta(Base):
     value = Column(String)
 
 
+def get_sync_meta(key: str):
+    db = SessionLocal()
+    try:
+        row = db.get(SyncMeta, key)
+        return row.value if row else None
+    finally:
+        db.close()
+
+
+def set_sync_meta(key: str, value: str):
+    db = SessionLocal()
+    try:
+        row = db.get(SyncMeta, key) or SyncMeta(key=key)
+        row.value = value
+        db.merge(row)
+        db.commit()
+    finally:
+        db.close()
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     Base.metadata.create_all(engine)

@@ -60,6 +60,17 @@ async function checkStravaStatus() {
   document.getElementById("connect-btn").disabled = connected;
 }
 
+async function loadSyncMeta() {
+  const res = await fetch("/api/sync/meta");
+  const { strava } = await res.json();
+  const metaEl = document.getElementById("sync-meta");
+  const errEl = document.getElementById("sync-err");
+  metaEl.textContent = strava.lastSyncedAt
+    ? `Last synced ${new Date(strava.lastSyncedAt).toLocaleString()} · ${strava.lastCount} run${strava.lastCount === 1 ? "" : "s"}`
+    : "Never synced";
+  errEl.textContent = strava.lastError || "";
+}
+
 document.getElementById("connect-btn").onclick = () => { window.location.href = "/auth/strava/login"; };
 
 document.getElementById("sync-btn").onclick = async () => {
@@ -70,7 +81,7 @@ document.getElementById("sync-btn").onclick = async () => {
     const res = await fetch("/api/sync/strava", { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Sync failed");
-    document.getElementById("sync-meta").textContent = `Last synced ${new Date().toLocaleString()}`;
+    await loadSyncMeta();
     await loadRuns();
   } catch (e) {
     errEl.textContent = e.message;
@@ -389,3 +400,4 @@ function tempScatter(canvasId, data, label, color, unit, tickFmt, reverse = fals
 // ---------- Init ----------
 loadRuns();
 checkStravaStatus();
+loadSyncMeta();

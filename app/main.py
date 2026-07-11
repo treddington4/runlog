@@ -1,14 +1,14 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from models import init_db, SessionLocal, Run
+from models import init_db, SessionLocal, Run, get_sync_meta, set_sync_meta
 import strava
 
 logging.basicConfig(level=logging.INFO)
@@ -29,11 +29,24 @@ def startup():
     log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
 
 
+def _record_sync(source: str, count: int = None, error: str = None):
+    """Persist last-sync info to sync_meta so the UI can show real history
+    across page loads instead of only reflecting the current browser session."""
+    if error is None:
+        set_sync_meta(f"{source}_last_synced_at", datetime.now(timezone.utc).isoformat())
+        set_sync_meta(f"{source}_last_count", str(count))
+        set_sync_meta(f"{source}_last_error", "")
+    else:
+        set_sync_meta(f"{source}_last_error", error)
+
+
 def _auto_sync():
     try:
         n = strava.sync_activities(limit=SYNC_LIMIT)
+        _record_sync("strava", count=n)
         log.info(f"Auto-sync: upserted {n} runs from Strava")
     except Exception as e:
+        _record_sync("strava", error=str(e))
         log.warning(f"Auto-sync skipped: {e}")
 
 
@@ -64,8 +77,10 @@ def strava_status():
 def manual_sync_strava():
     try:
         n = strava.sync_activities(limit=SYNC_LIMIT)
+        _record_sync("strava", count=n)
         return {"synced": n}
     except Exception as e:
+        _record_sync("strava", error=str(e))
         raise HTTPException(400, str(e))
 
 
@@ -74,13 +89,27 @@ def manual_sync_garmin():
     try:
         import garmin_sync
         n = garmin_sync.sync_garmin_activities(limit=SYNC_LIMIT)
+        _record_sync("garmin", count=n)
         return {"synced": n}
     except Exception as e:
         msg = str(e)
         if "429" in msg or "not supported between instances" in msg:
             msg = ("Garmin is rate-limiting login attempts from this network right now "
                    "(this is common with the unofficial API). Wait a while before retrying.")
+        _record_sync("garmin", error=msg)
         raise HTTPException(400, msg)
+
+
+@app.get("/api/sync/meta")
+def sync_meta():
+    def info(source: str):
+        count = get_sync_meta(f"{source}_last_count")
+        return {
+            "lastSyncedAt": get_sync_meta(f"{source}_last_synced_at"),
+            "lastCount": int(count) if count is not None else None,
+            "lastError": get_sync_meta(f"{source}_last_error") or None,
+        }
+    return {"strava": info("strava"), "garmin": info("garmin")}
 
 
 # ---------- Runs CRUD ----------

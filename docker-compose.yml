@@ -13,6 +13,8 @@ services:
       - GARMIN_EMAIL=${GARMIN_EMAIL:-}
       - GARMIN_PASSWORD=${GARMIN_PASSWORD:-}
       - DB_PATH=/data/runlog.db
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
       - runlog_data:/data
     restart: unless-stopped

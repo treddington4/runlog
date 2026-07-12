@@ -1,6 +1,33 @@
 """Shared calculation helpers."""
 
 
+def decode_polyline(encoded: str):
+    """Decode a Google-encoded polyline string (as returned by Strava's summary_polyline)
+    into a list of [lat, lon] pairs."""
+    if not encoded:
+        return []
+    points = []
+    index = lat = lng = 0
+    length = len(encoded)
+    while index < length:
+        for is_lat in (True, False):
+            shift = result = 0
+            while True:
+                b = ord(encoded[index]) - 63
+                index += 1
+                result |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            delta = ~(result >> 1) if result & 1 else (result >> 1)
+            if is_lat:
+                lat += delta
+            else:
+                lng += delta
+        points.append([round(lat / 1e5, 6), round(lng / 1e5, 6)])
+    return points
+
+
 def minetti_cost(i: float) -> float:
     """Minetti et al. cost-of-running-on-gradient (J/kg/m), i = fractional grade."""
     i2, i3, i4, i5 = i * i, i ** 3, i ** 4, i ** 5

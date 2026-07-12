@@ -1,19 +1,38 @@
 """Database models. SQLite file lives at /data/runlog.db (mounted volume)."""
-from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, Text
+from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, Text, UniqueConstraint, or_
 from sqlalchemy.orm import declarative_base, sessionmaker
+from datetime import datetime, timezone
 import os
+import uuid
 
 DB_PATH = os.environ.get("DB_PATH", "/data/runlog.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
+DEFAULT_USER_ID = "default"
+
+
+def owned_by(column, user_id: str):
+    """Multi-user filter helper. Existing rows synced before the user_id column existed
+    have user_id=NULL (see _migrate_add_missing_columns — this repo's established
+    convention is to backfill via a read-time `or` fallback rather than a DB-level
+    ALTER TABLE DEFAULT, same pattern already used for the JSON blob columns, e.g.
+    `r.recovery_json or "[]"`). NULL rows are treated as belonging to the default user
+    (today's actual single-user reality) — only the default user's filter matches them;
+    any other real user_id matches exact rows only, never NULLs."""
+    if user_id == DEFAULT_USER_ID:
+        return or_(column == DEFAULT_USER_ID, column.is_(None))
+    return column == user_id
+
 
 class Run(Base):
     __tablename__ = "runs"
 
     id = Column(String, primary_key=True)  # e.g. "strava_19268494216" or "garmin_..."
+    user_id = Column(String, nullable=True)  # see owned_by() — NULL on pre-migration rows, treated as "default"
     source = Column(String)                # "strava" | "garmin"
+    activity_type = Column(String, default="Run")  # raw source activity type: "Run", "Ride", "Walk", "Hike", ...
     date = Column(String)                  # YYYY-MM-DD
     start_time = Column(String)            # HH:MM local
     name = Column(String)
@@ -35,9 +54,39 @@ class Run(Base):
     notes = Column(Text, nullable=True)
     splits_json = Column(Text, default="[]")      # JSON string: list of per-mile splits
     intervals_json = Column(Text, default="[]")   # JSON string: list of raw interval reps
+    recovery_json = Column(Text, default="[]")    # JSON string: per-rep [{repIndex,peakHR,recoverySec}], Strava-only
+    route_json = Column(Text, default="[]")       # JSON string: list of [lat, lon] GPS points
+    route_metrics_json = Column(Text, default="[]")  # JSON string: decimated [{lat,lon,paceSecPerMi,hr,cadence}]
+    route_source = Column(String, nullable=True)  # Garmin-only diagnostic: "fit_record_stream" | "geopolyline_summary" | "none"; NULL for Strava rows and pre-rework Garmin rows
+
+    # Running dynamics, Garmin-only, parsed from the raw .FIT file's session message
+    # (not available via Garmin Connect's regular summary API) — see garmin_sync.py
+    vertical_oscillation_mm = Column(Float, nullable=True)
+    ground_contact_time_ms = Column(Float, nullable=True)
+    vertical_ratio_pct = Column(Float, nullable=True)
+    stride_length_m = Column(Float, nullable=True)
+    avg_power_watts = Column(Float, nullable=True)
+
+
+class DailySteps(Base):
+    """Garmin-only daily step count. Unlike Run rows (one per activity), this is one row
+    per calendar date — a passive wellness metric, not tied to a synced activity.
+    KNOWN LIMITATION: user_id is a plain column here, not part of the primary key (still
+    just `date`) — safe today since there's only ever one real user, but two real users
+    syncing steps for the same calendar date would collide. Needs a proper composite-PK
+    migration (table recreation, not a simple ALTER TABLE) before real multi-user step
+    tracking works — not attempted in this pass, flagged in STATUS.md."""
+    __tablename__ = "daily_steps"
+
+    date = Column(String, primary_key=True)  # YYYY-MM-DD
+    user_id = Column(String, nullable=True)
+    steps = Column(Integer)
 
 
 class OAuthToken(Base):
+    """Superseded by ProviderCredential (user-scoped) — kept only so the startup
+    migration in init_db() has a source row to copy from on upgrade. Not written to
+    by new code; safe to drop once every deployment has migrated."""
     __tablename__ = "oauth_tokens"
 
     provider = Column(String, primary_key=True)  # "strava"
@@ -51,6 +100,81 @@ class SyncMeta(Base):
 
     key = Column(String, primary_key=True)
     value = Column(String)
+
+
+class ChatMessage(Base):
+    """Human-visible transcript for the AI chat assistant (see assistant.py). Decoupled
+    from the SDK's own live conversation session — this survives container restarts,
+    the SDK session's turn-by-turn context does not (an accepted tradeoff, same spirit
+    as the in-memory-only backlog-sync job state in main.py)."""
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, nullable=True)  # see owned_by()
+    role = Column(String)  # "user" | "assistant"
+    content = Column(Text)
+    tool_calls_json = Column(Text, nullable=True)  # which real tools/queries backed an assistant reply
+    created_at = Column(String)  # ISO timestamp
+
+
+class User(Base):
+    """Single self-hosted deployment can host multiple users (e.g. a couple/family each
+    training toward their own goals with their own Strava/Garmin). No login/session
+    enforcement exists yet (password_hash is unused for now) — every request currently
+    acts as DEFAULT_USER_ID. This table exists so the data model and sync pipeline are
+    genuinely multi-tenant-safe already, not retrofitted after more features are built
+    on a single-tenant assumption."""
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True)  # DEFAULT_USER_ID or f"user_{uuid.uuid4().hex[:12]}"
+    email = Column(String, nullable=True, unique=True)
+    password_hash = Column(String, nullable=True)
+    created_at = Column(String)
+
+
+class ProviderCredential(Base):
+    """Per-user third-party connection (Strava OAuth tokens, Garmin username/password,
+    future Google Health/Withings/...). Replaces both the old global oauth_tokens row
+    and the GARMIN_EMAIL/GARMIN_PASSWORD env vars as the source of truth — env vars are
+    now only used to seed the default user's row on first boot (see init_db()).
+    Password is plaintext today, same exposure GARMIN_PASSWORD already has as an env
+    var — at-rest encryption is a distinct, separately-tracked future requirement, not
+    solved here."""
+    __tablename__ = "provider_credentials"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_provider_credentials_user_provider"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String)
+    provider = Column(String)  # "strava" | "garmin" | "google_health" | "withings" | ...
+    access_token = Column(String, nullable=True)   # Strava OAuth
+    refresh_token = Column(String, nullable=True)
+    expires_at = Column(Integer, nullable=True)
+    username = Column(String, nullable=True)        # Garmin
+    password = Column(String, nullable=True)        # Garmin
+    created_at = Column(String)
+
+
+class Goal(Base):
+    """A user's training goal — one wide table covers all three types (matches this
+    app's existing convention, e.g. Run's nullable Garmin-only columns, rather than a
+    table per type). See stats.goal_progress() for how each type's progress is computed."""
+    __tablename__ = "goals"
+
+    id = Column(String, primary_key=True)  # f"goal_{uuid.uuid4().hex[:12]}"
+    user_id = Column(String, nullable=True)  # see owned_by()
+    goal_type = Column(String)             # "race" | "consistency" | "distance_target"
+    name = Column(String)
+    status = Column(String, default="active")  # "active" | "completed" | "abandoned"
+    activity_types_json = Column(Text, default='["Run"]')  # e.g. ["Run","Ride"] for a duathlon
+
+    target_value = Column(Float, nullable=True)   # race: distance mi; consistency: N; distance_target: cumulative mi
+    target_unit = Column(String, nullable=True)   # "miles" | "runs_per_week" | "miles_per_week"
+    target_date = Column(String, nullable=True)   # race: event date; distance_target: optional deadline; YYYY-MM-DD
+    start_date = Column(String, nullable=True)    # distance_target only: window start, defaults to created_at's date
+
+    notes = Column(Text, nullable=True)
+    created_at = Column(String)
+    completed_at = Column(String, nullable=True)
 
 
 def get_sync_meta(key: str):
@@ -77,18 +201,84 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     Base.metadata.create_all(engine)
     _migrate_add_missing_columns()
+    _seed_default_user_and_credentials()
+    _seed_marathon_goal()
+
+
+# Tables that have grown columns since their first release and need the ALTER TABLE
+# patch below. Whole NEW tables (User, ProviderCredential, Goal) don't need this —
+# create_all() already creates them from scratch with every current column.
+_MIGRATABLE_TABLES = [("runs", Run), ("daily_steps", DailySteps), ("chat_messages", ChatMessage), ("goals", Goal)]
 
 
 def _migrate_add_missing_columns():
     """SQLAlchemy's create_all() only creates tables that don't exist yet — it
     won't add new columns to a table that's already there. Since this project
     has no migration framework, patch that gap with a plain ALTER TABLE for
-    any model column SQLite doesn't have yet."""
+    any model column SQLite doesn't have yet. No DB-level DEFAULT is set here —
+    matches this repo's established pattern of backfilling at read time instead
+    (e.g. `r.recovery_json or "[]"`; for user_id specifically, see owned_by())."""
     with engine.connect() as conn:
-        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(runs)")}
-        for col in Run.__table__.columns:
-            if col.name not in existing:
-                col_type = "TEXT" if isinstance(col.type, (String, Text)) else \
-                    "INTEGER" if isinstance(col.type, (Integer, Boolean)) else "REAL"
-                conn.exec_driver_sql(f"ALTER TABLE runs ADD COLUMN {col.name} {col_type}")
+        for table_name, model in _MIGRATABLE_TABLES:
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table_name})")}
+            for col in model.__table__.columns:
+                if col.name not in existing:
+                    col_type = "TEXT" if isinstance(col.type, (String, Text)) else \
+                        "INTEGER" if isinstance(col.type, (Integer, Boolean)) else "REAL"
+                    conn.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}")
         conn.commit()
+
+
+def _seed_default_user_and_credentials():
+    """One-time, idempotent: ensures a DEFAULT_USER_ID user exists, and that its
+    provider credentials are populated from whatever this deployment already had
+    (the old single-row oauth_tokens table for Strava, GARMIN_EMAIL/GARMIN_PASSWORD
+    env vars for Garmin) — so upgrading to the multi-user schema is invisible to an
+    existing single-user deployment. Never overwrites a credential that's already
+    been migrated or entered through the new Connections UI."""
+    db = SessionLocal()
+    try:
+        if db.get(User, DEFAULT_USER_ID) is None:
+            db.add(User(id=DEFAULT_USER_ID, created_at=datetime.now(timezone.utc).isoformat()))
+            db.commit()
+
+        have = {c.provider for c in db.query(ProviderCredential).filter(ProviderCredential.user_id == DEFAULT_USER_ID)}
+
+        if "strava" not in have:
+            old = db.get(OAuthToken, "strava")
+            if old:
+                db.add(ProviderCredential(
+                    user_id=DEFAULT_USER_ID, provider="strava",
+                    access_token=old.access_token, refresh_token=old.refresh_token, expires_at=old.expires_at,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                ))
+
+        if "garmin" not in have:
+            email, password = os.environ.get("GARMIN_EMAIL"), os.environ.get("GARMIN_PASSWORD")
+            if email and password:
+                db.add(ProviderCredential(
+                    user_id=DEFAULT_USER_ID, provider="garmin", username=email, password=password,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                ))
+
+        db.commit()
+    finally:
+        db.close()
+
+
+def _seed_marathon_goal():
+    """One-time: migrates the app's original hardcoded MARATHON_DATE race countdown
+    into a real Goal row, so upgrading doesn't lose it. Only runs when the goals table
+    is completely empty — never touches user-created goals."""
+    db = SessionLocal()
+    try:
+        if db.query(Goal).count() == 0:
+            db.add(Goal(
+                id=f"goal_{uuid.uuid4().hex[:12]}", user_id=DEFAULT_USER_ID, goal_type="race",
+                name="Manchester City Marathon", status="active", activity_types_json='["Run"]',
+                target_value=26.2, target_unit="miles", target_date="2026-11-08",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            ))
+            db.commit()
+    finally:
+        db.close()

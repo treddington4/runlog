@@ -5,115 +5,562 @@ Garmin credentials and can break whenever Garmin changes their internal endpoint
 Use Strava as your primary source; treat this as a bonus.
 """
 import os
+import io
 import json
-from datetime import datetime
+import time
+import logging
+import zipfile
+from datetime import datetime, timedelta
 
-from models import SessionLocal, Run
+from models import SessionLocal, Run, DailySteps, ProviderCredential, set_sync_meta
 from weather import get_historical_weather
 from util import classify_run_type, detect_intervals
 
-GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "")
-GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD", "")
+log = logging.getLogger("runlog")
+
+GARMIN_TOKEN_STORE_DIR = os.environ.get("GARMIN_TOKEN_STORE_DIR", "/data")
+
+# Proactive throttle + retry/backoff for Garmin's unofficial, undocumented rate limits —
+# see GarminMidSyncRateLimitError below for why these are deliberately conservative
+# (a real sustained block lasts far longer than any short backoff could absorb; this is
+# insurance against brief bursts, not an attempt to outlast a genuine lockout).
+GARMIN_INTER_ACTIVITY_DELAY_SEC = float(os.environ.get("GARMIN_INTER_ACTIVITY_DELAY_SEC", "1.5"))
+GARMIN_MAX_RETRIES = int(os.environ.get("GARMIN_MAX_RETRIES", "3"))
+GARMIN_RETRY_BASE_BACKOFF_SEC = float(os.environ.get("GARMIN_RETRY_BASE_BACKOFF_SEC", "5.0"))
+# The truncation problem (see _parse_fit_streams) isn't running-specific, so FIT download
+# is attempted for any activity with GPS by default — set false to restrict back to
+# running-only if this measurably worsens rate-limit pressure.
+GARMIN_FIT_ROUTE_ALL_GPS = os.environ.get("GARMIN_FIT_ROUTE_ALL_GPS", "true").lower() == "true"
 
 METERS_PER_MILE = 1609.34
+SEMICIRCLE_TO_DEGREES = 180 / (2 ** 31)
 
 
-def sync_garmin_activities(limit: int = 10):
-    if not GARMIN_EMAIL or not GARMIN_PASSWORD:
-        raise RuntimeError("Set GARMIN_EMAIL and GARMIN_PASSWORD in your .env to use this")
+class GarminLoginRateLimitError(RuntimeError):
+    """Garmin rejected the login endpoint itself (429 or session-conflict error)."""
 
+
+class GarminMidSyncRateLimitError(RuntimeError):
+    """A per-activity API call (laps/route/FIT download) got rate-limited after a
+    successful login — distinct from a login failure so the UI doesn't mislabel it."""
+    def __init__(self, synced_count: int):
+        self.synced_count = synced_count
+        super().__init__(
+            f"Garmin's API rate-limited a request mid-sync (login succeeded; "
+            f"{synced_count} activities were synced first). Progress was saved — "
+            f"wait a while before retrying."
+        )
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    msg = str(e)
+    return "429" in msg or "not supported between instances" in msg
+
+
+def _get_garmin_credential(user_id: str):
+    db = SessionLocal()
+    try:
+        return db.query(ProviderCredential).filter_by(user_id=user_id, provider="garmin").first()
+    finally:
+        db.close()
+
+
+def _login(user_id: str):
+    """Tries a saved session first (client.login(tokenstore=...) — garth loads OAuth1/
+    OAuth2 tokens from disk and refreshes the short-lived OAuth2 token from the
+    long-lived OAuth1 one internally, without hitting the login endpoint at all), and
+    only falls back to a real credential login if no valid saved session exists (first
+    run, expired/corrupted tokens). Always persists whatever session results, so once a
+    real login succeeds once, future syncs shouldn't need one again for a long while.
+    The token store is per-user (/data/.garmin_tokens_{user_id}) — /data is the same
+    persistent volume runlog.db already lives on, so this survives container recreates.
+    Credentials come from ProviderCredential (populated either by the startup migration
+    from GARMIN_EMAIL/GARMIN_PASSWORD, or entered later through the Connections UI)."""
+    cred = _get_garmin_credential(user_id)
+    if not cred or not cred.username or not cred.password:
+        raise RuntimeError("No Garmin credentials on file for this user — add them in Settings → Connections")
     try:
         import garminconnect
     except ImportError:
         raise RuntimeError("garminconnect package not installed")
 
-    client = garminconnect.Garmin(GARMIN_EMAIL, GARMIN_PASSWORD)
-    client.login()
+    token_store = f"{GARMIN_TOKEN_STORE_DIR}/.garmin_tokens_{user_id}"
+    client = garminconnect.Garmin(cred.username, cred.password)
+    try:
+        client.login(tokenstore=token_store)
+    except Exception:
+        try:
+            client.login()
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                raise GarminLoginRateLimitError(
+                    "Garmin is rate-limiting login attempts from this network right now "
+                    "(this is common with the unofficial API). Wait a while before retrying."
+                ) from e
+            raise
 
-    activities = client.get_activities(0, limit)
-    running = [a for a in activities if "running" in (a.get("activityType", {}).get("typeKey") or "")]
+    try:
+        client.garth.dump(token_store)
+    except Exception:
+        pass
+
+    return client
+
+
+def _sync_daily_steps(client, user_id: str, days: int = 30) -> int:
+    """Best-effort — the exact response shape of client.get_daily_steps() hasn't been
+    verified against the live API (unverified/unexercised as of this writing, see
+    STATUS.md), so this degrades to skipping malformed entries rather than raising,
+    and is never allowed to fail an activity sync that's otherwise working.
+    KNOWN LIMITATION: DailySteps' primary key is still just `date` (see models.py) — two
+    real users syncing steps for the same calendar date will overwrite each other's
+    count. Safe today since there's only one real user; needs a composite-PK migration
+    before true multi-user step tracking works."""
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=days - 1)
+        entries = client.get_daily_steps(start.isoformat(), end.isoformat()) or []
+    except Exception:
+        return 0
 
     db = SessionLocal()
     count = 0
     try:
-        for act in running:
-            run_id = f"garmin_{act['activityId']}"
-            distance_mi = (act.get("distance") or 0) / METERS_PER_MILE
-            moving_time = act.get("movingDuration") or act.get("duration") or 0
-            avg_pace = moving_time / distance_mi if distance_mi else None
-            is_treadmill = "treadmill" in (act.get("activityType", {}).get("typeKey") or "")
-
-            splits = []
-            try:
-                laps = client.get_activity_splits(act["activityId"])
-                lap_dtos = laps.get("lapDTOs", [])
-                for i, lap in enumerate(lap_dtos, 1):
-                    lap_dist_mi = (lap.get("distance") or 0) / METERS_PER_MILE
-                    lap_time = lap.get("movingDuration") or lap.get("duration") or 0
-                    if lap_dist_mi > 0:
-                        splits.append({
-                            "mile": i,
-                            "paceSecPerMi": round(lap_time / lap_dist_mi, 1),
-                            "elevGainFt": round((lap.get("elevationGain") or 0) * 3.28084, 1),
-                            "avgHR": round(lap["averageHR"]) if lap.get("averageHR") else None,
-                            "maxHR": round(lap["maxHR"]) if lap.get("maxHR") else None,
-                            # Garmin's runningCadenceInStepsPerMinute is already total spm — no doubling needed
-                            "avgCadence": lap.get("averageRunCadence"),
-                        })
-            except Exception:
-                pass
-
-            run_type = classify_run_type(distance_mi, avg_pace, splits, act.get("averageHR"))
-
-            intervals_json = "[]"
-            if run_type == "Interval" and splits:
-                raw_laps = [{
-                    "durationSec": None, "distanceMi": None,
-                    "paceSecPerMi": s["paceSecPerMi"], "elevGainFt": s["elevGainFt"],
-                    "avgHR": s["avgHR"], "maxHR": s["maxHR"], "avgCadence": s["avgCadence"],
-                } for s in splits]
-                intervals_json = json.dumps(detect_intervals(raw_laps))
-
-            start_local = act.get("startTimeLocal", "")
-            try:
-                start_dt = datetime.fromisoformat(start_local)
-            except Exception:
-                start_dt = datetime.now()
-
-            temp_f, condition, heat_index_f, wet_bulb_f = None, None, None, None
-            if not is_treadmill:
-                lat, lon = act.get("startLatitude"), act.get("startLongitude")
-                if lat and lon:
-                    temp_f, condition, heat_index_f, wet_bulb_f = get_historical_weather(
-                        lat, lon, start_dt.strftime("%Y-%m-%d"), start_dt.hour
-                    )
-
-            existing = db.get(Run, run_id)
-            run = existing or Run(id=run_id)
-            run.source = "garmin"
-            run.date = start_dt.strftime("%Y-%m-%d")
-            run.start_time = start_dt.strftime("%H:%M")
-            run.name = act.get("activityName", "Run")
-            run.distance_mi = round(distance_mi, 3)
-            run.moving_time_sec = int(moving_time)
-            run.elev_gain_ft = round((act.get("elevationGain") or 0) * 3.28084, 1)
-            run.avg_hr = round(act["averageHR"]) if act.get("averageHR") else None
-            run.max_hr = round(act["maxHR"]) if act.get("maxHR") else None
-            run.avg_cadence = act.get("averageRunningCadenceInStepsPerMinute")
-            run.avg_pace_sec_per_mi = round(avg_pace, 1) if avg_pace else None
-            run.is_treadmill = is_treadmill
-            run.temp_f = temp_f
-            run.weather_condition = condition
-            run.heat_index_f = heat_index_f
-            run.wet_bulb_f = wet_bulb_f
-            run.suggested_type = run_type
-            run.splits_json = json.dumps(splits)
-            run.intervals_json = intervals_json
-
-            db.merge(run)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            date_str = entry.get("calendarDate") or entry.get("date")
+            steps = entry.get("totalSteps") or entry.get("steps") or entry.get("stepCount")
+            if not date_str or steps is None:
+                continue
+            existing = db.get(DailySteps, date_str)
+            row = existing or DailySteps(date=date_str)
+            row.user_id = user_id
+            row.steps = int(steps)
+            db.merge(row)
             count += 1
         db.commit()
     finally:
         db.close()
+
+    return count
+
+
+def _sync_resting_hr(client, lookback_days: int = 3) -> bool:
+    """Best-effort — tries the last few days (Garmin doesn't always have same-day data
+    synced yet) for a resting HR reading via client.get_rhr_day(date), stores the most
+    recent one found in sync_meta. The exact response shape is unverified against the
+    live API (Garmin's been rate-limited all session) — several plausible field paths
+    are tried defensively; degrades to a no-op if none match or the call fails. This
+    real reading is what app.js's HR sensor-glitch filter prefers, falling back to a
+    Strava-history-derived proxy when it's not available (i.e. right now)."""
+    for i in range(lookback_days):
+        try:
+            d = (datetime.now().date() - timedelta(days=i)).isoformat()
+            data = client.get_rhr_day(d) or {}
+            value = None
+            metrics_map = (data.get("allMetrics") or {}).get("metricsMap") or {}
+            for series in metrics_map.values():
+                if isinstance(series, list) and series and series[0].get("value"):
+                    value = series[0]["value"]
+                    break
+            if value is None:
+                value = data.get("restingHeartRate") or data.get("value")
+            if value:
+                set_sync_meta("garmin_resting_hr_bpm", str(round(value)))
+                set_sync_meta("garmin_resting_hr_date", d)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _download_fit_bytes(client, activity_id):
+    """One Garmin API call: downloads+unzips the raw original .FIT file — the unprocessed
+    device recording, not a Garmin Connect API reprocessing. Degrades to None on any
+    failure (no original file for a manually-entered activity, no .FIT member in the zip,
+    network error) EXCEPT a genuine rate-limit error, which re-raises so
+    _process_activity_with_retry can back off and retry instead of this call silently
+    eating the signal a rate limit even happened."""
+    try:
+        raw = client.download_activity(str(activity_id), dl_fmt=client.ActivityDownloadFormat.ORIGINAL)
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            fit_names = [n for n in z.namelist() if n.lower().endswith(".fit")]
+            return z.read(fit_names[0]) if fit_names else None
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
+        return None
+
+
+def _semicircles_to_degrees(value):
+    """FIT position_lat/position_long are encoded in semicircles, not degrees — a UNIT
+    difference, not a scale/offset one, so fitparse does NOT auto-convert it (it only
+    auto-applies the FIT profile's scale/offset to other fields). Getting this wrong
+    produces huge nonsense lat/lon values, not a subtle bug: the first real converted
+    point should land within -90..90 / -180..180 — worth checking once real data flows."""
+    return None if value is None else value * SEMICIRCLE_TO_DEGREES
+
+
+def _parse_fit_records(fit) -> list:
+    """One pass over every `record` message — the raw ~1Hz device stream. Each point
+    keeps every field together (lat/lon/hr/cadence/speed/altitude/distance/time), unlike
+    Strava's parallel-array streams, so decimation needs no index-alignment bookkeeping.
+    A missing individual field degrades to None on that point, not a dropped point — an
+    HR-strap dropout mid-run shouldn't also cost the GPS point."""
+    points = []
+    for msg in fit.get_messages("record"):
+        f = {field.name: field.value for field in msg}
+        points.append({
+            "lat": _semicircles_to_degrees(f.get("position_lat")),
+            "lon": _semicircles_to_degrees(f.get("position_long")),
+            "hr": f.get("heart_rate"),
+            "cadence": f.get("cadence"),
+            "speed_mps": f.get("enhanced_speed") if f.get("enhanced_speed") is not None else f.get("speed"),
+            "alt_m": f.get("enhanced_altitude") if f.get("enhanced_altitude") is not None else f.get("altitude"),
+            "dist_m": f.get("distance"),
+            "t": f.get("timestamp"),
+        })
+    return points
+
+
+def _calibrate_cadence_scale(raw_cadence_values: list, known_avg_total_spm) -> float:
+    """FIT record cadence is a known ambiguity — some devices/firmwares report per-leg
+    cadence (needs x2, like Strava's raw stream), others report total steps/min already.
+    Self-calibrates against this activity's own trusted summary field
+    (averageRunningCadenceInStepsPerMinute, already fetched elsewhere and already used
+    unmultiplied) as ground truth, instead of guessing — avoids needing a live test
+    against real hardware to resolve which convention this account's device uses."""
+    if not raw_cadence_values or not known_avg_total_spm:
+        return 1.0
+    raw_mean = sum(raw_cadence_values) / len(raw_cadence_values)
+    if raw_mean <= 0:
+        return 1.0
+    ratio = known_avg_total_spm / raw_mean
+    return 2.0 if 1.6 <= ratio <= 2.4 else 1.0
+
+
+def _decimate_fit_route_metrics(geo_points: list, known_avg_cadence, max_points: int = 300) -> list:
+    """Mirrors strava._build_route_metrics()'s exact output shape
+    ({lat, lon, paceSecPerMi, hr, cadence, gradePct}) and decimation strategy
+    (step = n // max_points) so app.js's existing heatmap code needs zero frontend
+    changes to light up for Garmin runs too."""
+    n = len(geo_points)
+    if n == 0:
+        return []
+    step = max(1, n // max_points)
+    cadence_scale = _calibrate_cadence_scale(
+        [p["cadence"] for p in geo_points if p.get("cadence") is not None], known_avg_cadence)
+    if cadence_scale != 1.0:
+        log.info(f"garmin FIT cadence calibration: scaling x{cadence_scale} (device reports per-leg cadence)")
+
+    result = []
+    prev_dist = prev_alt = prev_t = None
+    for i in range(0, n, step):
+        p = geo_points[i]
+        speed, dist_m, alt_m, t = p.get("speed_mps"), p.get("dist_m"), p.get("alt_m"), p.get("t")
+
+        pace = round(METERS_PER_MILE / speed, 1) if speed and speed > 0.3 else None
+        if pace is None and dist_m is not None and prev_dist is not None and t and prev_t:
+            d_delta, t_delta = dist_m - prev_dist, (t - prev_t).total_seconds()
+            if d_delta > 2 and t_delta > 0:
+                pace = round((t_delta / d_delta) * METERS_PER_MILE, 1)
+
+        grade = None
+        if dist_m is not None and alt_m is not None and prev_dist is not None:
+            d_delta = dist_m - prev_dist
+            if d_delta > 2:
+                grade = round((alt_m - prev_alt) / d_delta * 100, 1)
+        if dist_m is not None and alt_m is not None:
+            prev_dist, prev_alt = dist_m, alt_m
+        if t is not None:
+            prev_t = t
+
+        result.append({
+            "lat": p["lat"], "lon": p["lon"],
+            "paceSecPerMi": pace,
+            "hr": p.get("hr"),
+            "cadence": round(p["cadence"] * cadence_scale) if p.get("cadence") is not None else None,
+            "gradePct": grade,
+        })
+    return result
+
+
+def _parse_fit_streams(fit_bytes: bytes, known_avg_cadence=None, max_route_points: int = 300) -> dict:
+    """Single parse of one already-downloaded FIT file, returning everything
+    _process_activity needs in one call: running dynamics (session message, same fields
+    as before) plus the true device-recorded route/routeMetrics (record messages) —
+    which, unlike Garmin Connect's geoPolylineDTO summary API, isn't subject to whatever
+    privacy-zone masking clips the start/end of routes returned by the summary API (see
+    STATUS.md for the ~500m discrepancy that surfaced this). UNVERIFIED against a live
+    download as of this writing (Garmin's been rate-limited all session) — field names
+    follow the public FIT SDK profile but degrade message-by-message and field-by-field
+    rather than raising; an empty/partial result is the worst case, never a crash."""
+    result = {"dynamics": {}, "route": [], "routeMetrics": []}
+    try:
+        import fitparse
+        fit = fitparse.FitFile(io.BytesIO(fit_bytes))
+    except Exception:
+        return result
+
+    try:
+        for msg in fit.get_messages("session"):
+            f = {field.name: field.value for field in msg}
+            step_length_mm = f.get("avg_step_length")
+            result["dynamics"] = {
+                "verticalOscillationMm": f.get("avg_vertical_oscillation"),
+                "groundContactTimeMs": f.get("avg_stance_time"),
+                "verticalRatioPct": f.get("avg_vertical_ratio"),
+                "strideLengthM": (step_length_mm / 1000) if step_length_mm else None,
+                "avgPowerWatts": f.get("avg_power"),
+            }
+            break
+    except Exception:
+        pass
+
+    try:
+        raw_points = _parse_fit_records(fit)
+        geo_points = [p for p in raw_points if p.get("lat") is not None and p.get("lon") is not None]
+        route_metrics = _decimate_fit_route_metrics(geo_points, known_avg_cadence, max_route_points)
+        result["routeMetrics"] = route_metrics
+        result["route"] = [[p["lat"], p["lon"]] for p in route_metrics]
+        log.info(f"garmin FIT record parse: {len(raw_points)} raw records, {len(geo_points)} with GPS, "
+                 f"{len(route_metrics)} decimated route points")
+    except Exception:
+        pass
+
+    return result
+
+
+def _process_activity(act: dict, client, db, user_id: str) -> bool:
+    """Fetch splits/weather for one Garmin activity of any type and upsert it as a Run row.
+    Always returns True — every activity type is captured, not just running; only running
+    activities get the running-specific classification/interval-detection heuristics."""
+    activity_type = act.get("activityType", {}).get("typeKey") or "unknown"
+    is_run = "running" in activity_type
+
+    run_id = f"garmin_{act['activityId']}"
+    distance_mi = (act.get("distance") or 0) / METERS_PER_MILE
+    moving_time = act.get("movingDuration") or act.get("duration") or 0
+    avg_pace = moving_time / distance_mi if distance_mi else None
+    is_treadmill = "treadmill" in (act.get("activityType", {}).get("typeKey") or "")
+
+    splits = []
+    try:
+        laps = client.get_activity_splits(act["activityId"])
+        lap_dtos = laps.get("lapDTOs", [])
+        for i, lap in enumerate(lap_dtos, 1):
+            lap_dist_mi = (lap.get("distance") or 0) / METERS_PER_MILE
+            lap_time = lap.get("movingDuration") or lap.get("duration") or 0
+            if lap_dist_mi > 0:
+                splits.append({
+                    "mile": i,
+                    "paceSecPerMi": round(lap_time / lap_dist_mi, 1),
+                    "elevGainFt": round((lap.get("elevationGain") or 0) * 3.28084, 1),
+                    "avgHR": round(lap["averageHR"]) if lap.get("averageHR") else None,
+                    "maxHR": round(lap["maxHR"]) if lap.get("maxHR") else None,
+                    # Garmin's runningCadenceInStepsPerMinute is already total spm — no doubling needed
+                    "avgCadence": lap.get("averageRunCadence"),
+                })
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
+        # else: fall through, splits stays []
+
+    polyline_route = []
+    try:
+        details = client.get_activity_details(act["activityId"], maxpoly=500)
+        polyline_route = [[p["lat"], p["lon"]] for p in details.get("geoPolylineDTO", {}).get("polyline", [])
+                           if p.get("lat") is not None and p.get("lon") is not None]
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
+        # else: fall through, polyline_route stays []
+
+    # The geoPolylineDTO fetch above doubles as a free "does this even have GPS" signal
+    # before spending a FIT download on it — see GARMIN_FIT_ROUTE_ALL_GPS.
+    should_try_fit = is_run or (GARMIN_FIT_ROUTE_ALL_GPS and len(polyline_route) >= 2)
+    fit_data = {"dynamics": {}, "route": [], "routeMetrics": []}
+    if should_try_fit:
+        fit_bytes = _download_fit_bytes(client, act["activityId"])
+        if fit_bytes:
+            fit_data = _parse_fit_streams(fit_bytes, known_avg_cadence=act.get("averageRunningCadenceInStepsPerMinute"))
+
+    if len(fit_data["route"]) >= 2:
+        route, route_metrics, route_source = fit_data["route"], fit_data["routeMetrics"], "fit_record_stream"
+    elif polyline_route:
+        route, route_metrics, route_source = polyline_route, [], "geopolyline_summary"
+    else:
+        route, route_metrics, route_source = [], [], "none"
+    log.info(f"garmin activity {act.get('activityId')}: route_source={route_source} ({len(route)} points)")
+
+    dynamics = fit_data["dynamics"]
+
+    run_type = classify_run_type(distance_mi, avg_pace, splits, act.get("averageHR")) if is_run else activity_type
+
+    intervals_json = "[]"
+    if is_run and run_type == "Interval" and splits:
+        raw_laps = [{
+            "durationSec": None, "distanceMi": None,
+            "paceSecPerMi": s["paceSecPerMi"], "elevGainFt": s["elevGainFt"],
+            "avgHR": s["avgHR"], "maxHR": s["maxHR"], "avgCadence": s["avgCadence"],
+        } for s in splits]
+        intervals_json = json.dumps(detect_intervals(raw_laps))
+
+    start_local = act.get("startTimeLocal", "")
+    try:
+        start_dt = datetime.fromisoformat(start_local)
+    except Exception:
+        start_dt = datetime.now()
+
+    temp_f, condition, heat_index_f, wet_bulb_f = None, None, None, None
+    if not is_treadmill:
+        lat, lon = act.get("startLatitude"), act.get("startLongitude")
+        if lat and lon:
+            temp_f, condition, heat_index_f, wet_bulb_f = get_historical_weather(
+                lat, lon, start_dt.strftime("%Y-%m-%d"), start_dt.hour
+            )
+
+    existing = db.get(Run, run_id)
+    run = existing or Run(id=run_id)
+    run.user_id = user_id
+    run.source = "garmin"
+    run.activity_type = activity_type
+    run.date = start_dt.strftime("%Y-%m-%d")
+    run.start_time = start_dt.strftime("%H:%M")
+    run.name = act.get("activityName", "Run")
+    run.distance_mi = round(distance_mi, 3)
+    run.moving_time_sec = int(moving_time)
+    run.elev_gain_ft = round((act.get("elevationGain") or 0) * 3.28084, 1)
+    run.avg_hr = round(act["averageHR"]) if act.get("averageHR") else None
+    run.max_hr = round(act["maxHR"]) if act.get("maxHR") else None
+    run.avg_cadence = act.get("averageRunningCadenceInStepsPerMinute")
+    run.avg_pace_sec_per_mi = round(avg_pace, 1) if avg_pace else None
+    run.is_treadmill = is_treadmill
+    run.temp_f = temp_f
+    run.weather_condition = condition
+    run.heat_index_f = heat_index_f
+    run.wet_bulb_f = wet_bulb_f
+    run.suggested_type = run_type
+    run.splits_json = json.dumps(splits)
+    run.intervals_json = intervals_json
+    run.recovery_json = "[]"  # interval recovery-time is Strava-only for now (needs lap start/end stream indices)
+    run.route_json = json.dumps(route)
+    run.route_metrics_json = json.dumps(route_metrics)
+    run.route_source = route_source
+    run.vertical_oscillation_mm = dynamics.get("verticalOscillationMm")
+    run.ground_contact_time_ms = dynamics.get("groundContactTimeMs")
+    run.vertical_ratio_pct = dynamics.get("verticalRatioPct")
+    run.stride_length_m = dynamics.get("strideLengthM")
+    run.avg_power_watts = dynamics.get("avgPowerWatts")
+
+    db.merge(run)
+    return True
+
+
+def _process_activity_with_retry(act, client, db, user_id, progress_cb=None) -> bool:
+    """Wraps _process_activity with rate-limit-aware retry/backoff plus a proactive
+    inter-activity delay. Non-rate-limit errors keep the original skip-and-continue
+    behavior. A rate-limit error that survives GARMIN_MAX_RETRIES attempts re-raises
+    unchanged, so callers' existing except-block still turns it into
+    GarminMidSyncRateLimitError with an accurate partial-progress message — this only
+    changes *when* that happens, not the contract callers rely on. Retrying re-runs
+    _process_activity from scratch (redoes splits+route too, not just whichever call
+    429'd) — an accepted simplification since every write is an idempotent db.merge()."""
+    for attempt in range(GARMIN_MAX_RETRIES + 1):
+        try:
+            processed = _process_activity(act, client, db, user_id)
+            time.sleep(GARMIN_INTER_ACTIVITY_DELAY_SEC)
+            return processed
+        except Exception as e:
+            if not _is_rate_limit_error(e):
+                if progress_cb:
+                    progress_cb(f"Skipped {act.get('activityName', 'activity')}: {e}")
+                time.sleep(GARMIN_INTER_ACTIVITY_DELAY_SEC)
+                return False
+            if attempt >= GARMIN_MAX_RETRIES:
+                raise
+            wait = GARMIN_RETRY_BASE_BACKOFF_SEC * (2 ** attempt)
+            if progress_cb:
+                progress_cb(f"Rate-limited, retrying in {wait:.0f}s (attempt {attempt + 1}/{GARMIN_MAX_RETRIES})…")
+            time.sleep(wait)
+    return False
+
+
+def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
+    client = _login(user_id)
+    activities = client.get_activities(0, limit)
+
+    db = SessionLocal()
+    count = 0
+    try:
+        for act in activities:
+            try:
+                processed = _process_activity_with_retry(act, client, db, user_id, progress_cb)
+            except Exception as e:
+                db.commit()
+                if progress_cb:
+                    progress_cb(f"Stopped — Garmin API rate limit hit mid-sync ({count} runs saved)")
+                raise GarminMidSyncRateLimitError(count) from e
+            if processed:
+                count += 1
+                if progress_cb:
+                    progress_cb(f"Synced {act.get('activityName', 'run')}", count)
+        db.commit()
+    finally:
+        db.close()
+
+    steps = _sync_daily_steps(client, user_id)
+    if progress_cb and steps:
+        progress_cb(f"Synced {steps} days of step data")
+    if _sync_resting_hr(client) and progress_cb:
+        progress_cb("Synced resting HR")
+
+    return count
+
+
+def sync_all_garmin_activities(user_id: str, progress_cb=None):
+    """Backlog sync — pages through the athlete's entire Garmin activity history.
+    Commits incrementally so progress survives if the run is interrupted."""
+    client = _login(user_id)
+    batch = 100
+    start = 0
+
+    db = SessionLocal()
+    count = 0
+    try:
+        while True:
+            activities = client.get_activities(start, batch)
+            if not activities:
+                break
+            if progress_cb:
+                progress_cb(f"Fetched {len(activities)} activities (offset {start})")
+
+            for act in activities:
+                try:
+                    processed = _process_activity_with_retry(act, client, db, user_id, progress_cb)
+                except Exception as e:
+                    db.commit()
+                    if progress_cb:
+                        progress_cb(f"Stopped — Garmin API rate limit hit mid-sync ({count} runs saved)")
+                    raise GarminMidSyncRateLimitError(count) from e
+                if processed:
+                    count += 1
+                    db.commit()
+                    if progress_cb:
+                        progress_cb(f"Synced {act.get('activityName', 'run')}", count)
+
+            if len(activities) < batch:
+                break
+            start += batch
+        db.commit()
+    finally:
+        db.close()
+
+    steps = _sync_daily_steps(client, user_id, days=365)
+    if progress_cb and steps:
+        progress_cb(f"Synced {steps} days of step data")
+    if _sync_resting_hr(client) and progress_cb:
+        progress_cb("Synced resting HR")
 
     return count

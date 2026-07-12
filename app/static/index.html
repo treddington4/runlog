@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>RunLog</title>
 <link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 </head>
 <body>
   <div class="wrap">
@@ -17,32 +19,35 @@
       <div>
         <div class="btn-row">
           <button class="btn btn-ghost" id="connect-btn">Connect Strava</button>
-          <button class="btn" id="sync-btn">Sync from Strava</button>
         </div>
-        <div class="sync-meta" id="sync-meta">Never synced</div>
-        <div class="err" id="sync-err"></div>
       </div>
     </div>
 
-    <div class="stat-strip">
-      <div class="stat-card"><div class="stat-label">This week</div><div class="stat-value" id="stat-week">--</div></div>
-      <div class="stat-card"><div class="stat-label">Avg pace (all)</div><div class="stat-value" id="stat-pace">--</div></div>
-      <div class="stat-card"><div class="stat-label">Runs logged</div><div class="stat-value" id="stat-count">--</div></div>
+    <div class="nav-bar">
+      <button class="nav-toggle" id="nav-toggle">☰ Home</button>
+      <div class="nav-menu" id="nav-menu">
+        <button class="tab active" data-tab="home">Home</button>
+        <button class="tab" data-tab="goals">Goals</button>
+        <button class="tab" data-tab="runs">Runs</button>
+        <button class="tab" data-tab="insights">Insights</button>
+        <button class="tab" data-tab="map">Map</button>
+        <button class="tab" data-tab="chat">Chat</button>
+        <button class="tab" data-tab="settings">Settings</button>
+      </div>
     </div>
 
-    <div class="tabs">
-      <button class="tab active" data-tab="runs">Runs</button>
-      <button class="tab" data-tab="insights">Insights</button>
-      <button class="tab" data-tab="settings">Settings</button>
-    </div>
-
-    <div id="filter-bar" class="filter-bar">
+    <div id="filter-bar" class="filter-bar" style="display:none">
       <div class="filter-modes">
         <button class="filter-mode active" data-mode="rolling7">7 Days</button>
         <button class="filter-mode" data-mode="week">Week</button>
+        <button class="filter-mode" data-mode="month">Month</button>
+        <button class="filter-mode" data-mode="sixMonths">6 Months</button>
+        <button class="filter-mode" data-mode="year">Year</button>
+        <button class="filter-mode" data-mode="ytd">YTD</button>
         <button class="filter-mode" data-mode="custom">Custom</button>
         <button class="filter-mode" data-mode="all">All</button>
       </div>
+      <select id="activity-type-select" class="map-location-select"></select>
       <div class="filter-nav" id="filter-nav">
         <button class="filter-arrow" id="filter-prev">‹</button>
         <span class="filter-range" id="filter-range"></span>
@@ -55,11 +60,28 @@
       </div>
     </div>
 
-    <div id="runs-tab"></div>
+    <div id="home-tab"></div>
+    <div id="goals-tab" style="display:none"></div>
+    <div id="runs-tab" style="display:none"></div>
     <div id="insights-tab" style="display:none"></div>
+    <div id="map-tab" style="display:none">
+      <div class="map-controls">
+        <select id="map-location-select" class="map-location-select"></select>
+        <select id="map-metric-select" class="map-location-select">
+          <option value="density">Density</option>
+          <option value="pace">Pace</option>
+          <option value="hr">Heart Rate</option>
+          <option value="cadence">Cadence</option>
+          <option value="elevation">Grade</option>
+        </select>
+        <div id="map-summary" class="map-summary"></div>
+      </div>
+      <div id="map-canvas" class="map-canvas"></div>
+    </div>
+    <div id="chat-tab" style="display:none"></div>
     <div id="settings-tab" style="display:none"></div>
     <div id="empty-state" class="empty-state" style="display:none">
-      No runs yet. Click <b style="color:var(--text)">Sync from Strava</b> to pull in your recent activities, weather, and splits.
+      No runs yet. Head to the <b style="color:var(--text)">Settings</b> tab and click <b style="color:var(--text)">Sync Now</b> to pull in your recent activities, weather, and splits.
     </div>
   </div>
 

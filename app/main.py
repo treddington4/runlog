@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import requests
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
@@ -20,8 +20,10 @@ from models import (
 import strava
 import stats
 
-logging.basicConfig(level=logging.INFO)
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL)
 log = logging.getLogger("runlog")
+log.setLevel(LOG_LEVEL)
 
 app = FastAPI(title="RunLog")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -149,6 +151,21 @@ def manual_sync_garmin():
         raise HTTPException(400, msg)
 
 
+@app.post("/api/garmin/import")
+async def import_garmin_export(file: UploadFile = File(...)):
+    """One-time bulk import from Garmin Connect's official data-export ZIP (requested via
+    account.garmin.com, separate from the live unofficial-API sync above). Lets historical
+    activities/steps come from a file instead of the rate-limited live API — the live
+    sync's own dedup (run_needs_detail_sync) means anything this import already covers
+    is automatically skipped on future syncs, so the live API only has to handle activities
+    genuinely newer than the export. Safe to re-upload the same or an overlapping export."""
+    import garmin_import
+    data = await file.read()
+    log.info(f"garmin import: received {file.filename} ({len(data)} bytes)")
+    summary = garmin_import.import_garmin_export(data, DEFAULT_USER_ID)
+    return summary
+
+
 @app.get("/api/sync/meta")
 def sync_meta():
     def info(source: str):
@@ -185,7 +202,32 @@ def _run_backlog_sync(source: str):
             n = strava.sync_all_activities(DEFAULT_USER_ID, progress_cb=lambda msg, count=None: _backlog_progress(source, msg, count))
         else:
             import garmin_sync
-            n = garmin_sync.sync_all_garmin_activities(DEFAULT_USER_ID, progress_cb=lambda msg, count=None: _backlog_progress(source, msg, count))
+            # Auto-continue through rate limits instead of stopping and requiring a
+            # manual re-click: this thread is already backgrounded, so waiting out the
+            # cooldown (garmin_sync's own exponential backoff, 5min base, capped at 4h)
+            # and retrying in place is strictly better than surfacing an error the user
+            # has to notice and act on. Only a genuinely non-rate-limit failure (bad
+            # credentials, a real bug) still propagates immediately below.
+            total = 0
+            while True:
+                base = total
+
+                def _progress(msg, count=None, base=base):
+                    _backlog_progress(source, msg, (base + count) if count is not None else None)
+
+                try:
+                    total += garmin_sync.sync_all_garmin_activities(DEFAULT_USER_ID, progress_cb=_progress)
+                    break
+                except Exception as e:
+                    if not garmin_sync.is_rate_limit_related(e):
+                        raise
+                    wait = garmin_sync._garmin_cooldown_remaining_sec() + 5
+                    _backlog_progress(
+                        source,
+                        f"Rate-limited — auto-retrying in {wait / 60:.1f} min, no need to click again…",
+                    )
+                    time.sleep(wait)
+            n = total
         with _backlog_lock:
             job = _backlog_jobs[source]
             job["status"] = "done"

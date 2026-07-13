@@ -1025,6 +1025,51 @@ function wireBacklogButton(source) {
   };
 }
 
+function wireGarminImportButton() {
+  const btn = document.getElementById("garmin-import-btn");
+  const fileInput = document.getElementById("garmin-import-file");
+  const panel = document.getElementById("garmin-import-result");
+  if (!btn || !fileInput || !panel) return;
+  btn.onclick = async () => {
+    const file = fileInput.files[0];
+    if (!file) {
+      panel.style.display = "block";
+      panel.innerHTML = `<div class="backlog-summary" style="color:var(--hot)">Choose a .zip file first</div>`;
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Importing…";
+    panel.style.display = "block";
+    panel.innerHTML = `<div class="backlog-summary">Uploading and parsing ${escapeHtml(file.name)} — this can take a while for a large export…</div>`;
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/garmin/import", { method: "POST", body: formData });
+      const summary = await res.json();
+      if (!res.ok) {
+        panel.innerHTML = `<div class="backlog-summary" style="color:var(--hot)">${escapeHtml(summary.detail || "Import failed")}</div>`;
+      } else {
+        const errLines = (summary.errors || []).slice(0, 5).map((e) => `<div>${escapeHtml(e)}</div>`).join("");
+        panel.innerHTML = `
+          <div class="backlog-summary">
+            Scanned ${summary.filesScanned} files (${summary.jsonFilesParsed} JSON, ${summary.fitFilesFound} FIT)<br>
+            Activities: ${summary.activityRecordsFound} found — ${summary.activitiesImported} imported,
+            ${summary.activitiesSkippedExisting} already synced, ${summary.activitiesSkippedMalformed} skipped<br>
+            Daily steps: ${summary.dailyWellnessRecordsFound} found — ${summary.dailyStepsImported} imported
+          </div>
+          ${errLines ? `<pre class="backlog-log">${errLines}</pre>` : ""}
+        `;
+        if (summary.activitiesImported > 0) await loadRuns();
+      }
+    } catch (e) {
+      panel.innerHTML = `<div class="backlog-summary" style="color:var(--hot)">Import failed: ${escapeHtml(String(e))}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Import";
+    }
+  };
+}
+
 async function renderSettingsTab() {
   const el = document.getElementById("settings-tab");
   const [stravaStatus, syncMeta, garminStatus, config, connections, routeDiag, recentSteps] = await Promise.all([
@@ -1082,6 +1127,15 @@ async function renderSettingsTab() {
       <div class="backlog-panel" id="backlog-panel-garmin" style="display:none"></div>
     </div>
     <div class="settings-section">
+      <div class="settings-title">Garmin data export import</div>
+      <div class="settings-row"><span class="settings-label"></span><span class="settings-value" style="color:var(--faint);font-weight:400;text-align:right">Upload the ZIP from Garmin's "Export Your Data" (account.garmin.com) to backfill history without leaning on the rate-limited live sync. Safe to re-upload the same or a newer export.</span></div>
+      <div class="btn-row" style="justify-content:flex-start;margin-top:10px">
+        <input type="file" id="garmin-import-file" accept=".zip" />
+        <button class="btn" id="garmin-import-btn">Import</button>
+      </div>
+      <div class="backlog-panel" id="garmin-import-result" style="display:none"></div>
+    </div>
+    <div class="settings-section">
       <div class="settings-title">Connections</div>
       <div class="settings-row"><span class="settings-label"></span><span class="settings-value" style="color:var(--faint);font-weight:400;text-align:right">Manage your Garmin login here instead of container env vars. Strava connects via the button in the header.</span></div>
       ${garminFormHtml}
@@ -1098,6 +1152,7 @@ async function renderSettingsTab() {
   wireSyncNowButton("garmin");
   wireBacklogButton("strava");
   wireBacklogButton("garmin");
+  wireGarminImportButton();
 
   const garminSaveBtn = document.getElementById("garmin-save-btn");
   if (garminSaveBtn) {

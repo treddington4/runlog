@@ -30,11 +30,30 @@ SYNC_INTERVAL_HOURS = int(os.environ.get("SYNC_INTERVAL_HOURS", "6"))
 SYNC_LIMIT = int(os.environ.get("SYNC_ACTIVITY_LIMIT", "10"))
 
 
+def _next_auto_sync_time():
+    """Fire immediately on a genuinely fresh start (no recent sync on record), but
+    don't re-trigger a real Strava sync on every container restart if one already ran
+    recently — e.g. a burst of redeploys during active development previously fired a
+    real auto-sync on every single one of them, since next_run_time=datetime.now() was
+    unconditional. Only delays the *first* scheduled run; the recurring interval after
+    that is unaffected."""
+    last = get_sync_meta("strava_last_synced_at")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            remaining = timedelta(hours=SYNC_INTERVAL_HOURS) - (datetime.now(timezone.utc) - last_dt)
+            if remaining > timedelta(0):
+                return datetime.now() + remaining
+        except Exception:
+            pass
+    return datetime.now()
+
+
 @app.on_event("startup")
 def startup():
     init_db()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(_auto_sync, "interval", hours=SYNC_INTERVAL_HOURS, next_run_time=datetime.now())
+    scheduler.add_job(_auto_sync, "interval", hours=SYNC_INTERVAL_HOURS, next_run_time=_next_auto_sync_time())
     scheduler.start()
     log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
 
@@ -65,6 +84,7 @@ def _auto_sync():
     account — today that's still just DEFAULT_USER_ID in practice (no real login exists
     yet), but the loop itself is already correct for whenever there's more than one."""
     for user_id in _users_with_credential("strava"):
+        set_sync_meta("strava_last_error", "")
         try:
             n = strava.sync_activities(user_id, limit=SYNC_LIMIT)
             _record_sync("strava", count=n)
@@ -102,6 +122,7 @@ def strava_status():
 # ---------- Sync ----------
 @app.post("/api/sync/strava")
 def manual_sync_strava():
+    set_sync_meta("strava_last_error", "")  # clear any stale error the moment a new attempt starts, not just on success
     try:
         n = strava.sync_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT)
         _record_sync("strava", count=n)
@@ -114,6 +135,7 @@ def manual_sync_strava():
 @app.post("/api/sync/garmin")
 def manual_sync_garmin():
     import garmin_sync
+    set_sync_meta("garmin_last_error", "")  # clear any stale error the moment a new attempt starts, not just on success
     try:
         n = garmin_sync.sync_garmin_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT)
         _record_sync("garmin", count=n)
@@ -212,6 +234,12 @@ def start_backlog_sync(source: str):
             raise HTTPException(409, "Backlog sync already running")
         job.update({"status": "running", "count": 0, "log": [], "startedAt": datetime.now(timezone.utc).isoformat(),
                     "finishedAt": None, "error": None})
+
+    # Clear the *persisted* last-error too, not just the in-memory job state above —
+    # otherwise the old error stays visible in "last completed" for the whole duration
+    # of this new run, since sync_meta only gets overwritten when _run_backlog_sync
+    # finishes.
+    set_sync_meta(f"{source}_backlog_last_error", "")
 
     threading.Thread(target=_run_backlog_sync, args=(source,), daemon=True).start()
     return {"status": "started"}

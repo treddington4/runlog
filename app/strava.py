@@ -6,7 +6,7 @@ import bisect
 import requests
 from datetime import datetime, timezone
 
-from models import SessionLocal, Run, ProviderCredential
+from models import SessionLocal, Run, ProviderCredential, run_needs_detail_sync
 from weather import get_historical_weather
 from util import gap_sec_per_mi, classify_run_type, detect_intervals, decode_polyline
 
@@ -331,6 +331,7 @@ def _process_activity(act: dict, headers: dict, db, user_id: str) -> bool:
     run.recovery_json = recovery_json
     run.route_json = json.dumps(decode_polyline((act.get("map") or {}).get("summary_polyline")))
     run.route_metrics_json = json.dumps(route_metrics)
+    run.detail_synced_at = datetime.now(timezone.utc).isoformat()
 
     db.merge(run)
     return True
@@ -353,6 +354,12 @@ def sync_activities(user_id: str, limit: int = 10, progress_cb=None):
     count = 0
     try:
         for act in activities:
+            # Activities are newest-first, so the first already-synced one means
+            # everything after it is too — stop here instead of re-fetching full
+            # details (splits/route/weather) for activities we already have. This is
+            # what makes "quick sync" naturally mean "today's/recent new data only".
+            if not run_needs_detail_sync(db, f"strava_{act['id']}"):
+                break
             if _process_activity(act, headers, db, user_id):
                 count += 1
                 if progress_cb:
@@ -388,12 +395,22 @@ def sync_all_activities(user_id: str, progress_cb=None):
             if progress_cb:
                 progress_cb(f"Fetched page {page} ({len(activities)} activities)")
 
+            skipped = 0
             for act in activities:
+                # Backlog sync still walks full history (confirming nothing's missing
+                # via this cheap paginated list call) but skips the expensive detail
+                # fetch entirely for anything already stored — no API cost for a skip.
+                if not run_needs_detail_sync(db, f"strava_{act['id']}"):
+                    skipped += 1
+                    continue
                 if _process_activity(act, headers, db, user_id):
                     count += 1
                     db.commit()
                     if progress_cb:
                         progress_cb(f"Synced {act.get('name', 'run')} ({(act.get('start_date_local') or '')[:10]})", count)
+
+            if progress_cb and skipped:
+                progress_cb(f"Skipped {skipped} already-synced activities (page {page})")
 
             if len(activities) < per_page:
                 break

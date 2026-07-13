@@ -58,6 +58,7 @@ class Run(Base):
     route_json = Column(Text, default="[]")       # JSON string: list of [lat, lon] GPS points
     route_metrics_json = Column(Text, default="[]")  # JSON string: decimated [{lat,lon,paceSecPerMi,hr,cadence}]
     route_source = Column(String, nullable=True)  # Garmin-only diagnostic: "fit_record_stream" | "geopolyline_summary" | "none"; NULL for Strava rows and pre-rework Garmin rows
+    detail_synced_at = Column(String, nullable=True)  # dedup marker — see run_needs_detail_sync()
 
     # Running dynamics, Garmin-only, parsed from the raw .FIT file's session message
     # (not available via Garmin Connect's regular summary API) — see garmin_sync.py
@@ -201,6 +202,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     Base.metadata.create_all(engine)
     _migrate_add_missing_columns()
+    _backfill_detail_synced_at()
     _seed_default_user_and_credentials()
     _seed_marathon_goal()
 
@@ -227,6 +229,30 @@ def _migrate_add_missing_columns():
                         "INTEGER" if isinstance(col.type, (Integer, Boolean)) else "REAL"
                     conn.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}")
         conn.commit()
+
+
+def _backfill_detail_synced_at():
+    """One-time, idempotent: a Run row only ever gets db.merge()'d at the very end of
+    a fully-successful _process_activity() — every earlier failure path (including
+    Garmin's rate-limit re-raise) exits before that point. So "a Run row exists"
+    already implies "it was fully detail-synced"; this just makes that explicit for
+    every row that predates the detail_synced_at column. Without this, the first sync
+    after upgrading would treat the entire existing history as unsynced and try to
+    re-fetch everything — the exact rate-limit wall this column exists to avoid."""
+    with engine.connect() as conn:
+        conn.exec_driver_sql(
+            "UPDATE runs SET detail_synced_at = ? WHERE detail_synced_at IS NULL",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()
+
+
+def run_needs_detail_sync(db, run_id: str) -> bool:
+    """Shared skip-check used by both strava.py and garmin_sync.py's sync loops —
+    called at the loop level (not inside _process_activity) so a skip costs nothing:
+    no API call, no retry-wrapper sleep."""
+    existing = db.get(Run, run_id)
+    return existing is None or not existing.detail_synced_at
 
 
 def _seed_default_user_and_credentials():

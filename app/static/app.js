@@ -967,6 +967,22 @@ async function pollBacklogStatus(source, { reloadOnFinish } = {}) {
   }
 }
 
+// One-time status check on every Settings render — only enters the recurring 1.5s
+// poll loop if a job is genuinely "running". Calling pollBacklogStatus unconditionally
+// here (as this used to) meant an idle job's first check immediately called
+// loadRuns() (via reloadOnFinish), which now calls dispatchCurrentTab() (since a
+// recent refactor), which re-renders Settings again if it's the active tab —
+// restarting this same unconditional poll and looping forever, visibly flashing
+// the whole page. This never enters that cycle unless a sync is actually in flight.
+async function checkBacklogOnce(source) {
+  const res = await fetch(`/api/sync/${source}/backlog/status`);
+  const job = await res.json();
+  renderBacklogPanel(source, job);
+  if (job.status === "running") {
+    pollBacklogStatus(source, { reloadOnFinish: true });
+  }
+}
+
 function wireSyncNowButton(source) {
   const btn = document.getElementById(`settings-${source}-sync-btn`);
   if (!btn) return;
@@ -979,8 +995,10 @@ function wireSyncNowButton(source) {
       // network-level failures aside, server-side outcomes are persisted via sync_meta
       // and will show up in the re-rendered panel below regardless.
     }
+    // loadRuns() already re-renders Settings via dispatchCurrentTab() when this tab is
+    // active — a second explicit renderSettingsTab() call here was a redundant full
+    // tab rebuild on every Sync Now click (visible as a jump/flicker).
     await loadRuns();
-    await renderSettingsTab();
   };
 }
 
@@ -1009,14 +1027,16 @@ function wireBacklogButton(source) {
 
 async function renderSettingsTab() {
   const el = document.getElementById("settings-tab");
-  const [stravaStatus, syncMeta, garminStatus, config, connections, routeDiag] = await Promise.all([
+  const [stravaStatus, syncMeta, garminStatus, config, connections, routeDiag, recentSteps] = await Promise.all([
     fetch("/api/strava/status").then((r) => r.json()),
     fetch("/api/sync/meta").then((r) => r.json()),
     fetch("/api/garmin/status").then((r) => r.json()),
     fetch("/api/config").then((r) => r.json()),
     fetch("/api/connections").then((r) => r.json()).catch(() => []),
     fetch("/api/garmin/route-diagnostics").then((r) => r.json()).catch(() => null),
+    fetch("/api/steps?days=7").then((r) => r.json()).catch(() => []),
   ]);
+  const latestSteps = recentSteps.length ? recentSteps[recentSteps.length - 1] : null;
 
   const fmtMeta = (m) => m.lastSyncedAt
     ? `${new Date(m.lastSyncedAt).toLocaleString()} · ${m.lastCount} run${m.lastCount === 1 ? "" : "s"}`
@@ -1053,6 +1073,8 @@ async function renderSettingsTab() {
       <div class="settings-row"><span class="settings-label">Route source</span>
         <span class="settings-value" style="font-weight:400">${routeDiag.fit_record_stream} unmasked (FIT) · ${routeDiag.geopolyline_summary} Garmin summary · ${routeDiag.none} none</span></div>
       ` : ""}
+      ${config.restingHrBpm ? `<div class="settings-row"><span class="settings-label">Resting HR</span><span class="settings-value">${config.restingHrBpm} bpm</span></div>` : ""}
+      ${latestSteps ? `<div class="settings-row"><span class="settings-label">Steps (${latestSteps.date})</span><span class="settings-value">${latestSteps.steps.toLocaleString()}</span></div>` : ""}
       <div class="btn-row" style="justify-content:flex-start;margin-top:10px">
         <button class="btn" id="settings-garmin-sync-btn" ${garminStatus.configured ? "" : "disabled"}>Sync Now</button>
         <button class="btn btn-ghost" id="settings-garmin-backlog-btn" ${garminStatus.configured ? "" : "disabled"}>Run Backlog Sync</button>
@@ -1102,8 +1124,8 @@ async function renderSettingsTab() {
 
   stopBacklogPolling("strava");
   stopBacklogPolling("garmin");
-  pollBacklogStatus("strava", { reloadOnFinish: true });
-  pollBacklogStatus("garmin", { reloadOnFinish: true });
+  checkBacklogOnce("strava");
+  checkBacklogOnce("garmin");
 }
 
 // ---------- Map (heatmap of all synced GPS routes, groupable by location and metric) ----------

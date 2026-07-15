@@ -15,6 +15,7 @@ let goals = [];
 let expandedId = null;
 let currentTab = "home";
 let charts = [];
+let sleepHypnogramChart = null;
 let filterMode = "rolling7"; // 'rolling7' | 'week' | 'custom' | 'all'
 let filterAnchor = todayMidnight();
 let customStart = addDays(todayMidnight(), -29);
@@ -752,6 +753,11 @@ async function renderInsightsTab() {
   // Garmin-only wellness data (unverified as of this writing — see STATUS.md); degrades
   // to an empty-state card rather than breaking the rest of Insights if it 404s or errors.
   const stepsData = await fetch("/api/steps?days=30").then((r) => r.json()).catch(() => []);
+  const wellnessData = await fetch("/api/wellness?days=90").then((r) => r.json()).catch(() => []);
+  const rhrData = wellnessData.filter((d) => d.restingHrBpm != null);
+  const vo2Data = wellnessData.filter((d) => d.vo2max != null);
+  const sleepData = wellnessData.filter((d) => d.sleepScore != null || d.sleepSeconds != null);
+  const sleepStages = await fetch("/api/wellness/sleep-stages").then((r) => r.json()).catch(() => ({ availableDates: [], date: null, segments: [] }));
 
   const outdoor = data.filter((r) => !r.isTreadmill && r.tempF != null);
   const perfData = [...data].sort((a, b) => (a.date < b.date ? -1 : 1)).filter((r) => isPlausiblePace(r.avgPaceSecPerMi, r.distanceMi));
@@ -814,6 +820,33 @@ async function renderInsightsTab() {
       <div class="chart-title">Daily Steps</div>
       <div class="chart-sub">Garmin wellness data, last 30 days</div>
       ${stepsData.length < 2 ? `<div class="empty-chart">No step data synced yet (Garmin-only).</div>` : `<div class="chart-body"><canvas id="c-steps" height="140"></canvas></div>`}
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Resting Heart Rate</div>
+      <div class="chart-sub">Garmin wellness data, last 90 days</div>
+      ${rhrData.length < 2 ? `<div class="empty-chart">No resting HR data synced yet (Garmin-only).</div>` : `<div class="chart-body"><canvas id="c-rhr" height="140"></canvas></div>`}
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">VO2 Max</div>
+      <div class="chart-sub">Garmin wellness data, last 90 days — updates periodically, not every day</div>
+      ${vo2Data.length < 2 ? `<div class="empty-chart">No VO2 max data synced yet (Garmin-only).</div>` : `<div class="chart-body"><canvas id="c-vo2max" height="140"></canvas></div>`}
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Sleep</div>
+      <div class="chart-sub">Sleep score and total duration, last 90 days</div>
+      ${sleepData.length < 2 ? `<div class="empty-chart">No sleep data synced yet (Garmin-only).</div>` : `<div class="chart-body"><canvas id="c-sleep" height="160"></canvas></div>`}
+    </div>
+    <div class="chart-card">
+      <div class="chart-title-row" style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div class="chart-title">Sleep Stages</div>
+          <div class="chart-sub">What stage you were in, minute by minute, for one night</div>
+        </div>
+        ${sleepStages.availableDates.length ? `<select id="sleep-stage-night-select"></select>` : ""}
+      </div>
+      ${!sleepStages.availableDates.length ? `<div class="empty-chart">No sleep stage data synced yet (Garmin-only).</div>` : `
+        <div class="chart-body"><canvas id="c-sleep-hypnogram" height="140"></canvas></div>
+      `}
     </div>
   `;
 
@@ -894,6 +927,153 @@ async function renderInsightsTab() {
       options: { plugins: { legend: { display: false } }, scales: { x: { grid: { display: false } }, y: { grid: { color: "#242B35" } } } },
     }));
   }
+
+  if (rhrData.length >= 2) {
+    charts.push(new Chart(document.getElementById("c-rhr"), {
+      type: "line",
+      data: { labels: rhrData.map((d) => d.date.slice(5)), datasets: [{ data: rhrData.map((d) => d.restingHrBpm), borderColor: "rgb(255,107,53)", backgroundColor: "rgb(255,107,53)", tension: 0.3 }] },
+      options: {
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.parsed.y} bpm` } } },
+        scales: { x: { grid: { display: false } }, y: { ticks: { callback: (v) => v + " bpm" }, grid: { color: "#242B35" } } },
+      },
+    }));
+  }
+
+  if (vo2Data.length >= 2) {
+    charts.push(new Chart(document.getElementById("c-vo2max"), {
+      type: "line",
+      data: { labels: vo2Data.map((d) => d.date.slice(5)), datasets: [{ data: vo2Data.map((d) => d.vo2max), borderColor: "#FFC857", backgroundColor: "#FFC857", tension: 0.3, stepped: true }] },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: { x: { grid: { display: false } }, y: { grid: { color: "#242B35" } } },
+      },
+    }));
+  }
+
+  if (sleepData.length >= 2) {
+    charts.push(new Chart(document.getElementById("c-sleep"), {
+      type: "line",
+      data: {
+        labels: sleepData.map((d) => d.date.slice(5)),
+        datasets: [
+          { label: "Sleep score", data: sleepData.map((d) => d.sleepScore), borderColor: "#5FD68A", backgroundColor: "#5FD68A", yAxisID: "score", tension: 0.3, spanGaps: true },
+          { label: "Duration (hrs)", data: sleepData.map((d) => d.sleepSeconds ? +(d.sleepSeconds / 3600).toFixed(1) : null), borderColor: "rgb(76,201,240)", backgroundColor: "rgb(76,201,240)", yAxisID: "hrs", tension: 0.3, spanGaps: true },
+        ],
+      },
+      options: {
+        plugins: { legend: { display: true, labels: { boxWidth: 10 } } },
+        scales: {
+          score: { type: "linear", position: "left", min: 0, max: 100, grid: { color: "#242B35" } },
+          hrs: { type: "linear", position: "right", min: 0, grid: { display: false } },
+          x: { grid: { display: false } },
+        },
+      },
+    }));
+  }
+
+  if (sleepStages.availableDates.length) {
+    wireSleepStageSelector(sleepStages);
+    drawSleepHypnogram(sleepStages.segments);
+  }
+}
+
+const SLEEP_STAGE_ROWS = ["Awake", "REM", "Light", "Deep"];
+const SLEEP_STAGE_KEY_TO_ROW = { awake: "Awake", rem: "REM", light: "Light", deep: "Deep" };
+const SLEEP_STAGE_COLORS = { Awake: "rgb(255,107,53)", REM: "#5FD68A", Light: "rgb(76,201,240)", Deep: "#2C3E91" };
+const SLEEP_CHART_TIMEZONE = "America/New_York"; // default EST/EDT display for the sleep-stage timeline
+
+// Garmin's sleepLevels timestamps ("startGMT"/"endGMT" server-side) are genuinely UTC —
+// confirmed by the field name and by matching them against dailySleepDTO's known
+// deep/light/rem/awakeSleepSeconds totals — but the JSON string itself carries no "Z" or
+// offset (e.g. "2026-07-13T03:26:54.0"). Per the ECMAScript spec, `new Date()` on a
+// date-time string with no timezone designator parses it as *local* browser time, not
+// UTC — silently shifting the whole night by the browser's UTC offset (a real bug this
+// session hit: 11 PM bedtime rendering as ~4 AM). Appending "Z" forces correct UTC parsing.
+function parseUtcTimestamp(s) {
+  return new Date(/[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z").getTime();
+}
+
+function fmtEstClock(epochMs, opts = {}) {
+  return new Date(epochMs).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: SLEEP_CHART_TIMEZONE, ...opts });
+}
+
+function estMinute(epochMs) {
+  return new Intl.DateTimeFormat("en-US", { minute: "numeric", timeZone: SLEEP_CHART_TIMEZONE }).format(new Date(epochMs));
+}
+
+// Chart.js's linear scale auto-picks "nice" numeric steps, which for raw epoch-ms
+// values won't land on real hour boundaries — so ticks are generated explicitly here,
+// one per EST hour boundary within the visible range, instead of relying on that.
+function estHourTicks(minMs, maxMs) {
+  const ticks = [];
+  let t = Math.floor(minMs / 60000) * 60000;
+  while (t <= maxMs) {
+    if (estMinute(t) === "0") ticks.push(t);
+    t += 60000;
+  }
+  return ticks;
+}
+
+function drawSleepHypnogram(segments) {
+  const canvas = document.getElementById("c-sleep-hypnogram");
+  if (sleepHypnogramChart) {
+    sleepHypnogramChart.destroy();
+    sleepHypnogramChart = null;
+  }
+  if (!canvas || !segments || !segments.length) return;
+
+  const data = segments.map((s) => ({
+    y: SLEEP_STAGE_KEY_TO_ROW[s.stage] || s.stage,
+    x: [parseUtcTimestamp(s.start), parseUtcTimestamp(s.end)],
+  }));
+  const minMs = Math.min(...data.map((d) => d.x[0]));
+  const maxMs = Math.max(...data.map((d) => d.x[1]));
+
+  sleepHypnogramChart = new Chart(canvas, {
+    type: "bar",
+    data: {
+      datasets: [{ data, backgroundColor: data.map((d) => SLEEP_STAGE_COLORS[d.y] || "#8B93A1"), barPercentage: 1, categoryPercentage: 0.9 }],
+    },
+    options: {
+      indexAxis: "y",
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => items[0].raw.y,
+            label: (ctx) => `${fmtEstClock(ctx.raw.x[0])} – ${fmtEstClock(ctx.raw.x[1])} (${Math.round((ctx.raw.x[1] - ctx.raw.x[0]) / 60000)} min)`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: "linear",
+          min: minMs,
+          max: maxMs,
+          afterBuildTicks: (scale) => {
+            scale.ticks = estHourTicks(scale.min, scale.max).map((v) => ({ value: v }));
+          },
+          ticks: { callback: (value) => fmtEstClock(value) },
+          title: { display: true, text: "Time (EST)" },
+          grid: { color: "#242B35" },
+        },
+        y: { type: "category", labels: SLEEP_STAGE_ROWS, grid: { display: false } },
+      },
+    },
+  });
+}
+
+async function loadSleepStagesFor(date) {
+  const data = await fetch(`/api/wellness/sleep-stages?date=${date}`).then((r) => r.json()).catch(() => null);
+  if (data) drawSleepHypnogram(data.segments);
+}
+
+function wireSleepStageSelector(sleepStages) {
+  const select = document.getElementById("sleep-stage-night-select");
+  if (!select) return;
+  const dates = [...sleepStages.availableDates].reverse(); // newest first
+  select.innerHTML = dates.map((d) => `<option value="${d}"${d === sleepStages.date ? " selected" : ""}>${d}</option>`).join("");
+  select.onchange = () => loadSleepStagesFor(select.value);
 }
 
 function tempScatter(canvasId, data, label, color, unit, tickFmt, reverse = false) {
@@ -1188,6 +1368,7 @@ let map = null;
 let routeLayer = null;
 let metricLayer = null;
 let mapClusters = [];
+let mapAutoCenterApplied = false; // only ever apply the default once per page load — never override a manual location pick
 const CLUSTER_RADIUS_KM = 50; // runs with start points within this distance are treated as the same location
 const HEAT_BUCKETS = 16; // discrete color steps for metric-colored route segments
 
@@ -1521,10 +1702,41 @@ function renderMapTab() {
   metricSel.style.display = "inline-block";
   mapClusters = clusterRuns(items);
   populateLocationSelect();
+  selectClusterForMostRecentActivity();
   locSel.onchange = drawMapView;
   metricSel.onchange = drawMapView;
   drawMapView();
   geocodeClustersInBackground();
+}
+
+// Defaults the map to the location cluster containing the most recent activity, instead
+// of always showing "All locations" (zoomed out enough to include any one-off travel/
+// vacation runs, which makes the cluster the user actually cares about day-to-day tiny
+// and hard to read). Deterministic and synchronous — no permissions or network required,
+// unlike a GPS-based approach, which browsers restrict to secure contexts (HTTPS or
+// literally localhost) anyway; this app is plain HTTP on a LAN IP, so geolocation would
+// likely never have fired at all. Applied only once per page load (a module-level flag)
+// so it never overrides a location the user has since picked manually.
+function selectClusterForMostRecentActivity() {
+  if (mapAutoCenterApplied) return;
+  mapAutoCenterApplied = true;
+
+  let mostRecent = null;
+  let mostRecentCluster = null;
+  mapClusters.forEach((c) => {
+    c.items.forEach((item) => {
+      const key = `${item.run.date}T${item.run.startTime || ""}`;
+      if (!mostRecent || key > mostRecent) {
+        mostRecent = key;
+        mostRecentCluster = c;
+      }
+    });
+  });
+
+  const sel = document.getElementById("map-location-select");
+  if (sel && sel.value === "all" && mostRecentCluster) {
+    sel.value = mostRecentCluster.id;
+  }
 }
 
 // ---------- Home + Goals ----------
@@ -1537,9 +1749,24 @@ function goalCardBody(g) {
   const p = g.progress || {};
   if (g.goalType === "race") {
     const days = p.daysUntil;
+    const linked = p.linkedRun;
+    // "Race day!" only makes sense for day 0 — once it's actually passed, either show
+    // the real matched result (see stats._find_and_link_race_run) or say so plainly,
+    // rather than repeating "Race day!" forever if the goal is never manually completed.
+    let statusLine;
+    if (days == null) statusLine = "--";
+    else if (days > 0) statusLine = `${days}d`;
+    else if (days === 0) statusLine = "Race day!";
+    else if (linked) statusLine = `${linked.distanceMi} mi`;
+    else statusLine = "Race day passed";
+
+    const detailLine = linked
+      ? `Finished in ${timeStr(linked.movingTimeSec)}${linked.avgPaceSecPerMi ? " · " + paceStr(linked.avgPaceSecPerMi) + "/mi" : ""} on ${fmtGoalDate(linked.date)}`
+      : `${fmtGoalDate(g.targetDate)} · ${p.recent28DayMiles ?? 0} mi (${g.activityTypes.join("+")}) last 28 days`;
+
     return `
-      <div class="stat-value">${days == null ? "--" : days > 0 ? `${days}d` : "Race day!"}</div>
-      <div class="stat-breakdown">${fmtGoalDate(g.targetDate)} · ${p.recent28DayMiles ?? 0} mi (${g.activityTypes.join("+")}) last 28 days</div>
+      <div class="stat-value">${statusLine}</div>
+      <div class="stat-breakdown">${detailLine}</div>
     `;
   }
   if (g.goalType === "consistency") {
@@ -1588,6 +1815,7 @@ async function renderHomeTab() {
     <div class="chart-title" style="margin-top:20px">Goals</div>
     <div id="home-goals"><div class="empty-chart">Loading…</div></div>
     <div id="home-dashboard" style="margin-top:10px"></div>
+    <div id="home-wellness" style="margin-top:10px"></div>
   `;
   updateHeaderStats();
   wireNavCards(el.querySelector(".stat-strip"));
@@ -1603,6 +1831,56 @@ async function renderHomeTab() {
   const homeDashboardEl = document.getElementById("home-dashboard");
   homeDashboardEl.innerHTML = dashboard ? renderDashboardCards(dashboard) : "";
   wireNavCards(homeDashboardEl);
+
+  // Garmin-only wellness (resting HR / VO2max / sleep) — degrades to nothing (not an
+  // empty-state card) if there's no data yet, since it's an optional bonus source.
+  const wellnessData = await fetch("/api/wellness?days=30").then((r) => r.json()).catch(() => []);
+  const homeWellnessEl = document.getElementById("home-wellness");
+  homeWellnessEl.innerHTML = renderWellnessCards(wellnessData);
+  wireNavCards(homeWellnessEl);
+}
+
+function latestWellnessValue(wellnessData, field) {
+  for (let i = wellnessData.length - 1; i >= 0; i--) {
+    if (wellnessData[i][field] != null) return { value: wellnessData[i][field], date: wellnessData[i].date };
+  }
+  return null;
+}
+
+function fmtSleepDuration(seconds) {
+  if (!seconds) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function renderWellnessCards(wellnessData) {
+  const rhr = latestWellnessValue(wellnessData, "restingHrBpm");
+  const vo2 = latestWellnessValue(wellnessData, "vo2max");
+  const sleepScore = latestWellnessValue(wellnessData, "sleepScore");
+  const sleepDuration = latestWellnessValue(wellnessData, "sleepSeconds");
+  if (!rhr && !vo2 && !sleepScore) return "";
+
+  return `
+    <div class="chart-title" style="margin-top:20px">Wellness</div>
+    <div class="dashboard-grid" style="margin-top:10px">
+      <div class="chart-card clickable" data-nav-tab="insights">
+        <div class="stat-label">Resting HR</div>
+        <div class="stat-value">${rhr ? rhr.value + " bpm" : "--"}</div>
+        <div class="stat-breakdown">${rhr ? rhr.date : "no data yet"}</div>
+      </div>
+      <div class="chart-card clickable" data-nav-tab="insights">
+        <div class="stat-label">VO2 max</div>
+        <div class="stat-value">${vo2 ? vo2.value : "--"}</div>
+        <div class="stat-breakdown">${vo2 ? vo2.date : "no data yet"}</div>
+      </div>
+      <div class="chart-card clickable" data-nav-tab="insights">
+        <div class="stat-label">Sleep</div>
+        <div class="stat-value">${sleepScore ? sleepScore.value : "--"}</div>
+        <div class="stat-breakdown">${sleepDuration ? fmtSleepDuration(sleepDuration.value) : ""} ${sleepScore ? `on ${sleepScore.date}` : "no data yet"}</div>
+      </div>
+    </div>
+  `;
 }
 
 const GOAL_TYPE_LABELS = { race: "Race", consistency: "Consistency", distance_target: "Distance target" };

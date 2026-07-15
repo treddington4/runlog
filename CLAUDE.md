@@ -8,8 +8,8 @@ RunLog: a self-hosted running tracker. FastAPI backend, SQLite storage (via SQLA
 
 ## Commands
 
-- **Run it**: `docker compose up --build` from the repo root — app on `http://localhost:8000` (or `SYNC_INTERVAL_HOURS`/port as configured in `.env`, copy from `.env.example`).
-- **Deploy**: this repo's working copy (`REDACTED-DEV-PATH` on the dev machine) is a live SMB mount directly to `REDACTED-NAS-PATH` on the UGREEN NAS — editing files here edits them on the NAS in place, no separate copy/rsync step. Rebuild on the NAS with `ssh nas 'cd REDACTED-NAS-PATH && docker compose up -d --build'` (SSH alias `nas` configured in `~/.ssh/config`).
+- **Run it**: `docker compose up --build` from the repo root — app on `http://localhost:8000` (or `SYNC_INTERVAL_HOURS`/port as configured in `.env`, copy from `.env.example`). Same command whether running locally or on a remote host (NAS, VPS, etc.) — this project doesn't assume any particular deployment target.
+- **If you deploy to your own remote host**: keep host/path/SSH specifics in a local, gitignored file (e.g. `.RUNBOOK.md`) rather than committing them — those are personal to your setup, not project config.
 - No test suite or lint config exists in this repo currently.
 
 ## Architecture

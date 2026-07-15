@@ -83,6 +83,27 @@ class DailySteps(Base):
     user_id = Column(String, nullable=True)
     steps = Column(Integer)
 
+    # Wellness metrics (Garmin-only, one row per day) — resting_hr_bpm/vo2max come from
+    # get_stats(), sleep_* from get_sleep_data(). Each column degrades to NULL
+    # independently on a miss rather than blocking the others — see
+    # garmin_sync._sync_daily_wellness(). Deliberately scoped to just what was asked
+    # for (resting HR, VO2max, sleep) rather than the full 9-metric wellness set from
+    # the original plan — every extra metric is another live API call per day, and this
+    # account's rate-limit sensitivity this session argued for keeping that cost down.
+    resting_hr_bpm = Column(Integer, nullable=True)
+    vo2max = Column(Float, nullable=True)
+    sleep_score = Column(Integer, nullable=True)
+    sleep_seconds = Column(Integer, nullable=True)
+    deep_sleep_seconds = Column(Integer, nullable=True)
+    light_sleep_seconds = Column(Integer, nullable=True)
+    rem_sleep_seconds = Column(Integer, nullable=True)
+    awake_sleep_seconds = Column(Integer, nullable=True)
+    # Per-night stage timeline (JSON list of {start, end, stage}), for a real hypnogram
+    # instead of just daily totals — see garmin_sync._extract_sleep_stages(). Confirmed
+    # against real data: Garmin's sleepLevels activityLevel is 0=deep/1=light/2=rem/3=awake.
+    sleep_stages_json = Column(Text, default="[]")
+    wellness_synced_at = Column(String, nullable=True)  # dedup marker, mirrors Run.detail_synced_at
+
 
 class OAuthToken(Base):
     """Superseded by ProviderCredential (user-scoped) — kept only so the startup
@@ -176,6 +197,7 @@ class Goal(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(String)
     completed_at = Column(String, nullable=True)
+    linked_run_id = Column(String, nullable=True)  # race goals: the actual Run matched to this event, see stats._find_matching_race_run
 
 
 def get_sync_meta(key: str):
@@ -253,6 +275,15 @@ def run_needs_detail_sync(db, run_id: str) -> bool:
     no API call, no retry-wrapper sleep."""
     existing = db.get(Run, run_id)
     return existing is None or not existing.detail_synced_at
+
+
+def day_needs_wellness_sync(db, date_str: str) -> bool:
+    """Same dedup principle as run_needs_detail_sync, applied to DailySteps' wellness
+    columns (resting HR/VO2max/sleep) instead of activities — a settled day's row
+    won't be re-fetched. Callers are responsible for the trailing "volatile window"
+    exception (today's/yesterday's data can still change), same as _sync_daily_steps."""
+    existing = db.get(DailySteps, date_str)
+    return existing is None or not existing.wellness_synced_at
 
 
 def _seed_default_user_and_credentials():

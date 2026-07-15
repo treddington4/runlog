@@ -23,6 +23,7 @@ from models import (
     get_sync_meta,
     set_sync_meta,
     run_needs_detail_sync,
+    day_needs_wellness_sync,
 )
 from weather import get_historical_weather
 from util import classify_run_type, detect_intervals
@@ -55,6 +56,15 @@ GARMIN_BATCH_PAUSE_SEC = float(os.environ.get("GARMIN_BATCH_PAUSE_SEC", "300"))
 # keeps accumulating all day, and yesterday's can arrive late if the watch didn't sync
 # to Garmin's servers until after midnight).
 GARMIN_STEPS_VOLATILE_DAYS = int(os.environ.get("GARMIN_STEPS_VOLATILE_DAYS", "2"))
+# Same volatile-window idea, for the per-day wellness metrics below (resting HR/VO2max/
+# sleep) — a settled day's row isn't re-fetched. Deliberately much smaller than the
+# activity backlog's full-history walk: quick sync only ever covers the volatile window
+# itself (cheap, always attempted); the deeper historical window is backlog sync's job,
+# capped at GARMIN_WELLNESS_BACKFILL_DAYS rather than the full account history, since
+# each day needs 3 separate live API calls (get_stats/get_max_metrics/get_sleep_data),
+# not the single cheap list call activities get.
+GARMIN_WELLNESS_VOLATILE_DAYS = int(os.environ.get("GARMIN_WELLNESS_VOLATILE_DAYS", "3"))
+GARMIN_WELLNESS_BACKFILL_DAYS = int(os.environ.get("GARMIN_WELLNESS_BACKFILL_DAYS", "90"))
 # Cross-invocation cooldown: separate from every per-call retry/pause above, which all
 # operate *within* one sync attempt. This instead gates *starting a new attempt at all*
 # once a real rate limit has been hit — repeated manual clicks (or any other trigger)
@@ -242,33 +252,175 @@ def _sync_daily_steps(client, user_id: str, days: int = 30) -> int:
     return count
 
 
-def _sync_resting_hr(client, lookback_days: int = 3) -> bool:
-    """Best-effort — tries the last few days (Garmin doesn't always have same-day data
-    synced yet) for a resting HR reading via client.get_rhr_day(date), stores the most
-    recent one found in sync_meta. The exact response shape is unverified against the
-    live API (Garmin's been rate-limited all session) — several plausible field paths
-    are tried defensively; degrades to a no-op if none match or the call fails. This
-    real reading is what app.js's HR sensor-glitch filter prefers, falling back to a
-    Strava-history-derived proxy when it's not available (i.e. right now)."""
-    for i in range(lookback_days):
-        try:
-            d = (datetime.now().date() - timedelta(days=i)).isoformat()
-            data = client.get_rhr_day(d) or {}
-            value = None
-            metrics_map = (data.get("allMetrics") or {}).get("metricsMap") or {}
-            for series in metrics_map.values():
-                if isinstance(series, list) and series and series[0].get("value"):
-                    value = series[0]["value"]
-                    break
-            if value is None:
-                value = data.get("restingHeartRate") or data.get("value")
-            if value:
-                set_sync_meta("garmin_resting_hr_bpm", str(round(value)))
-                set_sync_meta("garmin_resting_hr_date", d)
-                return True
-        except Exception:
+def _extract_wellness_resting_hr(stats: dict):
+    return (
+        stats.get("restingHeartRate")
+        or stats.get("restingHeartRateInBeatsPerMinute")
+        or stats.get("wellnessRestingHeartRate")
+    )
+
+
+def _extract_vo2max(max_metrics) -> float:
+    """garminconnect's get_max_metrics() return shape is unverified — tried both as a
+    bare dict and as a list of per-device/period dicts, each checked for a few
+    plausible nesting paths (a "generic" sub-object is the most commonly documented
+    shape for running VO2max specifically)."""
+    candidates = max_metrics if isinstance(max_metrics, list) else [max_metrics]
+    for c in candidates:
+        if not isinstance(c, dict):
             continue
-    return False
+        generic = c.get("generic") or {}
+        value = (
+            generic.get("vo2MaxPreciseValue")
+            or generic.get("vo2MaxValue")
+            or c.get("vo2MaxValue")
+            or c.get("vo2Max")
+        )
+        if value:
+            return value
+    return None
+
+
+def _first_not_none(*values):
+    """Like `a or b or c`, but doesn't treat a legitimate 0 as missing — real fields
+    here (awake seconds especially) can genuinely be 0 for a solid night's sleep, and
+    `or`-chaining would incorrectly fall through to the next (usually-absent) candidate."""
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def _extract_sleep_fields(sleep_data: dict) -> dict:
+    """Confirmed against a real response (2026-07-13): dailySleepDTO's keys are exactly
+    as guessed — sleepTimeSeconds/deepSleepSeconds/lightSleepSeconds/remSleepSeconds/
+    awakeSleepSeconds are direct top-level keys, sleepScores.overall.value holds the
+    score. Falls back to the top level in case a given account/version returns it
+    unwrapped (not a "dailySleepDTO" wrapper)."""
+    daily = sleep_data.get("dailySleepDTO") or sleep_data or {}
+    scores = daily.get("sleepScores") or {}
+    overall = scores.get("overall") if isinstance(scores, dict) else None
+    sleep_score = _first_not_none(
+        overall.get("value") if isinstance(overall, dict) else None,
+        daily.get("sleepScore"),
+        scores.get("value") if isinstance(scores, dict) else None,
+    )
+    return {
+        "sleep_score": round(sleep_score) if sleep_score is not None else None,
+        "sleep_seconds": daily.get("sleepTimeSeconds"),
+        "deep_sleep_seconds": daily.get("deepSleepSeconds"),
+        "light_sleep_seconds": daily.get("lightSleepSeconds"),
+        "rem_sleep_seconds": daily.get("remSleepSeconds"),
+        "awake_sleep_seconds": _first_not_none(daily.get("awakeSleepSeconds"), daily.get("awakeDurationSeconds")),
+    }
+
+
+_SLEEP_STAGE_LABELS = {0: "deep", 1: "light", 2: "rem", 3: "awake"}
+
+
+def _extract_sleep_stages(raw_sleep: dict) -> list:
+    """The per-segment stage timeline (a real hypnogram), not just daily totals —
+    confirmed against real data: get_sleep_data()'s top-level "sleepLevels" array holds
+    {startGMT, endGMT, activityLevel} segments; summing each activityLevel's total
+    duration and comparing against dailySleepDTO's known deep/light/rem/awakeSleepSeconds
+    for the same night confirmed the mapping is 0=deep, 1=light, 2=rem, 3=awake exactly.
+    ("sleepMovement", a much finer-grained ~500-entry actigraphy signal, is a different
+    array and not what's used here.)"""
+    segments = []
+    for seg in raw_sleep.get("sleepLevels") or []:
+        stage = _SLEEP_STAGE_LABELS.get(seg.get("activityLevel"))
+        start, end = seg.get("startGMT"), seg.get("endGMT")
+        if stage and start and end:
+            segments.append({"start": start, "end": end, "stage": stage})
+    return segments
+
+
+def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> int:
+    """Resting HR / VO2max / sleep, one row per day in DailySteps — deliberately scoped
+    to just these 3 metrics (not the full 9-field wellness set from the original plan)
+    since each additional metric is another live API call per day, and this account's
+    rate-limit sensitivity argued for keeping that cost down. Dedups via
+    day_needs_wellness_sync (same principle as run_needs_detail_sync) except for a
+    trailing GARMIN_WELLNESS_VOLATILE_DAYS window that's always re-checked (today's/
+    yesterday's data can still change). Three separate API calls per day
+    (get_stats/get_max_metrics/get_sleep_data), each independently wrapped so one
+    metric's absence/failure never blocks the others — same discipline as
+    _fetch_running_dynamics. A genuine rate-limit hit propagates up unchanged so the
+    caller's existing GarminMidSyncRateLimitError/cooldown handling applies uniformly."""
+    end = datetime.now().date()
+    volatile_start = end - timedelta(days=GARMIN_WELLNESS_VOLATILE_DAYS - 1)
+    start = end - timedelta(days=days - 1)
+
+    db = SessionLocal()
+    try:
+        dates_to_sync = []
+        cursor = start
+        while cursor <= end:
+            date_str = cursor.isoformat()
+            if cursor >= volatile_start or day_needs_wellness_sync(db, date_str):
+                dates_to_sync.append(date_str)
+            cursor += timedelta(days=1)
+    finally:
+        db.close()
+
+    log.debug(f"garmin wellness sync: {len(dates_to_sync)} day(s) need syncing (window {start}..{end})")
+
+    synced = 0
+    for i, date_str in enumerate(dates_to_sync):
+        _maybe_batch_pause(i, progress_cb)
+
+        db = SessionLocal()
+        try:
+            row = db.get(DailySteps, date_str) or DailySteps(date=date_str)
+            row.user_id = user_id
+
+            try:
+                stats = client.get_stats(date_str) or {}
+                rhr = _extract_wellness_resting_hr(stats)
+                if rhr:
+                    row.resting_hr_bpm = round(rhr)
+            except Exception as e:
+                if _is_rate_limit_error(e):
+                    raise
+                log.debug(f"garmin wellness sync: get_stats failed for {date_str}: {e}")
+
+            try:
+                vo2 = _extract_vo2max(client.get_max_metrics(date_str))
+                if vo2:
+                    row.vo2max = round(vo2, 1)
+            except Exception as e:
+                if _is_rate_limit_error(e):
+                    raise
+                log.debug(f"garmin wellness sync: get_max_metrics failed for {date_str}: {e}")
+
+            try:
+                raw_sleep = client.get_sleep_data(date_str) or {}
+                sleep_fields = _extract_sleep_fields(raw_sleep)
+                for k, v in sleep_fields.items():
+                    if v is not None:
+                        setattr(row, k, v)
+                stages = _extract_sleep_stages(raw_sleep)
+                if stages:
+                    row.sleep_stages_json = json.dumps(stages)
+                    log.debug(f"garmin wellness sync: {len(stages)} sleep stage segments for {date_str}")
+            except Exception as e:
+                if _is_rate_limit_error(e):
+                    raise
+                log.debug(f"garmin wellness sync: get_sleep_data failed for {date_str}: {e}")
+
+            row.wellness_synced_at = datetime.now(timezone.utc).isoformat()
+            db.merge(row)
+            db.commit()
+            synced += 1
+            if progress_cb:
+                progress_cb(f"Synced wellness for {date_str}")
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    return synced
 
 
 def _download_fit_bytes(client, activity_id):
@@ -718,14 +870,27 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
     # Run these BEFORE the activity loop, not after — every real sync so far has hit
     # the rate limit partway through activities, and a GarminMidSyncRateLimitError
     # raised from that loop exits the function before ever reaching code placed after
-    # it. Steps/resting-HR are cheap, independent, self-contained calls (each already
-    # degrades to a no-op on failure — see their own docstrings) so there's no cost to
-    # giving them first crack at the API budget.
+    # it. Steps is a cheap, independent, self-contained call (degrades to a no-op on
+    # failure — see its own docstring) so there's no cost to giving it first crack at
+    # the API budget. Resting HR used to have its own separate get_rhr_day() call here
+    # too, but _sync_daily_wellness's get_stats() already covers it (and more) per day
+    # — a second live call for the same conceptual value was pure redundant API load.
     steps = _sync_daily_steps(client, user_id)
     if progress_cb and steps:
         progress_cb(f"Synced {steps} days of step data")
-    if _sync_resting_hr(client) and progress_cb:
-        progress_cb("Synced resting HR")
+
+    # Quick sync only ever covers the volatile window (today's/yesterday's wellness data
+    # can still change) — the deeper historical backfill is sync_all_garmin_activities'
+    # job, since it needs a much bigger day-by-day API budget (see GARMIN_WELLNESS_BACKFILL_DAYS).
+    try:
+        _sync_daily_wellness(
+            client, user_id, days=GARMIN_WELLNESS_VOLATILE_DAYS, progress_cb=progress_cb
+        )
+    except Exception as e:
+        if progress_cb:
+            progress_cb("Stopped — Garmin API rate limit hit during wellness sync")
+        _record_garmin_rate_limit_hit()
+        raise GarminMidSyncRateLimitError(0) from e
 
     activities = client.get_activities(0, limit)
     log.debug(f"garmin quick sync: fetched {len(activities)} activities (limit={limit})")
@@ -798,12 +963,26 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
         _record_garmin_rate_limit_hit()
         raise
 
-    # See sync_garmin_activities for why these run first, not last.
+    # See sync_garmin_activities for why steps runs first, not last. Resting HR no longer
+    # has its own separate sync call here — see the same note in sync_garmin_activities.
     steps = _sync_daily_steps(client, user_id, days=365)
     if progress_cb and steps:
         progress_cb(f"Synced {steps} days of step data")
-    if _sync_resting_hr(client) and progress_cb:
-        progress_cb("Synced resting HR")
+
+    # Deeper historical wellness backfill than quick sync's volatile-window-only check —
+    # capped at GARMIN_WELLNESS_BACKFILL_DAYS rather than full history (see its own
+    # docstring for why). Independent of the activity backlog's completion flag below —
+    # wellness has its own per-day dedup, so it keeps making progress across repeated
+    # backlog runs even after activities are fully walked.
+    try:
+        _sync_daily_wellness(
+            client, user_id, days=GARMIN_WELLNESS_BACKFILL_DAYS, progress_cb=progress_cb
+        )
+    except Exception as e:
+        if progress_cb:
+            progress_cb("Stopped — Garmin API rate limit hit during wellness sync")
+        _record_garmin_rate_limit_hit()
+        raise GarminMidSyncRateLimitError(0) from e
 
     if get_sync_meta(GARMIN_ACTIVITIES_BACKLOG_COMPLETE_KEY) == "1":
         log.debug("garmin backlog sync: already marked complete, returning early")

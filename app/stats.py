@@ -13,7 +13,29 @@ boundary as the existing /api/runs endpoint, not a new gap introduced by this mo
 import json
 from datetime import datetime, timedelta
 
-from models import Run, DailySteps, DEFAULT_USER_ID, owned_by, get_sync_meta
+from models import Run, DailySteps, DEFAULT_USER_ID, owned_by
+
+# Strava's activity_type is a single PascalCase word ("Run","Ride","Walk"); Garmin's raw
+# types are lowercase and sometimes multi-word ("running","trail_running",
+# "treadmill_running"). Goals are created against Strava-style names (activity_types_json
+# defaults to ["Run"]) — without normalizing, a race goal would never match a Garmin-
+# sourced run at all. Scoped to just the race-run-matching helper below rather than
+# applied to _all_runs()/run_summary() globally, to avoid changing every goal/dashboard
+# number's existing (if imperfect) behavior in the same pass — noted as a related gap
+# in STATUS.md rather than fixed everywhere here.
+def _normalize_activity_type(t: str) -> str:
+    t = (t or "").lower().replace("_", "")
+    if "run" in t:
+        return "run"
+    if "cycl" in t or t == "ride":
+        return "ride"
+    if "walk" in t:
+        return "walk"
+    if "hik" in t:
+        return "hike"
+    if "swim" in t:
+        return "swim"
+    return t
 
 PACE_MIN_SEC_PER_MI = 240
 PACE_MAX_SEC_PER_MI = 2400
@@ -32,16 +54,30 @@ def is_plausible_pace(pace_sec_per_mi, distance_mi=None) -> bool:
     return PACE_MIN_SEC_PER_MI <= pace_sec_per_mi <= PACE_MAX_SEC_PER_MI
 
 
+def latest_resting_hr_bpm(db, user_id: str = DEFAULT_USER_ID):
+    """Most recent resting HR from our own captured DailySteps data (populated by
+    garmin_sync._sync_daily_wellness's get_stats() call) — reading from what we've
+    already synced instead of maintaining a separate live-fetched cache. Replaced the
+    old sync_meta-based single-global-value cache (garmin_resting_hr_bpm), which also
+    meant this couldn't be scoped per-user; querying DailySteps directly fixes that for
+    free since it already has a user_id column."""
+    row = (
+        db.query(DailySteps)
+        .filter(DailySteps.resting_hr_bpm.isnot(None))
+        .filter(owned_by(DailySteps.user_id, user_id))
+        .order_by(DailySteps.date.desc())
+        .first()
+    )
+    return row.resting_hr_bpm if row else None
+
+
 def get_hr_floor(db, user_id: str = DEFAULT_USER_ID) -> float:
     """Port of app.js's computeHRFloor — prefers a real measured resting HR from
     Garmin (restingHR - 10%), falls back to a Strava-history-derived proxy (5th
-    percentile of valid avgHR readings, minus 10%) when that's not synced yet.
-    NOTE: garmin_resting_hr_bpm in sync_meta is still a single global value, not
-    per-user (sync_meta wasn't retrofitted with user_id in this pass) — a known,
-    accepted gap until real multi-user resting-HR tracking is needed."""
-    resting = get_sync_meta("garmin_resting_hr_bpm")
+    percentile of valid avgHR readings, minus 10%) when that's not synced yet."""
+    resting = latest_resting_hr_bpm(db, user_id)
     if resting:
-        return round(float(resting) * 0.9)
+        return round(resting * 0.9)
 
     valid_hrs = sorted(
         hr for (hr,) in db.query(Run.avg_hr)
@@ -354,13 +390,69 @@ def _race_goal_progress(db, goal, types, user_id):
     days_until = None
     if goal.target_date:
         days_until = (datetime.strptime(goal.target_date, "%Y-%m-%d").date() - today).days
+
+    linked_run = None
+    if goal.target_date and days_until is not None and days_until <= 0:
+        linked_run = _find_and_link_race_run(db, goal, types, user_id)
+
     recent = run_summary(db, start_date=(today - timedelta(days=27)).isoformat(),
                           end_date=today.isoformat(), activity_type=types, user_id=user_id)
-    return {
+    result = {
         "goalType": "race", "raceDate": goal.target_date, "daysUntil": days_until,
         "targetDistanceMi": goal.target_value,
         "recent28DayMiles": recent["totalDistanceMi"], "recent28DayRunCount": recent["runCount"],
     }
+    if linked_run:
+        result["linkedRun"] = {
+            "runId": linked_run.id,
+            "name": linked_run.name,
+            "date": linked_run.date,
+            "distanceMi": linked_run.distance_mi,
+            "movingTimeSec": linked_run.moving_time_sec,
+            "avgPaceSecPerMi": linked_run.avg_pace_sec_per_mi,
+        }
+    return result
+
+
+def _find_and_link_race_run(db, goal, types, user_id):
+    """Once a race's date has passed, find the actual matching Run (target date ±1 day,
+    to absorb a timezone-edge mismatch between the goal's calendar date and the run's
+    locally-derived date) and persist the link — so the goal shows its real result
+    instead of a stale "Race day!" that would otherwise repeat forever if the user never
+    manually marks it completed. Auto-completes the goal on a confirmed match (a real
+    correlated event, not a fabricated verdict); leaves it "active" with no invented
+    implication of success if nothing matches, since the race may simply not be logged."""
+    if goal.linked_run_id:
+        return db.get(Run, goal.linked_run_id)
+
+    try:
+        target = datetime.strptime(goal.target_date, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+    wanted = {_normalize_activity_type(t) for t in types}
+    candidates = []
+    for offset in (0, -1, 1):
+        d = (target + timedelta(days=offset)).isoformat()
+        candidates.extend(
+            db.query(Run).filter(Run.date == d).filter(owned_by(Run.user_id, user_id)).all()
+        )
+    candidates = [r for r in candidates if _normalize_activity_type(r.activity_type) in wanted]
+    if not candidates:
+        return None
+
+    best = (
+        min(candidates, key=lambda r: abs((r.distance_mi or 0) - goal.target_value))
+        if goal.target_value else
+        max(candidates, key=lambda r: r.distance_mi or 0)
+    )
+
+    goal.linked_run_id = best.id
+    if goal.status == "active":
+        goal.status = "completed"
+        goal.completed_at = datetime.now().isoformat()
+    db.commit()
+    return best
 
 
 def _consistency_goal_progress(db, goal, types, user_id):

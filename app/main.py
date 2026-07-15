@@ -28,6 +28,18 @@ log.setLevel(LOG_LEVEL)
 app = FastAPI(title="RunLog")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+
+@app.middleware("http")
+async def _no_cache_static(request: Request, call_next):
+    """Force browsers to revalidate (not blindly reuse a heuristically-cached copy) on
+    every request — StaticFiles already sends ETag/Last-Modified, so revalidation is a
+    cheap 304 when nothing changed, but without this header a plain reload after a
+    deploy can silently keep serving pre-deploy JS/CSS. Applies to everything (low-
+    traffic personal LAN app, no real caching win to give up)."""
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
 SYNC_INTERVAL_HOURS = int(os.environ.get("SYNC_INTERVAL_HOURS", "6"))
 SYNC_LIMIT = int(os.environ.get("SYNC_ACTIVITY_LIMIT", "10"))
 
@@ -373,11 +385,15 @@ def garmin_route_diagnostics():
 
 @app.get("/api/config")
 def get_config():
-    resting_hr = get_sync_meta("garmin_resting_hr_bpm")
+    db = SessionLocal()
+    try:
+        resting_hr = stats.latest_resting_hr_bpm(db, DEFAULT_USER_ID)
+    finally:
+        db.close()
     return {
         "syncIntervalHours": SYNC_INTERVAL_HOURS,
         "syncActivityLimit": SYNC_LIMIT,
-        "restingHrBpm": int(resting_hr) if resting_hr else None,
+        "restingHrBpm": resting_hr,
     }
 
 
@@ -429,6 +445,55 @@ def get_steps(days: int = 30):
         rows = (db.query(DailySteps).filter(DailySteps.date >= cutoff)
                 .filter(owned_by(DailySteps.user_id, DEFAULT_USER_ID)).order_by(DailySteps.date).all())
         return [{"date": r.date, "steps": r.steps} for r in rows]
+    finally:
+        db.close()
+
+
+# ---------- Wellness: resting HR / VO2max / sleep (Garmin-only) ----------
+@app.get("/api/wellness")
+def get_wellness(days: int = 90):
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    db = SessionLocal()
+    try:
+        rows = (db.query(DailySteps).filter(DailySteps.date >= cutoff)
+                .filter(owned_by(DailySteps.user_id, DEFAULT_USER_ID)).order_by(DailySteps.date).all())
+        return [{
+            "date": r.date,
+            "restingHrBpm": r.resting_hr_bpm,
+            "vo2max": r.vo2max,
+            "sleepScore": r.sleep_score,
+            "sleepSeconds": r.sleep_seconds,
+            "deepSleepSeconds": r.deep_sleep_seconds,
+            "lightSleepSeconds": r.light_sleep_seconds,
+            "remSleepSeconds": r.rem_sleep_seconds,
+            "awakeSleepSeconds": r.awake_sleep_seconds,
+        } for r in rows]
+    finally:
+        db.close()
+
+
+@app.get("/api/wellness/sleep-stages")
+def get_sleep_stages(date: str = None):
+    """Per-night sleep stage timeline (deep/light/rem/awake segments), for a real
+    hypnogram rather than just daily totals — see garmin_sync._extract_sleep_stages().
+    Returns every date that has stage data (for a night-picker) plus the requested
+    (or most recent) night's segments."""
+    db = SessionLocal()
+    try:
+        rows = (db.query(DailySteps)
+                .filter(DailySteps.sleep_stages_json.isnot(None))
+                .filter(DailySteps.sleep_stages_json != "[]")
+                .filter(owned_by(DailySteps.user_id, DEFAULT_USER_ID))
+                .order_by(DailySteps.date).all())
+        available_dates = [r.date for r in rows]
+        if not available_dates:
+            return {"availableDates": [], "date": None, "segments": []}
+        target_row = next((r for r in rows if r.date == date), rows[-1])
+        return {
+            "availableDates": available_dates,
+            "date": target_row.date,
+            "segments": json.loads(target_row.sleep_stages_json or "[]"),
+        }
     finally:
         db.close()
 
@@ -565,13 +630,18 @@ _VALID_GOAL_TYPES = ("race", "consistency", "distance_target")
 
 
 def _goal_to_dict(g: Goal, db):
+    # goal_progress() can mutate g.status/g.completed_at as a side effect (auto-completing
+    # a race goal once it finds a matching run — see stats._find_and_link_race_run). Must
+    # run before status/completedAt are read below: a dict literal evaluates its values in
+    # written order, so reading them first would silently capture the pre-mutation values.
+    progress = stats.goal_progress(db, g)
     return {
         "id": g.id, "goalType": g.goal_type, "name": g.name, "status": g.status,
         "activityTypes": json.loads(g.activity_types_json or "[]"),
         "targetValue": g.target_value, "targetUnit": g.target_unit, "targetDate": g.target_date,
         "startDate": g.start_date, "notes": g.notes,
         "createdAt": g.created_at, "completedAt": g.completed_at,
-        "progress": stats.goal_progress(db, g),
+        "progress": progress,
     }
 
 

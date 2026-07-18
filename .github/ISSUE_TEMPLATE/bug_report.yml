@@ -1,0 +1,49 @@
+name: Bug Report
+description: Report something that isn't working correctly
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / error messages
+      description: "`docker logs runlog` output, browser console errors, network tab responses, etc. Redact anything sensitive (tokens, IPs, personal data)."
+      render: shell
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "e.g. self-hosted via Docker Compose, Chrome 128, Strava source"
+  - type: textarea
+    id: suspected-cause
+    attributes:
+      label: Suspected cause (optional)
+      description: If you've already dug into this, note what you found — even a partial lead saves re-investigation.

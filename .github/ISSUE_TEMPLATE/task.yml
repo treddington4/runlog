@@ -1,0 +1,30 @@
+name: Task
+description: A smaller, well-scoped piece of work — refactor, cleanup, verification, deferred follow-up
+title: "[Task]: "
+labels: ["task"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: Context or motivation — e.g. a gap noted in STATUS.md, a follow-up from another issue, tech debt found in passing.
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: Specific, checkable outcomes.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: relevant-code
+    attributes:
+      label: Relevant files / areas of the codebase

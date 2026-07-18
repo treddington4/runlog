@@ -1,0 +1,52 @@
+name: Feature Request
+description: Propose a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The more detail you put here, the more likely this can be picked up and
+        implemented directly — including by an AI coding agent — without a round
+        of clarifying questions first. Be specific rather than general.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the feature.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why / motivation
+      description: What problem does this solve? What's the actual use case or scenario that prompted this?
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Requirements / acceptance criteria
+      description: >
+        Specific, testable bullet points. What does "done" look like? Prefer
+        "the Settings tab shows a dropdown with X, Y, Z" over "make it configurable."
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: Anything explicitly NOT included in this request, to head off scope creep.
+  - type: textarea
+    id: relevant-code
+    attributes:
+      label: Relevant files / areas of the codebase
+      description: If you already know which files this touches, list them (e.g. `app/stats.py`, `app/static/app.js`). Leave blank if unsure.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, screenshots, mockups, related issues, prior discussion.

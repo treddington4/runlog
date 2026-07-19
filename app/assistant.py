@@ -261,7 +261,8 @@ def _build_tools(user_id: str) -> list:
                 "side": {"type": "string", "enum": list(coach.VALID_STEP_SIDES), "description": "Only for unilateral movements — omit for bilateral/whole-body steps."},
                 "durationSec": {"type": "integer", "description": "For time-based steps (holds, circuits, intervals)"},
                 "reps": {"type": "integer", "description": "For rep-based steps"},
-                "notes": {"type": "string", "description": "Cueing/form notes for this specific step"},
+                "notes": {"type": "string", "description": "Short context for this step — why/when/conditional (e.g. 'optional, skip if fatigued', 'start of core circuit, repeat 2 rounds'). Not a how-to."},
+                "howTo": {"type": "string", "description": "Technique/form cues for actually performing this step — how to set up, what to feel, common mistakes to avoid. Include it for anything the user might not already know how to do correctly (stretches, mobility drills, unfamiliar exercises, foam-rolling). Skip it for self-explanatory steps (e.g. 'easy bike, zone 1 pace'). Rendered as an expandable detail in the Workouts tab, not shown inline, so don't hold back on length here."},
             },
             "required": ["exercise"],
         },
@@ -412,6 +413,10 @@ async def _get_client(user_id: str = DEFAULT_USER_ID) -> ClaudeSDKClient:
             permission_mode="bypassPermissions",  # headless container, no TTY to prompt for approval
             setting_sources=[],  # don't inherit any local .claude/settings.json in the container
             max_turns=8,
+            model="claude-haiku-4-5-20251001",  # cheapest current Claude model — the Coach's tool
+                                                  # calls are narrow/well-described enough not to need
+                                                  # a flagship model; revisit if tool selection or the
+                                                  # health-note safety override starts misbehaving
         )
         client = ClaudeSDKClient(options=options)
         await client.connect()

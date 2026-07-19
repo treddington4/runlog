@@ -75,6 +75,9 @@ body {
 .workout-steps { margin: 8px 0 0; padding: 8px 0 0 20px; border-top: 1px solid var(--border); font-size: 13px; }
 .workout-steps li { margin-bottom: 4px; }
 .workout-steps li:last-child { margin-bottom: 0; }
+.workout-steps summary { cursor: pointer; }
+.workout-steps summary::marker { color: var(--faint); font-size: 11px; }
+.step-howto { margin: 4px 0 6px; padding: 6px 8px; background: var(--bg); border-radius: 6px; color: var(--muted); font-weight: 400; line-height: 1.4; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 
 .map-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 16px 0 10px; }

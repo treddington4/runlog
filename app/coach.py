@@ -36,10 +36,15 @@ def _steps_from_json(steps_json) -> list | None:
 
 def _validate_steps(steps):
     """Each step: {exercise: str, side?: one of VALID_STEP_SIDES, durationSec?: int,
-    reps?: int, notes?: str}. A step needs at least a duration or a rep count — a bare
-    named exercise with neither isn't actionable. Raises ValueError with a specific
-    reason so a malformed tool call surfaces something the model can actually correct,
-    same discipline as every other coach.py validator."""
+    reps?: int, notes?: str, howTo?: str}. A step needs at least a duration or a rep
+    count — a bare named exercise with neither isn't actionable. `notes` is short
+    context (why/when, e.g. "optional, skip if fatigued"); `howTo` is longer-form
+    technique/form guidance, rendered as an expandable detail in the Workouts tab
+    rather than inline, since not every step needs it (self-explanatory ones like
+    "easy bike, zone 1" shouldn't get one, but an unfamiliar mobility drill or
+    stretch should). Raises ValueError with a specific reason so a malformed tool
+    call surfaces something the model can actually correct, same discipline as every
+    other coach.py validator."""
     if steps is None:
         return None
     if not isinstance(steps, list):
@@ -58,6 +63,7 @@ def _validate_steps(steps):
         cleaned.append({
             "exercise": str(step["exercise"]), "side": side,
             "durationSec": duration_sec, "reps": reps, "notes": step.get("notes"),
+            "howTo": step.get("howTo"),
         })
     return cleaned
 

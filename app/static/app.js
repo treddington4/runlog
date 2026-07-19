@@ -2140,7 +2140,13 @@ function workoutStepLineHTML(s) {
   const sideLabel = s.side ? ` (${escapeHtml(s.side)})` : "";
   const amountLabel = amount.length ? ` — ${amount.join(", ")}` : "";
   const noteLabel = s.notes ? ` · ${escapeHtml(s.notes)}` : "";
-  return `<li>${escapeHtml(s.exercise)}${sideLabel}${amountLabel}${noteLabel}</li>`;
+  const line = `${escapeHtml(s.exercise)}${sideLabel}${amountLabel}${noteLabel}`;
+  // How-to is longer-form technique guidance — collapsed by default so a 20+ step
+  // routine stays scannable, expand per-step only when the reader actually wants it.
+  if (s.howTo) {
+    return `<li><details><summary>${line}</summary><div class="step-howto">${escapeHtml(s.howTo)}</div></details></li>`;
+  }
+  return `<li>${line}</li>`;
 }
 
 function workoutCardHTML(w) {

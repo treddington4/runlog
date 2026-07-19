@@ -672,7 +672,7 @@ async def create_workout_endpoint(request: Request):
         return coach.create_workout(
             db, body.get("scheduledDate"), body.get("workoutType"), body.get("activityType"),
             body.get("targetDistanceMi"), body.get("targetPaceSecPerMi"), body.get("targetDurationSec"),
-            body.get("notes"),
+            body.get("notes"), body.get("steps"),
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -687,7 +687,7 @@ async def update_workout_endpoint(workout_id: str, request: Request):
     field_map = {
         "scheduledDate": "scheduled_date", "workoutType": "workout_type", "activityType": "activity_type",
         "targetDistanceMi": "target_distance_mi", "targetPaceSecPerMi": "target_pace_sec_per_mi",
-        "targetDurationSec": "target_duration_sec", "notes": "notes", "status": "status",
+        "targetDurationSec": "target_duration_sec", "notes": "notes", "steps": "steps", "status": "status",
     }
     fields = {py_key: body[api_key] for api_key, py_key in field_map.items() if api_key in body}
     db = SessionLocal()

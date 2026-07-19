@@ -251,6 +251,22 @@ def _build_tools(user_id: str) -> list:
         result = _db_call(coach.list_workouts, args.get("startDate"), args.get("endDate"), args.get("status"), user_id=user_id)
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
+    STEPS_SCHEMA = {
+        "type": "array",
+        "description": "Structured step-by-step breakdown, in order. Use this instead of (or alongside) notes whenever the session has distinct exercises/segments — e.g. a mobility circuit or a strength session. Split a unilateral movement (leg swings, single-leg work, side plank) into two separate steps, one per side, rather than one step covering both.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "exercise": {"type": "string", "description": "e.g. 'Leg swings', 'Side plank', 'Bird dog', '800m repeat'"},
+                "side": {"type": "string", "enum": list(coach.VALID_STEP_SIDES), "description": "Only for unilateral movements — omit for bilateral/whole-body steps."},
+                "durationSec": {"type": "integer", "description": "For time-based steps (holds, circuits, intervals)"},
+                "reps": {"type": "integer", "description": "For rep-based steps"},
+                "notes": {"type": "string", "description": "Cueing/form notes for this specific step"},
+            },
+            "required": ["exercise"],
+        },
+    }
+
     @tool("schedule_workout", "Prescribe a workout for a specific date. Check get_health_history first — a workout suggestion must be modified (rest/lower intensity/avoid the affected area) if anything active would be affected, not just persona-toned around the same plan.", {
         "type": "object",
         "properties": {
@@ -260,7 +276,8 @@ def _build_tools(user_id: str) -> list:
             "targetDistanceMi": {"type": "number"},
             "targetPaceSecPerMi": {"type": "integer"},
             "targetDurationSec": {"type": "integer"},
-            "notes": {"type": "string", "description": "Prescription rationale"},
+            "notes": {"type": "string", "description": "Prescription rationale — keep this the high-level why; put the actual exercise-by-exercise plan in steps"},
+            "steps": STEPS_SCHEMA,
         },
         "required": ["scheduledDate", "workoutType"],
     })
@@ -268,9 +285,9 @@ def _build_tools(user_id: str) -> list:
         try:
             result = _db_call(
                 coach.create_workout, args["scheduledDate"], args["workoutType"],
-                args.get("activityType", "Run"), args.get("targetDistanceMi"),
+                args.get("activityType"), args.get("targetDistanceMi"),
                 args.get("targetPaceSecPerMi"), args.get("targetDurationSec"), args.get("notes"),
-                user_id=user_id,
+                args.get("steps"), user_id=user_id,
             )
         except ValueError as e:
             return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
@@ -287,6 +304,7 @@ def _build_tools(user_id: str) -> list:
             "targetPaceSecPerMi": {"type": "integer"},
             "targetDurationSec": {"type": "integer"},
             "notes": {"type": "string"},
+            "steps": STEPS_SCHEMA,
             "status": {"type": "string", "enum": list(coach.VALID_WORKOUT_STATUSES)},
         },
         "required": ["workoutId"],
@@ -296,7 +314,7 @@ def _build_tools(user_id: str) -> list:
             "scheduled_date": args.get("scheduledDate"), "workout_type": args.get("workoutType"),
             "activity_type": args.get("activityType"), "target_distance_mi": args.get("targetDistanceMi"),
             "target_pace_sec_per_mi": args.get("targetPaceSecPerMi"), "target_duration_sec": args.get("targetDurationSec"),
-            "notes": args.get("notes"), "status": args.get("status"),
+            "notes": args.get("notes"), "steps": args.get("steps"), "status": args.get("status"),
         }
         try:
             result = _db_call(coach.update_workout, args["workoutId"], user_id=user_id, **fields)

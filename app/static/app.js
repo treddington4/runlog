@@ -2086,6 +2086,16 @@ function parsePaceToSec(str) {
   return m * 60 + s;
 }
 
+function workoutStepLineHTML(s) {
+  const amount = [];
+  if (s.durationSec) amount.push(`${s.durationSec}s`);
+  if (s.reps) amount.push(`${s.reps} reps`);
+  const sideLabel = s.side ? ` (${escapeHtml(s.side)})` : "";
+  const amountLabel = amount.length ? ` — ${amount.join(", ")}` : "";
+  const noteLabel = s.notes ? ` · ${escapeHtml(s.notes)}` : "";
+  return `<li>${escapeHtml(s.exercise)}${sideLabel}${amountLabel}${noteLabel}</li>`;
+}
+
 function workoutCardHTML(w) {
   const targetParts = [];
   if (w.targetDistanceMi) targetParts.push(`${w.targetDistanceMi} mi`);
@@ -2099,6 +2109,7 @@ function workoutCardHTML(w) {
       </div>
       ${targetParts.length ? `<div class="settings-row"><span class="settings-label">Target</span><span class="settings-value">${escapeHtml(targetParts.join(" · "))}</span></div>` : ""}
       ${w.notes ? `<div class="settings-row"><span class="settings-label">Notes</span><span class="settings-value" style="font-weight:400;text-align:right">${escapeHtml(w.notes)}</span></div>` : ""}
+      ${w.steps && w.steps.length ? `<ol class="workout-steps">${w.steps.map(workoutStepLineHTML).join("")}</ol>` : ""}
       ${w.critiqueText ? `<div class="settings-row"><span class="settings-label">Critique</span><span class="settings-value" style="font-weight:400;text-align:right">${escapeHtml(w.critiqueText)}</span></div>` : ""}
       <div class="btn-row" style="justify-content:flex-start;margin-top:8px">
         <button class="edit-link" data-workout-edit="${w.id}">Edit</button>
@@ -2150,7 +2161,7 @@ function openWorkoutModal(workout) {
         <div class="modal-head"><div style="font-weight:700">${isEdit ? "Edit Workout" : "New Workout"}</div><button class="modal-close" id="modal-close">✕</button></div>
         <div class="field"><div class="field-label">Date</div><input id="f-workout-date" type="date" value="${workout?.scheduledDate || ""}" /></div>
         <div class="field"><div class="field-label">Type</div><select id="f-workout-type">${typeOptionsHtml}</select></div>
-        <div class="field"><div class="field-label">Activity</div><input id="f-workout-activity" type="text" value="${workout ? escapeHtml(workout.activityType) : "Run"}" placeholder="Run" /></div>
+        <div class="field"><div class="field-label">Activity</div><input id="f-workout-activity" type="text" value="${workout ? escapeHtml(workout.activityType) : ""}" placeholder="Run — leave blank for rest/cross-train days that aren't a real run/ride" /></div>
         <div class="field"><div class="field-label">Target distance (mi)</div><input id="f-workout-distance" type="number" step="0.1" value="${workout?.targetDistanceMi ?? ""}" /></div>
         <div class="field"><div class="field-label">Target pace (min:sec/mi)</div><input id="f-workout-pace" type="text" placeholder="8:00" value="${workout?.targetPaceSecPerMi ? paceStr(workout.targetPaceSecPerMi) : ""}" /></div>
         <div class="field"><div class="field-label">Target duration (min)</div><input id="f-workout-duration" type="number" step="1" value="${workout?.targetDurationSec ? Math.round(workout.targetDurationSec / 60) : ""}" /></div>
@@ -2167,7 +2178,7 @@ function openWorkoutModal(workout) {
     const body = {
       scheduledDate: document.getElementById("f-workout-date").value,
       workoutType: document.getElementById("f-workout-type").value,
-      activityType: document.getElementById("f-workout-activity").value || "Run",
+      activityType: document.getElementById("f-workout-activity").value || null,
       targetDistanceMi: Number(document.getElementById("f-workout-distance").value) || null,
       targetPaceSecPerMi: parsePaceToSec(document.getElementById("f-workout-pace").value),
       targetDurationSec: durationMin ? durationMin * 60 : null,

@@ -6,6 +6,7 @@ both assistant.py's chat tools and main.py's REST endpoints call into the same
 functions here, so the chat-conversational and manual-UI write paths can never
 validate differently.
 """
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +17,49 @@ VALID_PERSONAS = ("encouraging", "normal", "spicy", "insulting")
 
 VALID_WORKOUT_TYPES = ("easy", "tempo", "interval", "long", "rest", "strength", "cross_train")
 VALID_WORKOUT_STATUSES = ("planned", "completed", "skipped", "modified")
+
+# A step is one exercise/segment in a workout ("leg swings", "side plank", "800m repeat").
+# `side` only applies to unilateral movements (leg swings, single-leg work, side planks) —
+# left/right get logged as two separate steps rather than one step with an implied "do
+# both", so each side can carry its own duration/reps/notes if they ever need to differ.
+VALID_STEP_SIDES = ("left", "right", "both")
+
+
+def _steps_from_json(steps_json) -> list | None:
+    if not steps_json:
+        return None
+    try:
+        return json.loads(steps_json)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_steps(steps):
+    """Each step: {exercise: str, side?: one of VALID_STEP_SIDES, durationSec?: int,
+    reps?: int, notes?: str}. A step needs at least a duration or a rep count — a bare
+    named exercise with neither isn't actionable. Raises ValueError with a specific
+    reason so a malformed tool call surfaces something the model can actually correct,
+    same discipline as every other coach.py validator."""
+    if steps is None:
+        return None
+    if not isinstance(steps, list):
+        raise ValueError("steps must be a list")
+    cleaned = []
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict) or not step.get("exercise"):
+            raise ValueError(f"step {i} must be an object with at least an 'exercise' name")
+        side = step.get("side")
+        if side is not None and side not in VALID_STEP_SIDES:
+            raise ValueError(f"step {i}: side must be one of {VALID_STEP_SIDES}")
+        duration_sec = step.get("durationSec")
+        reps = step.get("reps")
+        if duration_sec is None and reps is None:
+            raise ValueError(f"step {i} ({step['exercise']!r}) needs durationSec and/or reps")
+        cleaned.append({
+            "exercise": str(step["exercise"]), "side": side,
+            "durationSec": duration_sec, "reps": reps, "notes": step.get("notes"),
+        })
+    return cleaned
 
 # What kind of thing this is — drives which fields matter and whether recurrence
 # linking applies (injury only, since only it has a reliable body_area match key).
@@ -264,8 +308,8 @@ def _workout_to_dict(w: Workout) -> dict:
         "id": w.id, "scheduledDate": w.scheduled_date, "workoutType": w.workout_type,
         "activityType": w.activity_type, "targetDistanceMi": w.target_distance_mi,
         "targetPaceSecPerMi": w.target_pace_sec_per_mi, "targetDurationSec": w.target_duration_sec,
-        "notes": w.notes, "status": w.status, "linkedRunId": w.linked_run_id,
-        "critiqueText": w.critique_text, "createdAt": w.created_at,
+        "notes": w.notes, "steps": _steps_from_json(w.steps_json), "status": w.status,
+        "linkedRunId": w.linked_run_id, "critiqueText": w.critique_text, "createdAt": w.created_at,
     }
 
 
@@ -283,15 +327,17 @@ def _default_activity_type(workout_type: str) -> str:
 
 
 def create_workout(db, scheduled_date, workout_type, activity_type=None, target_distance_mi=None,
-                    target_pace_sec_per_mi=None, target_duration_sec=None, notes=None,
+                    target_pace_sec_per_mi=None, target_duration_sec=None, notes=None, steps=None,
                     user_id: str = DEFAULT_USER_ID) -> dict:
     if workout_type not in VALID_WORKOUT_TYPES:
         raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
+    cleaned_steps = _validate_steps(steps)
     workout = Workout(
         id=f"workout_{uuid.uuid4().hex[:12]}", user_id=user_id, scheduled_date=scheduled_date,
         workout_type=workout_type, activity_type=activity_type or _default_activity_type(workout_type),
         target_distance_mi=target_distance_mi, target_pace_sec_per_mi=target_pace_sec_per_mi,
-        target_duration_sec=target_duration_sec, notes=notes, status="planned",
+        target_duration_sec=target_duration_sec, notes=notes,
+        steps_json=json.dumps(cleaned_steps) if cleaned_steps else None, status="planned",
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     db.add(workout)
@@ -307,8 +353,10 @@ def update_workout(db, workout_id: str, user_id: str = DEFAULT_USER_ID, **fields
         raise ValueError(f"status must be one of {VALID_WORKOUT_STATUSES}")
     if "workout_type" in fields and fields["workout_type"] is not None and fields["workout_type"] not in VALID_WORKOUT_TYPES:
         raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
+    if "steps" in fields and fields["steps"] is not None:
+        fields["steps_json"] = json.dumps(_validate_steps(fields["steps"])) or None
     for key in ("scheduled_date", "workout_type", "activity_type", "target_distance_mi",
-                "target_pace_sec_per_mi", "target_duration_sec", "notes", "status"):
+                "target_pace_sec_per_mi", "target_duration_sec", "notes", "steps_json", "status"):
         if key in fields and fields[key] is not None:
             setattr(workout, key, fields[key])
     db.commit()

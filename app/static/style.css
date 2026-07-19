@@ -72,6 +72,9 @@ body {
 .settings-row:first-of-type { border-top: none; }
 .settings-label { color: var(--muted); }
 .settings-value { font-family: 'JetBrains Mono', monospace; }
+.workout-steps { margin: 8px 0 0; padding: 8px 0 0 20px; border-top: 1px solid var(--border); font-size: 13px; }
+.workout-steps li { margin-bottom: 4px; }
+.workout-steps li:last-child { margin-bottom: 0; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 
 .map-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 16px 0 10px; }

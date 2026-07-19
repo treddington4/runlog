@@ -43,7 +43,7 @@ from pathlib import Path
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
-ALL_TABS = ["home", "goals", "runs", "insights", "map", "chat", "settings"]
+ALL_TABS = ["home", "goals", "runs", "insights", "map", "chat", "workouts", "settings"]
 
 # Matches the preset sizes used by Claude Code's own browser tooling, for consistency.
 VIEWPORTS = {

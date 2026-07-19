@@ -256,6 +256,13 @@ class Workout(Base):
     target_pace_sec_per_mi = Column(Integer, nullable=True)
     target_duration_sec = Column(Integer, nullable=True)
     notes = Column(Text, nullable=True)  # coach's prescription rationale
+    steps_json = Column(Text, nullable=True)  # ordered JSON list of structured steps, see
+                                                # coach.VALID_STEP_SIDES / coach._steps_to_dicts —
+                                                # nullable/legacy-NULL for workouts scheduled before
+                                                # this column existed or for simple single-block
+                                                # sessions (e.g. a plain easy run) that don't need
+                                                # step-by-step breakdown; notes stays the free-text
+                                                # rationale either way
     status = Column(String, default="planned")  # "planned"|"completed"|"skipped"|"modified"
     linked_run_id = Column(String, nullable=True)  # set once matched/critiqued, mirrors Goal.linked_run_id
     critique_text = Column(Text, nullable=True)
@@ -297,7 +304,7 @@ def init_db():
 # User WAS a whole-new-table exception too, but it's grown a column since
 # (coach_personality) so it has to be here now like any other existing table.
 _MIGRATABLE_TABLES = [("runs", Run), ("daily_steps", DailySteps), ("chat_messages", ChatMessage),
-                       ("goals", Goal), ("users", User)]
+                       ("goals", Goal), ("users", User), ("workouts", Workout)]
 
 
 def _migrate_add_missing_columns():

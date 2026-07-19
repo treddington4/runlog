@@ -96,6 +96,16 @@ body {
 .chat-msg.user { align-self: flex-end; background: var(--surface2); border: 1px solid var(--border); }
 .chat-msg.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); }
 .chat-tool-trace { font-size: 10px; color: var(--faint); font-family: 'JetBrains Mono', monospace; margin-top: 6px; }
+.chat-markdown { white-space: normal; }
+.chat-markdown p { margin: 0 0 8px; }
+.chat-markdown p:last-child { margin-bottom: 0; }
+.chat-markdown ul, .chat-markdown ol { margin: 0 0 8px 18px; padding: 0; }
+.chat-markdown h4, .chat-markdown h5, .chat-markdown h6 { margin: 0 0 6px; }
+.chat-markdown code { background: var(--surface2); padding: 1px 4px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+.chat-markdown table { border-collapse: collapse; width: 100%; margin: 0 0 8px; font-size: 12px; }
+.chat-markdown table:last-child { margin-bottom: 0; }
+.chat-markdown th, .chat-markdown td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.chat-markdown th { background: var(--surface2); font-weight: 600; }
 .chat-input-row { display: flex; gap: 8px; margin-top: 12px; }
 .chat-input-row input { flex: 1; background: var(--surface); border: 1px solid var(--border); color: var(--text);
   border-radius: 8px; padding: 9px 12px; font-size: 13px; font-family: 'Inter', sans-serif; }

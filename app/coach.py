@@ -61,6 +61,41 @@ def _validate_steps(steps):
         })
     return cleaned
 
+
+def _steps_total_duration_sec(steps):
+    """Sum of every step's durationSec — but only when *every* step actually has one.
+    A session mixing timed and rep-based steps has no reliable total (a set of 12
+    squats has no fixed duration), so this deliberately returns None rather than
+    silently undercounting the rep-based portion and then flagging a false mismatch."""
+    if not steps:
+        return None
+    durations = [s.get("durationSec") for s in steps]
+    if any(d is None for d in durations):
+        return None
+    return sum(durations)
+
+
+def _reconcile_target_duration(steps, target_duration_sec):
+    """A prescribed session's stated length must actually be backed by its steps — the
+    bug this guards against: the model prescribing "a 20-minute mobility session" in
+    prose/notes while only listing ~3 minutes of concrete steps. When every step is
+    time-based, fill in targetDurationSec from the real total if it wasn't given, or
+    reject a targetDurationSec that doesn't match what the steps add up to (>40% off,
+    or >2min, whichever is more forgiving — short sessions need more slack). Returns
+    the (possibly corrected) target_duration_sec, or raises ValueError."""
+    steps_total = _steps_total_duration_sec(steps)
+    if steps_total is None:
+        return target_duration_sec
+    if target_duration_sec is None:
+        return steps_total
+    if abs(target_duration_sec - steps_total) > max(120, target_duration_sec * 0.4):
+        raise ValueError(
+            f"targetDurationSec ({target_duration_sec}s) doesn't match the steps' total "
+            f"duration ({steps_total}s) — add more steps/rounds to actually fill the "
+            f"stated time, or set targetDurationSec to match what the steps add up to."
+        )
+    return target_duration_sec
+
 # What kind of thing this is — drives which fields matter and whether recurrence
 # linking applies (injury only, since only it has a reliable body_area match key).
 VALID_HEALTH_CATEGORIES = ("injury", "illness", "chronic_flare", "procedure", "other")
@@ -332,6 +367,7 @@ def create_workout(db, scheduled_date, workout_type, activity_type=None, target_
     if workout_type not in VALID_WORKOUT_TYPES:
         raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
     cleaned_steps = _validate_steps(steps)
+    target_duration_sec = _reconcile_target_duration(cleaned_steps, target_duration_sec)
     workout = Workout(
         id=f"workout_{uuid.uuid4().hex[:12]}", user_id=user_id, scheduled_date=scheduled_date,
         workout_type=workout_type, activity_type=activity_type or _default_activity_type(workout_type),
@@ -355,6 +391,10 @@ def update_workout(db, workout_id: str, user_id: str = DEFAULT_USER_ID, **fields
         raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
     if "steps" in fields and fields["steps"] is not None:
         fields["steps_json"] = json.dumps(_validate_steps(fields["steps"])) or None
+    if "steps_json" in fields or "target_duration_sec" in fields:
+        final_steps = _steps_from_json(fields.get("steps_json", workout.steps_json))
+        final_target = fields["target_duration_sec"] if fields.get("target_duration_sec") is not None else workout.target_duration_sec
+        fields["target_duration_sec"] = _reconcile_target_duration(final_steps, final_target)
     for key in ("scheduled_date", "workout_type", "activity_type", "target_distance_mi",
                 "target_pace_sec_per_mi", "target_duration_sec", "notes", "steps_json", "status"):
         if key in fields and fields[key] is not None:

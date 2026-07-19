@@ -9,9 +9,13 @@ validate differently.
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from models import HealthNote, DEFAULT_USER_ID, owned_by
+import stats
+from models import HealthNote, Workout, Run, DEFAULT_USER_ID, owned_by
 
 VALID_PERSONAS = ("encouraging", "normal", "spicy", "insulting")
+
+VALID_WORKOUT_TYPES = ("easy", "tempo", "interval", "long", "rest", "strength", "cross_train")
+VALID_WORKOUT_STATUSES = ("planned", "completed", "skipped", "modified")
 
 # What kind of thing this is — drives which fields matter and whether recurrence
 # linking applies (injury only, since only it has a reliable body_area match key).
@@ -21,9 +25,10 @@ VALID_HEALTH_CATEGORIES = ("injury", "illness", "chronic_flare", "procedure", "o
 # joints (hand/finger/wrist/arm/etc included) since an injury can affect strength
 # training or daily life without touching running at all.
 VALID_BODY_AREAS = ("left_ankle", "right_ankle", "left_knee", "right_knee", "hip",
-                     "hamstring", "calf", "it_band", "shoulder", "lower_back", "foot",
-                     "hand", "finger", "wrist", "elbow", "arm", "neck", "head", "chest",
-                     "abdomen", "groin", "other")
+                     "hamstring", "quad", "calf", "left_shin", "right_shin", "achilles",
+                     "it_band", "shoulder", "lower_back", "foot", "hand", "finger",
+                     "wrist", "elbow", "arm", "neck", "head", "chest", "abdomen",
+                     "groin", "other")
 VALID_SEVERITIES = ("mild", "moderate", "severe")  # optional across all categories
 VALID_HEALTH_STATUSES = ("active", "monitoring", "resolved")
 
@@ -252,3 +257,139 @@ def list_health_notes(db, status=None, category=None, user_id: str = DEFAULT_USE
     if category:
         q = q.filter(HealthNote.category == category)
     return [_health_note_to_dict(r) for r in q.order_by(HealthNote.created_at.desc()).all()]
+
+
+def _workout_to_dict(w: Workout) -> dict:
+    return {
+        "id": w.id, "scheduledDate": w.scheduled_date, "workoutType": w.workout_type,
+        "activityType": w.activity_type, "targetDistanceMi": w.target_distance_mi,
+        "targetPaceSecPerMi": w.target_pace_sec_per_mi, "targetDurationSec": w.target_duration_sec,
+        "notes": w.notes, "status": w.status, "linkedRunId": w.linked_run_id,
+        "critiqueText": w.critique_text, "createdAt": w.created_at,
+    }
+
+
+def create_workout(db, scheduled_date, workout_type, activity_type="Run", target_distance_mi=None,
+                    target_pace_sec_per_mi=None, target_duration_sec=None, notes=None,
+                    user_id: str = DEFAULT_USER_ID) -> dict:
+    if workout_type not in VALID_WORKOUT_TYPES:
+        raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
+    workout = Workout(
+        id=f"workout_{uuid.uuid4().hex[:12]}", user_id=user_id, scheduled_date=scheduled_date,
+        workout_type=workout_type, activity_type=activity_type or "Run",
+        target_distance_mi=target_distance_mi, target_pace_sec_per_mi=target_pace_sec_per_mi,
+        target_duration_sec=target_duration_sec, notes=notes, status="planned",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(workout)
+    db.commit()
+    return _workout_to_dict(workout)
+
+
+def update_workout(db, workout_id: str, user_id: str = DEFAULT_USER_ID, **fields) -> dict:
+    workout = db.get(Workout, workout_id)
+    if not workout:
+        raise ValueError(f"no workout with id {workout_id}")
+    if "status" in fields and fields["status"] is not None and fields["status"] not in VALID_WORKOUT_STATUSES:
+        raise ValueError(f"status must be one of {VALID_WORKOUT_STATUSES}")
+    if "workout_type" in fields and fields["workout_type"] is not None and fields["workout_type"] not in VALID_WORKOUT_TYPES:
+        raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
+    for key in ("scheduled_date", "workout_type", "activity_type", "target_distance_mi",
+                "target_pace_sec_per_mi", "target_duration_sec", "notes", "status"):
+        if key in fields and fields[key] is not None:
+            setattr(workout, key, fields[key])
+    db.commit()
+    return _workout_to_dict(workout)
+
+
+def delete_workout(db, workout_id: str, user_id: str = DEFAULT_USER_ID):
+    workout = db.get(Workout, workout_id)
+    if workout:
+        db.delete(workout)
+        db.commit()
+
+
+def record_workout_completion(db, workout_id: str, run_id=None, critique_text=None,
+                               user_id: str = DEFAULT_USER_ID) -> dict:
+    workout = db.get(Workout, workout_id)
+    if not workout:
+        raise ValueError(f"no workout with id {workout_id}")
+    if run_id:
+        workout.linked_run_id = run_id
+    if critique_text is not None:
+        workout.critique_text = critique_text
+    workout.status = "completed"
+    db.commit()
+    return _workout_to_dict(workout)
+
+
+def _find_and_link_workout_run(db, workout: Workout, user_id: str = DEFAULT_USER_ID):
+    """Auto-links a planned Workout to the real synced Run that satisfies it — directly
+    mirrors stats._find_and_link_race_run, the one existing precedent for this kind of
+    matching in this codebase. Strict on activity type (normalized via
+    stats._normalize_activity_type, so Garmin's lowercase "running" still matches a
+    "Run"-typed workout) — a run workout never links to a Ride and vice versa.
+    Permissive on distance/duration: prefers the closest match among same-day (+/-1
+    day), same-type, not-already-claimed candidates, with no hard rejection threshold —
+    a run that was cut short still links to its planned session rather than being
+    ignored, same principle as the race-goal matcher tolerating an imperfect match."""
+    if workout.linked_run_id:
+        return db.get(Run, workout.linked_run_id)
+    try:
+        target = datetime.strptime(workout.scheduled_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+    wanted = stats._normalize_activity_type(workout.activity_type)
+    already_claimed = {
+        row[0] for row in db.query(Workout.linked_run_id).filter(Workout.linked_run_id.isnot(None)).all()
+    }
+
+    candidates = []
+    for offset in (0, -1, 1):
+        d = (target + timedelta(days=offset)).isoformat()
+        candidates.extend(db.query(Run).filter(Run.date == d).filter(owned_by(Run.user_id, user_id)).all())
+    candidates = [
+        r for r in candidates
+        if stats._normalize_activity_type(r.activity_type) == wanted and r.id not in already_claimed
+    ]
+    if not candidates:
+        return None
+
+    if workout.target_distance_mi:
+        best = min(candidates, key=lambda r: abs((r.distance_mi or 0) - workout.target_distance_mi))
+    elif workout.target_duration_sec:
+        best = min(candidates, key=lambda r: abs((r.moving_time_sec or 0) - workout.target_duration_sec))
+    else:
+        best = max(candidates, key=lambda r: r.distance_mi or 0)
+
+    workout.linked_run_id = best.id
+    workout.status = "completed"
+    db.commit()
+    return best
+
+
+def list_workouts(db, start_date=None, end_date=None, status=None, user_id: str = DEFAULT_USER_ID) -> list:
+    q = db.query(Workout).filter(owned_by(Workout.user_id, user_id))
+    if start_date:
+        q = q.filter(Workout.scheduled_date >= start_date)
+    if end_date:
+        q = q.filter(Workout.scheduled_date <= end_date)
+    if status:
+        q = q.filter(Workout.status == status)
+    workouts = q.order_by(Workout.scheduled_date).all()
+
+    # Auto-link any planned workout whose date has passed against real synced runs —
+    # read-time reconciliation, mirrors how stats._find_and_link_race_run works, so no
+    # sync-pipeline hook is needed in strava.py/garmin_sync.py for this to happen. This
+    # can flip a row's status out from under the `status` filter applied above (a
+    # `status=planned` query can trigger a row to become "completed" mid-call) — re-
+    # apply the filter after linking so the response always matches what was asked for.
+    today = datetime.now(timezone.utc).date().isoformat()
+    for w in workouts:
+        if w.status == "planned" and w.scheduled_date <= today and not w.linked_run_id:
+            _find_and_link_workout_run(db, w, user_id)
+    if status:
+        workouts = [w for w in workouts if w.status == status]
+
+    return [_workout_to_dict(w) for w in workouts]

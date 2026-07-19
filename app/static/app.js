@@ -420,6 +420,7 @@ function dispatchCurrentTab() {
   document.getElementById("insights-tab").style.display = currentTab === "insights" ? "block" : "none";
   document.getElementById("map-tab").style.display = currentTab === "map" ? "block" : "none";
   document.getElementById("chat-tab").style.display = currentTab === "chat" ? "block" : "none";
+  document.getElementById("workouts-tab").style.display = currentTab === "workouts" ? "block" : "none";
   document.getElementById("settings-tab").style.display = currentTab === "settings" ? "block" : "none";
   document.getElementById("filter-bar").style.display =
     (currentTab === "runs" || currentTab === "insights") ? "flex" : "none";
@@ -442,6 +443,9 @@ function dispatchCurrentTab() {
     } else if (currentTab === "goals") {
       document.getElementById("empty-state").style.display = "none";
       renderGoalsTab();
+    } else if (currentTab === "workouts") {
+      document.getElementById("empty-state").style.display = "none";
+      renderWorkoutsTab();
     } else {
       render();
     }
@@ -2061,6 +2065,125 @@ function openGoalModal(goal) {
     renderRaceCountdown();
     if (currentTab === "goals") renderGoalsTab();
     else if (currentTab === "home") renderHomeTab();
+  };
+}
+
+// ---------- Workouts (coach-scheduled or manually-created prescribed sessions —
+// auto-links to the matching synced Run server-side, see coach._find_and_link_workout_run) ----------
+const WORKOUT_TYPE_LABELS = {
+  easy: "Easy", tempo: "Tempo", interval: "Interval", long: "Long", rest: "Rest",
+  strength: "Strength", cross_train: "Cross-train",
+};
+const WORKOUT_STATUS_COLORS = { completed: "var(--good)", skipped: "var(--hot)", modified: "var(--faint)", planned: "var(--faint)" };
+
+function parsePaceToSec(str) {
+  if (!str) return null;
+  const parts = String(str).trim().split(":");
+  if (parts.length !== 2) return null;
+  const m = Number(parts[0]), s = Number(parts[1]);
+  if (!isFinite(m) || !isFinite(s)) return null;
+  return m * 60 + s;
+}
+
+function workoutCardHTML(w) {
+  const targetParts = [];
+  if (w.targetDistanceMi) targetParts.push(`${w.targetDistanceMi} mi`);
+  if (w.targetPaceSecPerMi) targetParts.push(`${paceStr(w.targetPaceSecPerMi)}/mi`);
+  if (w.targetDurationSec) targetParts.push(`${Math.round(w.targetDurationSec / 60)} min`);
+  return `
+    <div class="settings-section" style="margin-bottom:10px">
+      <div class="settings-row">
+        <span class="settings-label">${w.scheduledDate} · ${WORKOUT_TYPE_LABELS[w.workoutType] || w.workoutType} (${escapeHtml(w.activityType)})</span>
+        <span class="settings-value" style="color:${WORKOUT_STATUS_COLORS[w.status] || "var(--faint)"}">${w.status}</span>
+      </div>
+      ${targetParts.length ? `<div class="settings-row"><span class="settings-label">Target</span><span class="settings-value">${escapeHtml(targetParts.join(" · "))}</span></div>` : ""}
+      ${w.notes ? `<div class="settings-row"><span class="settings-label">Notes</span><span class="settings-value" style="font-weight:400;text-align:right">${escapeHtml(w.notes)}</span></div>` : ""}
+      ${w.critiqueText ? `<div class="settings-row"><span class="settings-label">Critique</span><span class="settings-value" style="font-weight:400;text-align:right">${escapeHtml(w.critiqueText)}</span></div>` : ""}
+      <div class="btn-row" style="justify-content:flex-start;margin-top:8px">
+        <button class="edit-link" data-workout-edit="${w.id}">Edit</button>
+        <button class="edit-link" data-workout-delete="${w.id}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+async function renderWorkoutsTab() {
+  const el = document.getElementById("workouts-tab");
+  el.innerHTML = `
+    <div class="btn-row" style="justify-content:flex-start;margin:16px 0"><button class="btn" id="new-workout-btn">+ New Workout</button></div>
+    <div id="workouts-list"><div class="empty-chart">Loading…</div></div>
+  `;
+  document.getElementById("new-workout-btn").onclick = () => openWorkoutModal(null);
+
+  const workouts = await fetch("/api/workouts").then((r) => r.json()).catch(() => []);
+  const today = new Date().toISOString().slice(0, 10);
+  const upcoming = workouts.filter((w) => w.status === "planned" && w.scheduledDate >= today);
+  const past = workouts.filter((w) => !(w.status === "planned" && w.scheduledDate >= today));
+
+  document.getElementById("workouts-list").innerHTML = `
+    <div class="chart-title">Upcoming</div>
+    <div style="margin-top:10px">${upcoming.length ? upcoming.map(workoutCardHTML).join("") : `<div class="empty-chart">Nothing scheduled — ask the coach in Chat, or add one here.</div>`}</div>
+    ${past.length ? `<div class="chart-title" style="margin-top:20px">Past</div><div style="margin-top:10px">${past.map(workoutCardHTML).join("")}</div>` : ""}
+  `;
+
+  document.querySelectorAll("[data-workout-edit]").forEach((btn) => {
+    btn.onclick = () => openWorkoutModal(workouts.find((w) => w.id === btn.dataset.workoutEdit));
+  });
+  document.querySelectorAll("[data-workout-delete]").forEach((btn) => {
+    btn.onclick = async () => {
+      await fetch(`/api/workouts/${btn.dataset.workoutDelete}`, { method: "DELETE" });
+      renderWorkoutsTab();
+    };
+  });
+}
+
+function openWorkoutModal(workout) {
+  const root = document.getElementById("modal-root");
+  const isEdit = !!workout;
+  const typeOptionsHtml = Object.entries(WORKOUT_TYPE_LABELS)
+    .map(([v, label]) => `<option value="${v}" ${v === (workout?.workoutType || "easy") ? "selected" : ""}>${label}</option>`).join("");
+
+  root.innerHTML = `
+    <div class="modal-backdrop" id="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><div style="font-weight:700">${isEdit ? "Edit Workout" : "New Workout"}</div><button class="modal-close" id="modal-close">✕</button></div>
+        <div class="field"><div class="field-label">Date</div><input id="f-workout-date" type="date" value="${workout?.scheduledDate || ""}" /></div>
+        <div class="field"><div class="field-label">Type</div><select id="f-workout-type">${typeOptionsHtml}</select></div>
+        <div class="field"><div class="field-label">Activity</div><input id="f-workout-activity" type="text" value="${workout ? escapeHtml(workout.activityType) : "Run"}" placeholder="Run" /></div>
+        <div class="field"><div class="field-label">Target distance (mi)</div><input id="f-workout-distance" type="number" step="0.1" value="${workout?.targetDistanceMi ?? ""}" /></div>
+        <div class="field"><div class="field-label">Target pace (min:sec/mi)</div><input id="f-workout-pace" type="text" placeholder="8:00" value="${workout?.targetPaceSecPerMi ? paceStr(workout.targetPaceSecPerMi) : ""}" /></div>
+        <div class="field"><div class="field-label">Target duration (min)</div><input id="f-workout-duration" type="number" step="1" value="${workout?.targetDurationSec ? Math.round(workout.targetDurationSec / 60) : ""}" /></div>
+        <div class="field"><div class="field-label">Notes</div><textarea id="f-workout-notes">${workout ? escapeHtml(workout.notes || "") : ""}</textarea></div>
+        <button class="modal-save" id="modal-save">${isEdit ? "Save" : "Create Workout"}</button>
+      </div>
+    </div>`;
+
+  document.getElementById("modal-close").onclick = () => (root.innerHTML = "");
+  document.getElementById("modal-backdrop").onclick = (e) => { if (e.target.id === "modal-backdrop") root.innerHTML = ""; };
+
+  document.getElementById("modal-save").onclick = async () => {
+    const durationMin = Number(document.getElementById("f-workout-duration").value);
+    const body = {
+      scheduledDate: document.getElementById("f-workout-date").value,
+      workoutType: document.getElementById("f-workout-type").value,
+      activityType: document.getElementById("f-workout-activity").value || "Run",
+      targetDistanceMi: Number(document.getElementById("f-workout-distance").value) || null,
+      targetPaceSecPerMi: parsePaceToSec(document.getElementById("f-workout-pace").value),
+      targetDurationSec: durationMin ? durationMin * 60 : null,
+      notes: document.getElementById("f-workout-notes").value,
+    };
+    if (!body.scheduledDate) return;
+    if (isEdit) {
+      await fetch(`/api/workouts/${workout.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+    } else {
+      await fetch("/api/workouts", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+    }
+    root.innerHTML = "";
+    renderWorkoutsTab();
   };
 }
 

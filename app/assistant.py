@@ -45,6 +45,7 @@ _TOOL_NAMES = [
     "get_run_summary", "get_weekly_mileage", "get_monthly_mileage", "get_personal_records",
     "get_pace_trend", "get_training_load_trend", "get_daily_steps", "query_runs", "get_run_detail",
     "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
+    "get_scheduled_workouts", "schedule_workout", "update_workout", "record_workout_completion",
 ]
 ALLOWED_TOOL_NAMES = [f"mcp__runlog__{name}" for name in _TOOL_NAMES]
 
@@ -237,10 +238,93 @@ def _build_tools(user_id: str) -> list:
             return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
+    @tool("get_scheduled_workouts", "List scheduled/prescribed workouts. Planned workouts whose date has passed are auto-checked against real synced runs and linked/marked completed if a match is found.", {
+        "type": "object",
+        "properties": {
+            "startDate": {"type": "string", "description": "YYYY-MM-DD"},
+            "endDate": {"type": "string", "description": "YYYY-MM-DD"},
+            "status": {"type": "string", "enum": list(coach.VALID_WORKOUT_STATUSES), "description": "Omit for all statuses"},
+        },
+    })
+    async def get_scheduled_workouts(args):
+        result = _db_call(coach.list_workouts, args.get("startDate"), args.get("endDate"), args.get("status"), user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("schedule_workout", "Prescribe a workout for a specific date. Check get_health_history first — a workout suggestion must be modified (rest/lower intensity/avoid the affected area) if anything active would be affected, not just persona-toned around the same plan.", {
+        "type": "object",
+        "properties": {
+            "scheduledDate": {"type": "string", "description": "YYYY-MM-DD"},
+            "workoutType": {"type": "string", "enum": list(coach.VALID_WORKOUT_TYPES)},
+            "activityType": {"type": "string", "description": "e.g. 'Run', 'Ride', 'Walk' — must match what the user actually does for this session so it can auto-link to the right synced activity later. Defaults to 'Run'."},
+            "targetDistanceMi": {"type": "number"},
+            "targetPaceSecPerMi": {"type": "integer"},
+            "targetDurationSec": {"type": "integer"},
+            "notes": {"type": "string", "description": "Prescription rationale"},
+        },
+        "required": ["scheduledDate", "workoutType"],
+    })
+    async def schedule_workout(args):
+        try:
+            result = _db_call(
+                coach.create_workout, args["scheduledDate"], args["workoutType"],
+                args.get("activityType", "Run"), args.get("targetDistanceMi"),
+                args.get("targetPaceSecPerMi"), args.get("targetDurationSec"), args.get("notes"),
+                user_id=user_id,
+            )
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("update_workout", "Update a scheduled workout — reschedule, change prescription, or mark skipped.", {
+        "type": "object",
+        "properties": {
+            "workoutId": {"type": "string"},
+            "scheduledDate": {"type": "string"},
+            "workoutType": {"type": "string", "enum": list(coach.VALID_WORKOUT_TYPES)},
+            "activityType": {"type": "string"},
+            "targetDistanceMi": {"type": "number"},
+            "targetPaceSecPerMi": {"type": "integer"},
+            "targetDurationSec": {"type": "integer"},
+            "notes": {"type": "string"},
+            "status": {"type": "string", "enum": list(coach.VALID_WORKOUT_STATUSES)},
+        },
+        "required": ["workoutId"],
+    })
+    async def update_workout(args):
+        fields = {
+            "scheduled_date": args.get("scheduledDate"), "workout_type": args.get("workoutType"),
+            "activity_type": args.get("activityType"), "target_distance_mi": args.get("targetDistanceMi"),
+            "target_pace_sec_per_mi": args.get("targetPaceSecPerMi"), "target_duration_sec": args.get("targetDurationSec"),
+            "notes": args.get("notes"), "status": args.get("status"),
+        }
+        try:
+            result = _db_call(coach.update_workout, args["workoutId"], user_id=user_id, **fields)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("record_workout_completion", "Record a critique of a completed workout — pair it with a real run (from query_runs/get_run_detail) and your honest analysis of how it went relative to the plan or recent trends.", {
+        "type": "object",
+        "properties": {
+            "workoutId": {"type": "string"},
+            "runId": {"type": "string", "description": "The real Run this session corresponds to, if not already auto-linked"},
+            "critiqueText": {"type": "string"},
+        },
+        "required": ["workoutId", "critiqueText"],
+    })
+    async def record_workout_completion(args):
+        try:
+            result = _db_call(coach.record_workout_completion, args["workoutId"], args.get("runId"),
+                               args["critiqueText"], user_id=user_id)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
     return [
         get_run_summary, get_weekly_mileage, get_monthly_mileage, get_personal_records,
         get_pace_trend, get_training_load_trend, get_daily_steps, query_runs, get_run_detail,
         get_health_history, find_related_health_history, log_health_note, update_health_status,
+        get_scheduled_workouts, schedule_workout, update_workout, record_workout_completion,
     ]
 
 

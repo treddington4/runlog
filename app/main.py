@@ -650,6 +650,65 @@ def get_health_notes(status: str = None, category: str = None):
         db.close()
 
 
+# ---------- Workouts (manual-UI path — mirrors the schedule_workout/update_workout
+# chat tools exactly, both call into coach.py so validation can't drift between them) ----------
+@app.get("/api/workouts")
+def get_workouts(startDate: str = None, endDate: str = None, status: str = None):
+    import coach
+    db = SessionLocal()
+    try:
+        return coach.list_workouts(db, startDate, endDate, status)
+    finally:
+        db.close()
+
+
+@app.post("/api/workouts")
+async def create_workout_endpoint(request: Request):
+    import coach
+    body = await request.json()
+    db = SessionLocal()
+    try:
+        return coach.create_workout(
+            db, body.get("scheduledDate"), body.get("workoutType"), body.get("activityType", "Run"),
+            body.get("targetDistanceMi"), body.get("targetPaceSecPerMi"), body.get("targetDurationSec"),
+            body.get("notes"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        db.close()
+
+
+@app.patch("/api/workouts/{workout_id}")
+async def update_workout_endpoint(workout_id: str, request: Request):
+    import coach
+    body = await request.json()
+    field_map = {
+        "scheduledDate": "scheduled_date", "workoutType": "workout_type", "activityType": "activity_type",
+        "targetDistanceMi": "target_distance_mi", "targetPaceSecPerMi": "target_pace_sec_per_mi",
+        "targetDurationSec": "target_duration_sec", "notes": "notes", "status": "status",
+    }
+    fields = {py_key: body[api_key] for api_key, py_key in field_map.items() if api_key in body}
+    db = SessionLocal()
+    try:
+        return coach.update_workout(db, workout_id, **fields)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        db.close()
+
+
+@app.delete("/api/workouts/{workout_id}")
+def delete_workout_endpoint(workout_id: str):
+    import coach
+    db = SessionLocal()
+    try:
+        coach.delete_workout(db, workout_id)
+        return {"deleted": True}
+    finally:
+        db.close()
+
+
 # ---------- Dashboard (real computed stats, no LLM involved) ----------
 @app.get("/api/dashboard/summary")
 def dashboard_summary():

@@ -85,6 +85,7 @@ GARMIN_FIT_ROUTE_ALL_GPS = (
 
 METERS_PER_MILE = 1609.34
 SEMICIRCLE_TO_DEGREES = 180 / (2**31)
+GRAMS_PER_LB = 453.592
 
 
 class GarminLoginRateLimitError(RuntimeError):
@@ -621,6 +622,38 @@ def _parse_fit_streams(
     return result
 
 
+def _fetch_exercise_sets(client, activity_id) -> list:
+    """Set-by-set breakdown for a strength_training activity: each ACTIVE set becomes
+    one entry, REST gaps are dropped (the Run's own moving_time_sec/duration already
+    account for total elapsed time, so rest doesn't need its own row in what's meant to
+    be a compact per-set table). Garmin's exercise auto-detection is genuinely
+    unreliable — often "UNKNOWN" at <50% confidence — until the user manually corrects
+    it in the Garmin Connect app, so this captures whatever's on record at sync time,
+    good or bad, rather than trying to second-guess it here."""
+    try:
+        data = client.get_activity_exercise_sets(activity_id)
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
+        return []
+    sets = []
+    for raw in data.get("exerciseSets", []):
+        if raw.get("setType") != "ACTIVE":
+            continue
+        exercises = raw.get("exercises") or []
+        best = max(exercises, key=lambda e: e.get("probability") or 0, default={})
+        name = best.get("name") or best.get("category")
+        exercise = name.replace("_", " ").title() if name else "Unknown exercise"
+        weight_g = raw.get("weight")
+        sets.append({
+            "exercise": exercise,
+            "reps": raw.get("repetitionCount"),
+            "weightLb": round(weight_g / GRAMS_PER_LB, 1) if weight_g else None,
+            "durationSec": round(raw["duration"]) if raw.get("duration") else None,
+        })
+    return sets
+
+
 def _process_activity(act: dict, client, db, user_id: str) -> bool:
     """Fetch splits/weather for one Garmin activity of any type and upsert it as a Run row.
     Always returns True — every activity type is captured, not just running; only running
@@ -709,6 +742,12 @@ def _process_activity(act: dict, client, db, user_id: str) -> bool:
         else activity_type
     )
 
+    exercise_sets = (
+        _fetch_exercise_sets(client, act["activityId"])
+        if activity_type == "strength_training"
+        else []
+    )
+
     intervals_json = "[]"
     if is_run and run_type == "Interval" and splits:
         raw_laps = [
@@ -771,6 +810,7 @@ def _process_activity(act: dict, client, db, user_id: str) -> bool:
     run.vertical_ratio_pct = dynamics.get("verticalRatioPct")
     run.stride_length_m = dynamics.get("strideLengthM")
     run.avg_power_watts = dynamics.get("avgPowerWatts")
+    run.exercise_sets_json = json.dumps(exercise_sets) if exercise_sets else None
     run.detail_synced_at = datetime.now(timezone.utc).isoformat()
 
     db.merge(run)

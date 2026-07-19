@@ -59,6 +59,13 @@ class Run(Base):
     route_metrics_json = Column(Text, default="[]")  # JSON string: decimated [{lat,lon,paceSecPerMi,hr,cadence}]
     route_source = Column(String, nullable=True)  # Garmin-only diagnostic: "fit_record_stream" | "geopolyline_summary" | "none"; NULL for Strava rows and pre-rework Garmin rows
     detail_synced_at = Column(String, nullable=True)  # dedup marker — see run_needs_detail_sync()
+    exercise_sets_json = Column(Text, nullable=True)  # Garmin-only, strength_training activities: ordered
+                                                        # JSON list of {exercise, category, setType, reps,
+                                                        # weightLb, durationSec}, see garmin_sync._fetch_exercise_sets.
+                                                        # NULL for every other activity type/source — the app's
+                                                        # exercise auto-detection is unreliable (often "UNKNOWN"
+                                                        # with <50% confidence) until manually corrected in the
+                                                        # Garmin Connect app, so this is best-effort, not authoritative
 
     # Running dynamics, Garmin-only, parsed from the raw .FIT file's session message
     # (not available via Garmin Connect's regular summary API) — see garmin_sync.py

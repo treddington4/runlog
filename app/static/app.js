@@ -498,7 +498,7 @@ function renderRunsTab() {
   el.innerHTML = "";
   const data = filteredRuns();
   if (data.length === 0 && runs.length > 0) {
-    el.innerHTML = `<div class="empty-chart">No runs in this range.</div>`;
+    el.innerHTML = `<div class="empty-chart">No activities in this range.</div>`;
     return;
   }
   data.forEach((run) => {
@@ -571,16 +571,22 @@ function renderRunsTab() {
     let miniMapEl = null, miniMapRoute = null;
     if (isOpen) {
       const slot = card.querySelector(".expand-slot");
-      if (type === "Interval" && run.intervals?.length > 0) {
-        slot.appendChild(buildIntervalsTable(run.intervals, run.recovery));
-      } else if (run.splits?.length > 0) {
-        slot.appendChild(buildSplitsTable(run.splits));
+      if (run.exerciseSets?.length > 0) {
+        // Strength/mobility activities have no distance/GPS — a set-by-set table
+        // stands in for the splits table and mini-map entirely, not alongside them.
+        slot.appendChild(buildExerciseSetsTable(run.exerciseSets));
+      } else {
+        if (type === "Interval" && run.intervals?.length > 0) {
+          slot.appendChild(buildIntervalsTable(run.intervals, run.recovery));
+        } else if (run.splits?.length > 0) {
+          slot.appendChild(buildSplitsTable(run.splits));
+        }
+        const route = (run.route && run.route.length > 1) ? run.route : (run.routeMetrics || []).map((p) => [p.lat, p.lon]);
+        miniMapEl = document.createElement("div");
+        miniMapEl.className = "run-mini-map";
+        slot.appendChild(miniMapEl);
+        miniMapRoute = route.length > 1 ? route : null;
       }
-      const route = (run.route && run.route.length > 1) ? run.route : (run.routeMetrics || []).map((p) => [p.lat, p.lon]);
-      miniMapEl = document.createElement("div");
-      miniMapEl.className = "run-mini-map";
-      slot.appendChild(miniMapEl);
-      miniMapRoute = route.length > 1 ? route : null;
     }
 
     el.appendChild(card);
@@ -653,6 +659,32 @@ function buildSplitsTable(splits) {
       <span style="color:var(--muted)">${isPlausibleHR(s.maxHR) ? s.maxHR : "--"}</span>
       <span style="color:var(--muted)">${s.avgCadence != null ? Math.round(s.avgCadence) : "--"}</span>
       <span style="color:rgb(76,201,240)">${gap ? paceStr(gap) : "--"}</span>
+    </div>`;
+  });
+  wrap.innerHTML = html;
+  return wrap;
+}
+
+// Groups consecutive same-exercise sets under one header (set 1, 2, 3...) rather than
+// repeating the exercise name per row — matches how Hevy/most strength apps group a
+// lift's working sets together. A set with reps==null and durationSec set is a hold
+// (e.g. plank) rather than a rep-based lift; a set with neither is Garmin's own auto-
+// detection with no confident count of either — shown as "--" rather than guessed at.
+function buildExerciseSetsTable(sets) {
+  const wrap = document.createElement("div");
+  wrap.className = "exercise-sets-table";
+  let html = `<div class="split-head"><span>Set</span><span>Exercise</span><span>Reps</span><span>Weight</span><span>Duration</span></div>`;
+  let setNum = 0, prevExercise = null;
+  sets.forEach((s) => {
+    setNum = s.exercise === prevExercise ? setNum + 1 : 1;
+    prevExercise = s.exercise;
+    const amount = s.reps != null ? `${s.reps}` : (s.durationSec != null ? "hold" : "--");
+    html += `<div class="split-row">
+      <span style="color:var(--muted)">${setNum}</span>
+      <span>${escapeHtml(s.exercise)}</span>
+      <span>${amount}</span>
+      <span>${s.weightLb != null ? Math.round(s.weightLb) + " lb" : "--"}</span>
+      <span style="color:var(--muted)">${s.durationSec != null ? timeStr(s.durationSec) : "--"}</span>
     </div>`;
   });
   wrap.innerHTML = html;

@@ -136,10 +136,11 @@ body {
 .badge { font-size: 10px; font-weight: 700; border-radius: 5px; padding: 2px 6px;
   text-transform: uppercase; letter-spacing: .04em; margin-left: 8px; }
 
-.splits-table, .intervals-table { border-top: 1px solid var(--border); padding: 10px 16px 14px; background: var(--surface2); }
+.splits-table, .intervals-table, .exercise-sets-table { border-top: 1px solid var(--border); padding: 10px 16px 14px; background: var(--surface2); }
 .split-row, .split-head { display: grid; grid-template-columns: 32px 1fr 46px 44px 44px 44px 52px;
   align-items: center; font-size: 12px; padding: 5px 4px; gap: 5px; font-family: 'JetBrains Mono', monospace; }
 .split-head { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; padding-bottom: 6px; }
+.exercise-sets-table .split-row, .exercise-sets-table .split-head { grid-template-columns: 32px 1fr 50px 60px 60px; }
 .pace-bar { background: var(--bg); border-radius: 4px; height: 14px; position: relative; overflow: hidden; }
 .pace-bar-fill { position: absolute; left:0; top:0; bottom:0; background: linear-gradient(90deg, #FFC85788, #FFC85733); }
 .pace-bar span { position: relative; font-size: 11px; padding-left: 6px; line-height: 14px; }

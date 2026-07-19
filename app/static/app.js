@@ -670,18 +670,33 @@ function buildSplitsTable(splits) {
 // lift's working sets together. A set with reps==null and durationSec set is a hold
 // (e.g. plank) rather than a rep-based lift; a set with neither is Garmin's own auto-
 // detection with no confident count of either — shown as "--" rather than guessed at.
+//
+// setType/supersetGroup are optional — Garmin's raw stream has no concept of warmup
+// sets or supersets at all (just a flat ACTIVE/REST timeline), so those fields are only
+// ever populated when the data came from a real structured source like Hevy. Absent
+// entirely rather than guessed at from timing, which would be unreliable.
+const SET_TYPE_LABELS = { warmup: "W", dropset: "D", failure: "F" };
+
 function buildExerciseSetsTable(sets) {
   const wrap = document.createElement("div");
   wrap.className = "exercise-sets-table";
   let html = `<div class="split-head"><span>Set</span><span>Exercise</span><span>Reps</span><span>Weight</span><span>Duration</span></div>`;
-  let setNum = 0, prevExercise = null;
+  let setNum = 0, prevExercise = null, prevSupersetGroup = undefined;
   sets.forEach((s) => {
     setNum = s.exercise === prevExercise ? setNum + 1 : 1;
     prevExercise = s.exercise;
     const amount = s.reps != null ? `${s.reps}` : (s.durationSec != null ? "hold" : "--");
-    html += `<div class="split-row">
+    const isNewSupersetGroup = s.supersetGroup != null && s.supersetGroup !== prevSupersetGroup;
+    prevSupersetGroup = s.supersetGroup;
+    if (isNewSupersetGroup) {
+      html += `<div class="superset-label">⇄ Superset</div>`;
+    }
+    const rowStyle = s.supersetGroup != null ? ' style="border-left:2px solid var(--cold);padding-left:4px"' : "";
+    const typeLabel = SET_TYPE_LABELS[s.setType]
+      ? `<span class="set-type-badge" title="${s.setType}">${SET_TYPE_LABELS[s.setType]}</span> ` : "";
+    html += `<div class="split-row"${rowStyle}>
       <span style="color:var(--muted)">${setNum}</span>
-      <span>${escapeHtml(s.exercise)}</span>
+      <span>${typeLabel}${escapeHtml(s.exercise)}</span>
       <span>${amount}</span>
       <span>${s.weightLb != null ? Math.round(s.weightLb) + " lb" : "--"}</span>
       <span style="color:var(--muted)">${s.durationSec != null ? timeStr(s.durationSec) : "--"}</span>

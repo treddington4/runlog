@@ -141,6 +141,8 @@ body {
   align-items: center; font-size: 12px; padding: 5px 4px; gap: 5px; font-family: 'JetBrains Mono', monospace; }
 .split-head { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; padding-bottom: 6px; }
 .exercise-sets-table .split-row, .exercise-sets-table .split-head { grid-template-columns: 32px 1fr 50px 60px 60px; }
+.set-type-badge { display: inline-block; font-size: 9px; color: var(--faint); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; margin-right: 2px; }
+.superset-label { font-size: 10px; color: var(--cold); text-transform: uppercase; letter-spacing: .04em; padding: 6px 4px 2px; }
 .pace-bar { background: var(--bg); border-radius: 4px; height: 14px; position: relative; overflow: hidden; }
 .pace-bar-fill { position: absolute; left:0; top:0; bottom:0; background: linear-gradient(90deg, #FFC85788, #FFC85733); }
 .pace-bar span { position: relative; font-size: 11px; padding-left: 6px; line-height: 14px; }

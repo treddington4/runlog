@@ -663,7 +663,14 @@ def _process_activity(act: dict, client, db, user_id: str) -> bool:
 
     run_id = f"garmin_{act['activityId']}"
     distance_mi = (act.get("distance") or 0) / METERS_PER_MILE
-    moving_time = act.get("movingDuration") or act.get("duration") or 0
+    # movingDuration is accelerometer-detected active movement — meaningful for a run
+    # (distinguishes real pauses from actual pace) but wrong for strength training,
+    # where standing still resting between sets is part of the workout, not a pause.
+    # A real session synced at movingDuration=1012s/17min when the actual elapsed
+    # session (duration) was 3737s/62min is exactly this: use total elapsed time for
+    # strength_training instead.
+    moving_time = act.get("duration") if activity_type == "strength_training" \
+        else (act.get("movingDuration") or act.get("duration") or 0)
     avg_pace = moving_time / distance_mi if distance_mi else None
     is_treadmill = "treadmill" in (act.get("activityType", {}).get("typeKey") or "")
 

@@ -16,6 +16,7 @@ let expandedId = null;
 let currentTab = "home";
 let charts = [];
 let sleepHypnogramChart = null;
+let chatCharts = []; // separate from `charts` (Insights) so switching tabs never tears down the other's charts
 let filterMode = "rolling7"; // 'rolling7' | 'week' | 'custom' | 'all'
 let filterAnchor = todayMidnight();
 let customStart = addDays(todayMidnight(), -29);
@@ -2284,10 +2285,31 @@ function renderDashboardCards(d) {
   `;
 }
 
-function chatBubble(msg) {
+function destroyChatCharts() { chatCharts.forEach((c) => c.destroy()); chatCharts = []; }
+
+function chatBubble(msg, chartIdPrefix) {
   const toolTrace = msg.toolCalls && msg.toolCalls.length
     ? `<div class="chat-tool-trace">used: ${msg.toolCalls.map((t) => t.tool).join(", ")}</div>` : "";
-  return `<div class="chat-msg ${msg.role}">${escapeHtml(msg.content)}${toolTrace}</div>`;
+  const chartsHtml = (msg.charts || []).map((c, i) =>
+    chartCardHTML(escapeHtml(c.title || ""), "", `${chartIdPrefix}-chart-${i}`, 180)).join("");
+  return `<div class="chat-msg ${msg.role}">${escapeHtml(msg.content)}${chartsHtml}${toolTrace}</div>`;
+}
+
+// Second, separate pass after the bubble's HTML is actually in the DOM — Chart.js
+// needs a real mounted <canvas>, same two-step pattern renderInsightsTab already uses.
+function mountChatCharts(msg, chartIdPrefix) {
+  (msg.charts || []).forEach((c, i) => {
+    const canvas = document.getElementById(`${chartIdPrefix}-chart-${i}`);
+    if (!canvas || !Array.isArray(c.labels) || !Array.isArray(c.datasets)) return;
+    chatCharts.push(new Chart(canvas, {
+      type: c.chartType === "bar" ? "bar" : "line",
+      data: {
+        labels: c.labels,
+        datasets: c.datasets.map((d) => ({ label: d.label, data: d.data, borderColor: "#4CC9F0", backgroundColor: "#4CC9F0" })),
+      },
+      options: { responsive: true, maintainAspectRatio: false },
+    }));
+  });
 }
 
 async function renderChatTab() {
@@ -2327,7 +2349,9 @@ async function renderChatTab() {
   document.getElementById("chat-not-configured").style.display = chatConfigured ? "none" : "block";
 
   const thread = document.getElementById("chat-thread");
-  thread.innerHTML = history.map(chatBubble).join("");
+  destroyChatCharts();
+  thread.innerHTML = history.map((m, i) => chatBubble(m, `hist-${i}`)).join("");
+  history.forEach((m, i) => mountChatCharts(m, `hist-${i}`));
   thread.scrollTop = thread.scrollHeight;
 
   document.getElementById("chat-reset-btn").onclick = async () => {
@@ -2362,7 +2386,8 @@ async function renderChatTab() {
       if (!res.ok) {
         pendingEl.outerHTML = chatBubble({ role: "assistant", content: `Error: ${data.detail || "something went wrong"}` });
       } else {
-        pendingEl.outerHTML = chatBubble({ role: "assistant", content: data.reply, toolCalls: data.toolCalls });
+        pendingEl.outerHTML = chatBubble({ role: "assistant", content: data.reply, toolCalls: data.toolCalls, charts: data.charts }, pendingId);
+        mountChatCharts({ charts: data.charts }, pendingId);
       }
     } catch (e) {
       const pendingEl = document.getElementById(pendingId);

@@ -572,6 +572,7 @@ def chat_history():
         return [{
             "role": r.role, "content": r.content,
             "toolCalls": json.loads(r.tool_calls_json) if r.tool_calls_json else None,
+            "charts": json.loads(r.charts_json) if r.charts_json else None,
             "createdAt": r.created_at,
         } for r in rows]
     finally:

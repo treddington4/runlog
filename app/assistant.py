@@ -46,6 +46,7 @@ _TOOL_NAMES = [
     "get_pace_trend", "get_training_load_trend", "get_daily_steps", "query_runs", "get_run_detail",
     "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
     "get_scheduled_workouts", "schedule_workout", "update_workout", "record_workout_completion",
+    "render_chart",
 ]
 ALLOWED_TOOL_NAMES = [f"mcp__runlog__{name}" for name in _TOOL_NAMES]
 
@@ -320,11 +321,39 @@ def _build_tools(user_id: str) -> list:
             return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
+    @tool("render_chart", "Embed a chart in your reply. Use real numbers you already retrieved via another tool this turn (e.g. get_weekly_mileage) — this tool does not compute anything itself, it just declares what to draw. labels and each dataset's data array must be the same length.", {
+        "type": "object",
+        "properties": {
+            "chartType": {"type": "string", "enum": ["line", "bar"]},
+            "title": {"type": "string"},
+            "labels": {"type": "array", "items": {"type": "string"}, "description": "X-axis labels, e.g. dates or week-start strings"},
+            "datasets": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "data": {"type": "array", "items": {"type": "number"}},
+                    },
+                    "required": ["label", "data"],
+                },
+            },
+        },
+        "required": ["chartType", "title", "labels", "datasets"],
+    })
+    async def render_chart(args):
+        # Pure passthrough — no DB call, no computation. Its "result" is just its own
+        # input echoed back; send_message() pulls chart specs straight out of the
+        # already-captured tool_calls list rather than needing to parse a separate
+        # ToolResultBlock from the SDK stream.
+        return {"content": [{"type": "text", "text": json.dumps(args)}]}
+
     return [
         get_run_summary, get_weekly_mileage, get_monthly_mileage, get_personal_records,
         get_pace_trend, get_training_load_trend, get_daily_steps, query_runs, get_run_detail,
         get_health_history, find_related_health_history, log_health_note, update_health_status,
         get_scheduled_workouts, schedule_workout, update_workout, record_workout_completion,
+        render_chart,
     ]
 
 
@@ -378,12 +407,13 @@ async def reset_client(user_id: str = DEFAULT_USER_ID):
         await client.disconnect()
 
 
-def _persist(role: str, content: str, tool_calls=None, user_id: str = DEFAULT_USER_ID):
+def _persist(role: str, content: str, tool_calls=None, charts=None, user_id: str = DEFAULT_USER_ID):
     db = SessionLocal()
     try:
         db.add(ChatMessage(
             user_id=user_id, role=role, content=content,
             tool_calls_json=json.dumps(tool_calls) if tool_calls else None,
+            charts_json=json.dumps(charts) if charts else None,
             created_at=datetime.now(timezone.utc).isoformat(),
         ))
         db.commit()
@@ -424,5 +454,11 @@ async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID) -> dict:
                 elif block_type == "ToolUseBlock" and str(block.name).startswith("mcp__runlog__"):
                     tool_calls.append({"tool": block.name.replace("mcp__runlog__", ""), "input": block.input})
 
-    _persist("assistant", reply_text, tool_calls, user_id=user_id)
-    return {"reply": reply_text, "toolCalls": tool_calls}
+    # render_chart is a pure passthrough (see _build_tools) — its "result" is exactly
+    # its own input, already captured above via the normal ToolUseBlock handling, so
+    # chart specs are pulled straight out of tool_calls rather than needing a second
+    # pass over the SDK's tool-result message stream.
+    charts = [tc["input"] for tc in tool_calls if tc["tool"] == "render_chart"]
+
+    _persist("assistant", reply_text, tool_calls, charts, user_id=user_id)
+    return {"reply": reply_text, "toolCalls": tool_calls, "charts": charts}

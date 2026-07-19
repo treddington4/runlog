@@ -269,14 +269,27 @@ def _workout_to_dict(w: Workout) -> dict:
     }
 
 
-def create_workout(db, scheduled_date, workout_type, activity_type="Run", target_distance_mi=None,
+# rest/cross_train/strength days aren't a run by default — defaulting them to "Run" let
+# any incidental run synced that same day auto-complete a session that was never a run
+# (see _find_and_link_workout_run). "Other" normalizes (stats._normalize_activity_type)
+# to a bucket real Strava/Garmin activities essentially never land in, so these simply
+# stay "planned" until an explicit activityType is given or record_workout_completion
+# is called directly.
+_NON_RUN_WORKOUT_TYPES = ("rest", "cross_train", "strength")
+
+
+def _default_activity_type(workout_type: str) -> str:
+    return "Other" if workout_type in _NON_RUN_WORKOUT_TYPES else "Run"
+
+
+def create_workout(db, scheduled_date, workout_type, activity_type=None, target_distance_mi=None,
                     target_pace_sec_per_mi=None, target_duration_sec=None, notes=None,
                     user_id: str = DEFAULT_USER_ID) -> dict:
     if workout_type not in VALID_WORKOUT_TYPES:
         raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
     workout = Workout(
         id=f"workout_{uuid.uuid4().hex[:12]}", user_id=user_id, scheduled_date=scheduled_date,
-        workout_type=workout_type, activity_type=activity_type or "Run",
+        workout_type=workout_type, activity_type=activity_type or _default_activity_type(workout_type),
         target_distance_mi=target_distance_mi, target_pace_sec_per_mi=target_pace_sec_per_mi,
         target_duration_sec=target_duration_sec, notes=notes, status="planned",
         created_at=datetime.now(timezone.utc).isoformat(),

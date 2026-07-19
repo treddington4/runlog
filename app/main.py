@@ -670,7 +670,7 @@ async def create_workout_endpoint(request: Request):
     db = SessionLocal()
     try:
         return coach.create_workout(
-            db, body.get("scheduledDate"), body.get("workoutType"), body.get("activityType", "Run"),
+            db, body.get("scheduledDate"), body.get("workoutType"), body.get("activityType"),
             body.get("targetDistanceMi"), body.get("targetPaceSecPerMi"), body.get("targetDurationSec"),
             body.get("notes"),
         )

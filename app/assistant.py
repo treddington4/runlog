@@ -256,7 +256,7 @@ def _build_tools(user_id: str) -> list:
         "properties": {
             "scheduledDate": {"type": "string", "description": "YYYY-MM-DD"},
             "workoutType": {"type": "string", "enum": list(coach.VALID_WORKOUT_TYPES)},
-            "activityType": {"type": "string", "description": "e.g. 'Run', 'Ride', 'Walk' — must match what the user actually does for this session so it can auto-link to the right synced activity later. Defaults to 'Run'."},
+            "activityType": {"type": "string", "description": "e.g. 'Run', 'Ride', 'Walk' — must match what the user actually does for this session so it can auto-link to the right synced activity later. Leave unset for rest/cross_train/strength days that aren't literally a run or ride (e.g. a mobility/core session) — it defaults to a non-linking placeholder so an unrelated activity synced that day can't wrongly mark it complete. Only set it explicitly when the cross-training itself is a trackable activity type, e.g. 'Ride' for a bike cross-training day."},
             "targetDistanceMi": {"type": "number"},
             "targetPaceSecPerMi": {"type": "integer"},
             "targetDurationSec": {"type": "integer"},

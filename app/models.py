@@ -136,6 +136,7 @@ class ChatMessage(Base):
     role = Column(String)  # "user" | "assistant"
     content = Column(Text)
     tool_calls_json = Column(Text, nullable=True)  # which real tools/queries backed an assistant reply
+    charts_json = Column(Text, nullable=True)  # structured chart specs from render_chart tool calls, or NULL
     created_at = Column(String)  # ISO timestamp
 
 
@@ -151,6 +152,7 @@ class User(Base):
     id = Column(String, primary_key=True)  # DEFAULT_USER_ID or f"user_{uuid.uuid4().hex[:12]}"
     email = Column(String, nullable=True, unique=True)
     password_hash = Column(String, nullable=True)
+    coach_personality = Column(String, default="normal")  # "encouraging"|"normal"|"spicy"|"insulting"
     created_at = Column(String)
 
 
@@ -200,6 +202,66 @@ class Goal(Base):
     linked_run_id = Column(String, nullable=True)  # race goals: the actual Run matched to this event, see stats._find_matching_race_run
 
 
+class HealthNote(Base):
+    """Deliberately broader than "injury" — covers anything the athlete reports that
+    should affect training: musculoskeletal injuries, illness, chronic-condition
+    flare-ups, scheduled medical procedures, and purely temporary things (a migraine, a
+    hangover) with no diagnosis at all. `category` is what distinguishes these; only
+    category == "injury" populates body_area and gets automatic recurrence linking
+    (see coach.find_related_health_history) since only that category has a reliable
+    "same spot" match key — every other category is still fully tracked (logged,
+    checked in on, never deleted) but relies on the coach noticing relevant history via
+    the get_health_history tool rather than a DB-level auto-link. Rows are never
+    deleted, only transitioned through status — matches this app's established
+    retain-raw-data philosophy (see HR-glitch/duplicate-run handling elsewhere)."""
+    __tablename__ = "health_notes"
+
+    id = Column(String, primary_key=True)  # f"health_{uuid.uuid4().hex[:12]}"
+    user_id = Column(String, nullable=True)  # see owned_by()
+    category = Column(String)  # "injury"|"illness"|"chronic_flare"|"procedure"|"other"
+    body_area = Column(String, nullable=True)  # only meaningful when category == "injury"
+    suspected_type = Column(Text, nullable=True)  # free text, LLM-authored: "COVID", "migraine", "broken finger"
+    suspected_severity = Column(String, nullable=True)  # "mild"|"moderate"|"severe" — optional, not every
+                                                          # category needs this framing (a hangover doesn't)
+    training_impact = Column(Text, nullable=True)  # free text: what's actually restricted vs fine — e.g. a
+                                                     # broken finger: "avoid grip/strength work, running is fine"
+    date_reported = Column(String)  # YYYY-MM-DD
+    expected_clear_date = Column(String, nullable=True)
+    status = Column(String, default="active")  # "active"|"monitoring"|"resolved"
+    last_check_in_at = Column(String, nullable=True)  # ISO timestamp — rate-limits the check-in question to 1/day
+    resolved_at = Column(String, nullable=True)
+    related_note_id = Column(String, nullable=True)  # plain self-ref, mirrors Goal.linked_run_id; only ever
+                                                       # set for category == "injury"
+    notes = Column(Text, nullable=True)
+    created_at = Column(String)
+
+
+class Workout(Base):
+    """A coach-scheduled or manually-created prescribed session. Deliberately separate
+    from Goal (a target/status entity tracked via stats.goal_progress()) — a Workout is
+    a specific session on a specific date that can be auto-linked to the real Run that
+    satisfies it, see coach._find_and_link_workout_run()."""
+    __tablename__ = "workouts"
+
+    id = Column(String, primary_key=True)  # f"workout_{uuid.uuid4().hex[:12]}"
+    user_id = Column(String, nullable=True)
+    scheduled_date = Column(String)  # YYYY-MM-DD
+    workout_type = Column(String)  # "easy"|"tempo"|"interval"|"long"|"rest"|"strength"|"cross_train"
+    activity_type = Column(String, default="Run")  # "Run"|"Ride"|"Walk"|... — mirrors Run.activity_type,
+                                                     # deliberately separate from workout_type: workout_type is
+                                                     # training-intensity flavor, activity_type is what it can
+                                                     # auto-link against — a "tempo" workout is still a Run,
+                                                     # never a Ride
+    target_distance_mi = Column(Float, nullable=True)
+    target_pace_sec_per_mi = Column(Integer, nullable=True)
+    target_duration_sec = Column(Integer, nullable=True)
+    notes = Column(Text, nullable=True)  # coach's prescription rationale
+    status = Column(String, default="planned")  # "planned"|"completed"|"skipped"|"modified"
+    linked_run_id = Column(String, nullable=True)  # set once matched/critiqued, mirrors Goal.linked_run_id
+    critique_text = Column(Text, nullable=True)
+    created_at = Column(String)
+
+
 def get_sync_meta(key: str):
     db = SessionLocal()
     try:
@@ -230,9 +292,12 @@ def init_db():
 
 
 # Tables that have grown columns since their first release and need the ALTER TABLE
-# patch below. Whole NEW tables (User, ProviderCredential, Goal) don't need this —
-# create_all() already creates them from scratch with every current column.
-_MIGRATABLE_TABLES = [("runs", Run), ("daily_steps", DailySteps), ("chat_messages", ChatMessage), ("goals", Goal)]
+# patch below. Whole NEW tables (ProviderCredential, HealthNote, Workout) don't need
+# this — create_all() already creates them from scratch with every current column.
+# User WAS a whole-new-table exception too, but it's grown a column since
+# (coach_personality) so it has to be here now like any other existing table.
+_MIGRATABLE_TABLES = [("runs", Run), ("daily_steps", DailySteps), ("chat_messages", ChatMessage),
+                       ("goals", Goal), ("users", User)]
 
 
 def _migrate_add_missing_columns():

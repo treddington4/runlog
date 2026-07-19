@@ -10,10 +10,13 @@ attempting a query.
 SECURITY: this agent runs unattended, server-side, in the same container as the app
 and its SQLite DB file. Nothing about this feature should let the model touch the
 container filesystem or shell. Defense in depth, not just one allowlist: `allowed_tools`
-lists only our own read-only mcp__runlog__* tools, `disallowed_tools` explicitly blocks
+lists only our own mcp__runlog__* tools, `disallowed_tools` explicitly blocks
 Claude Code's built-in filesystem/shell tools as a second layer, and `setting_sources`
 is empty so no local .claude/settings.json in the container can grant anything back.
-No tool here writes to the DB — every stats.py call is a plain SELECT.
+Write access is narrowly and deliberately scoped: only HealthNote and Workout rows
+(via coach.py) can be written by any tool here — never Run, Goal, ProviderCredential,
+or anything filesystem/shell-adjacent. Every stats.py-backed tool remains a plain
+SELECT.
 """
 import json
 import os
@@ -26,22 +29,24 @@ from claude_agent_sdk import (
     tool,
 )
 
+import coach
 import stats
-from models import SessionLocal, Run, ChatMessage, DEFAULT_USER_ID
+from models import SessionLocal, Run, ChatMessage, User, DEFAULT_USER_ID, owned_by
 
 BUILTIN_TOOLS_BLOCKLIST = [
     "Bash", "Read", "Write", "Edit", "NotebookEdit", "Task", "WebFetch", "WebSearch",
     "Glob", "Grep", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList",
 ]
 
-SYSTEM_PROMPT = (
-    "You are RunLog's data assistant. You answer questions about the user's own "
-    "running/fitness data using ONLY the mcp__runlog__* tools provided — never guess "
-    "or estimate a number you haven't actually retrieved via a tool call. If a question "
-    "needs data these tools don't cover (e.g. weight, sleep, nutrition — not tracked "
-    "yet), say so plainly instead of guessing. Be concise and factual; this is a "
-    "personal dashboard, not a chat companion."
-)
+# Names only — fixed regardless of which user's session is asking, so this can stay a
+# module-level constant even though the tool objects themselves (_build_tools below)
+# are rebuilt per user.
+_TOOL_NAMES = [
+    "get_run_summary", "get_weekly_mileage", "get_monthly_mileage", "get_personal_records",
+    "get_pace_trend", "get_training_load_trend", "get_daily_steps", "query_runs", "get_run_detail",
+    "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
+]
+ALLOWED_TOOL_NAMES = [f"mcp__runlog__{name}" for name in _TOOL_NAMES]
 
 
 def _db_call(fn, *args, **kwargs):
@@ -52,161 +57,241 @@ def _db_call(fn, *args, **kwargs):
         db.close()
 
 
-@tool("get_run_summary", "Totals/averages (count, distance, pace, elevation, time) over an optional date range", {
-    "type": "object",
-    "properties": {
-        "startDate": {"type": "string", "description": "YYYY-MM-DD, inclusive"},
-        "endDate": {"type": "string", "description": "YYYY-MM-DD, inclusive"},
-        "activityType": {"type": "string", "description": "e.g. 'Run', 'Ride', 'Walk'. Defaults to 'Run'."},
-    },
-})
-async def get_run_summary(args):
-    result = _db_call(stats.run_summary, args.get("startDate"), args.get("endDate"), args.get("activityType", "Run"))
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
+def _build_tools(user_id: str) -> list:
+    """Returns a fresh set of tool closures bound to one user's id, so every DB
+    read/write a tool makes is actually scoped to that user — not just the SDK session
+    wrapper around them (see _get_client). Called once per user, when that user's
+    client is first created, not per message."""
+
+    @tool("get_run_summary", "Totals/averages (count, distance, pace, elevation, time) over an optional date range", {
+        "type": "object",
+        "properties": {
+            "startDate": {"type": "string", "description": "YYYY-MM-DD, inclusive"},
+            "endDate": {"type": "string", "description": "YYYY-MM-DD, inclusive"},
+            "activityType": {"type": "string", "description": "e.g. 'Run', 'Ride', 'Walk'. Defaults to 'Run'."},
+        },
+    })
+    async def get_run_summary(args):
+        result = _db_call(stats.run_summary, args.get("startDate"), args.get("endDate"),
+                           args.get("activityType", "Run"), user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_weekly_mileage", "Weekly mileage totals for the trailing N weeks", {
+        "type": "object",
+        "properties": {"weeks": {"type": "integer", "description": "Default 12"}},
+    })
+    async def get_weekly_mileage(args):
+        result = _db_call(stats.weekly_mileage, args.get("weeks", 12), user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_monthly_mileage", "Monthly mileage totals for the trailing N months", {
+        "type": "object",
+        "properties": {"months": {"type": "integer", "description": "Default 12"}},
+    })
+    async def get_monthly_mileage(args):
+        result = _db_call(stats.monthly_mileage, args.get("months", 12), user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_personal_records", "Longest run, fastest plausible pace, most elevation, longest duration", {
+        "type": "object", "properties": {},
+    })
+    async def get_personal_records(args):
+        result = _db_call(stats.personal_records, user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_pace_trend", "Rolling window pace trend over the trailing N days", {
+        "type": "object",
+        "properties": {
+            "days": {"type": "integer", "description": "Default 90"},
+            "windowDays": {"type": "integer", "description": "Rolling window size in days, default 7"},
+        },
+    })
+    async def get_pace_trend(args):
+        result = _db_call(stats.rolling_pace_trend, args.get("days", 90), args.get("windowDays", 7), user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_training_load_trend", "Trailing 4 weeks vs prior 4 weeks mileage, with percent change and direction", {
+        "type": "object", "properties": {},
+    })
+    async def get_training_load_trend(args):
+        result = _db_call(stats.training_load_trend, user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_daily_steps", "Daily step counts (Garmin-only) for the trailing N days", {
+        "type": "object",
+        "properties": {"days": {"type": "integer", "description": "Default 30"}},
+    })
+    async def get_daily_steps(args):
+        result = _db_call(stats.daily_steps_summary, args.get("days", 30), user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("query_runs", "Flexible run lookup: filter by date range/type/distance, sort, limit. Use for free-form questions the other tools don't cover.", {
+        "type": "object",
+        "properties": {
+            "startDate": {"type": "string"},
+            "endDate": {"type": "string"},
+            "activityType": {"type": "string", "description": "Omit for all activity types"},
+            "minDistance": {"type": "number"},
+            "maxDistance": {"type": "number"},
+            "sortBy": {"type": "string", "description": "'date' (default), 'distance_mi', 'elev_gain_ft', or 'pace' (ascending, fastest first)"},
+            "limit": {"type": "integer", "description": "Default 20"},
+        },
+    })
+    async def query_runs(args):
+        result = _db_call(
+            stats.query_runs,
+            args.get("startDate"), args.get("endDate"), args.get("activityType"),
+            args.get("minDistance"), args.get("maxDistance"),
+            args.get("sortBy", "date"), args.get("limit", 20), user_id=user_id,
+        )
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_run_detail", "Full detail for a single run by id (splits, HR, notes) — use the id from query_runs/get_personal_records", {
+        "type": "object",
+        "properties": {"runId": {"type": "string"}},
+        "required": ["runId"],
+    })
+    async def get_run_detail(args):
+        def _fetch(db, run_id):
+            r = db.query(Run).filter(Run.id == run_id, owned_by(Run.user_id, user_id)).first()
+            if not r:
+                return None
+            hr_floor = stats.get_hr_floor(db, user_id)
+            return {
+                "id": r.id, "date": r.date, "name": r.name, "activityType": r.activity_type,
+                "distanceMi": r.distance_mi, "movingTimeSec": r.moving_time_sec,
+                "paceSecPerMi": r.avg_pace_sec_per_mi if stats.is_plausible_pace(r.avg_pace_sec_per_mi, r.distance_mi) else None,
+                "avgHR": r.avg_hr if stats.is_plausible_hr(r.avg_hr, hr_floor) else None,
+                "maxHR": r.max_hr if stats.is_plausible_hr(r.max_hr, hr_floor) else None,
+                "elevGainFt": r.elev_gain_ft, "avgCadence": r.avg_cadence,
+                "type": r.type_override or r.suggested_type, "rpe": r.rpe, "notes": r.notes,
+                "splits": json.loads(r.splits_json or "[]"),
+            }
+        result = _db_call(_fetch, args["runId"])
+        if result is None:
+            return {"content": [{"type": "text", "text": f"No run found with id {args['runId']}"}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_health_history", "List logged health notes (injuries, illness, chronic-condition flares, scheduled procedures, or other temporary things affecting training). Use before making assumptions about the user's current health state.", {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "enum": list(coach.VALID_HEALTH_STATUSES), "description": "Omit for all statuses"},
+            "category": {"type": "string", "enum": list(coach.VALID_HEALTH_CATEGORIES), "description": "Omit for all categories"},
+        },
+    })
+    async def get_health_history(args):
+        result = _db_call(coach.list_health_notes, args.get("status"), args.get("category"), user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("find_related_health_history", "Check whether a resolved injury exists for the same body area before logging a new one — call this for category='injury' before log_health_note so a recurring issue can be linked rather than treated as fresh.", {
+        "type": "object",
+        "properties": {"bodyArea": {"type": "string", "enum": list(coach.VALID_BODY_AREAS)}},
+        "required": ["bodyArea"],
+    })
+    async def find_related_health_history(args):
+        try:
+            result = _db_call(coach.find_related_health_history, args["bodyArea"], user_id=user_id)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("log_health_note", "Record something affecting training — an injury, illness, chronic-condition flare, scheduled procedure, or other temporary thing. body_area and relatedNoteId are only valid when category is 'injury'.", {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "enum": list(coach.VALID_HEALTH_CATEGORIES)},
+            "bodyArea": {"type": "string", "enum": list(coach.VALID_BODY_AREAS), "description": "Only for category='injury'"},
+            "suspectedType": {"type": "string", "description": "e.g. 'ankle sprain', 'COVID', 'migraine', 'colonoscopy prep'"},
+            "suspectedSeverity": {"type": "string", "enum": list(coach.VALID_SEVERITIES)},
+            "trainingImpact": {"type": "string", "description": "What's actually restricted vs fine — e.g. 'avoid grip/strength work, running is fine'"},
+            "expectedClearDate": {"type": "string", "description": "YYYY-MM-DD, your best-judgment estimate of when this should have cleared"},
+            "notes": {"type": "string"},
+            "relatedNoteId": {"type": "string", "description": "Only for category='injury' — id of a prior resolved note this appears to be a recurrence of"},
+        },
+        "required": ["category"],
+    })
+    async def log_health_note(args):
+        try:
+            result = _db_call(
+                coach.log_health_note, args["category"],
+                args.get("suspectedType"), args.get("suspectedSeverity"), args.get("trainingImpact"),
+                args.get("expectedClearDate"), args.get("notes"), args.get("bodyArea"), args.get("relatedNoteId"),
+                user_id=user_id,
+            )
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("update_health_status", "Update a health note's status — e.g. mark it resolved once the user confirms it's cleared up.", {
+        "type": "object",
+        "properties": {
+            "noteId": {"type": "string"},
+            "status": {"type": "string", "enum": list(coach.VALID_HEALTH_STATUSES)},
+            "notes": {"type": "string"},
+        },
+        "required": ["noteId", "status"],
+    })
+    async def update_health_status(args):
+        try:
+            result = _db_call(coach.update_health_status, args["noteId"], args["status"], args.get("notes"), user_id=user_id)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    return [
+        get_run_summary, get_weekly_mileage, get_monthly_mileage, get_personal_records,
+        get_pace_trend, get_training_load_trend, get_daily_steps, query_runs, get_run_detail,
+        get_health_history, find_related_health_history, log_health_note, update_health_status,
+    ]
 
 
-@tool("get_weekly_mileage", "Weekly mileage totals for the trailing N weeks", {
-    "type": "object",
-    "properties": {"weeks": {"type": "integer", "description": "Default 12"}},
-})
-async def get_weekly_mileage(args):
-    result = _db_call(stats.weekly_mileage, args.get("weeks", 12))
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-@tool("get_monthly_mileage", "Monthly mileage totals for the trailing N months", {
-    "type": "object",
-    "properties": {"months": {"type": "integer", "description": "Default 12"}},
-})
-async def get_monthly_mileage(args):
-    result = _db_call(stats.monthly_mileage, args.get("months", 12))
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-@tool("get_personal_records", "Longest run, fastest plausible pace, most elevation, longest duration", {
-    "type": "object", "properties": {},
-})
-async def get_personal_records(args):
-    result = _db_call(stats.personal_records)
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-@tool("get_pace_trend", "Rolling window pace trend over the trailing N days", {
-    "type": "object",
-    "properties": {
-        "days": {"type": "integer", "description": "Default 90"},
-        "windowDays": {"type": "integer", "description": "Rolling window size in days, default 7"},
-    },
-})
-async def get_pace_trend(args):
-    result = _db_call(stats.rolling_pace_trend, args.get("days", 90), args.get("windowDays", 7))
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-@tool("get_training_load_trend", "Trailing 4 weeks vs prior 4 weeks mileage, with percent change and direction", {
-    "type": "object", "properties": {},
-})
-async def get_training_load_trend(args):
-    result = _db_call(stats.training_load_trend)
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-@tool("get_daily_steps", "Daily step counts (Garmin-only) for the trailing N days", {
-    "type": "object",
-    "properties": {"days": {"type": "integer", "description": "Default 30"}},
-})
-async def get_daily_steps(args):
-    result = _db_call(stats.daily_steps_summary, args.get("days", 30))
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-@tool("query_runs", "Flexible run lookup: filter by date range/type/distance, sort, limit. Use for free-form questions the other tools don't cover.", {
-    "type": "object",
-    "properties": {
-        "startDate": {"type": "string"},
-        "endDate": {"type": "string"},
-        "activityType": {"type": "string", "description": "Omit for all activity types"},
-        "minDistance": {"type": "number"},
-        "maxDistance": {"type": "number"},
-        "sortBy": {"type": "string", "description": "'date' (default), 'distance_mi', 'elev_gain_ft', or 'pace' (ascending, fastest first)"},
-        "limit": {"type": "integer", "description": "Default 20"},
-    },
-})
-async def query_runs(args):
-    result = _db_call(
-        stats.query_runs,
-        args.get("startDate"), args.get("endDate"), args.get("activityType"),
-        args.get("minDistance"), args.get("maxDistance"),
-        args.get("sortBy", "date"), args.get("limit", 20),
-    )
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-@tool("get_run_detail", "Full detail for a single run by id (splits, HR, notes) — use the id from query_runs/get_personal_records", {
-    "type": "object",
-    "properties": {"runId": {"type": "string"}},
-    "required": ["runId"],
-})
-async def get_run_detail(args):
-    def _fetch(db, run_id):
-        r = db.get(Run, run_id)
-        if not r:
-            return None
-        hr_floor = stats.get_hr_floor(db)
-        return {
-            "id": r.id, "date": r.date, "name": r.name, "activityType": r.activity_type,
-            "distanceMi": r.distance_mi, "movingTimeSec": r.moving_time_sec,
-            "paceSecPerMi": r.avg_pace_sec_per_mi if stats.is_plausible_pace(r.avg_pace_sec_per_mi, r.distance_mi) else None,
-            "avgHR": r.avg_hr if stats.is_plausible_hr(r.avg_hr, hr_floor) else None,
-            "maxHR": r.max_hr if stats.is_plausible_hr(r.max_hr, hr_floor) else None,
-            "elevGainFt": r.elev_gain_ft, "avgCadence": r.avg_cadence,
-            "type": r.type_override or r.suggested_type, "rpe": r.rpe, "notes": r.notes,
-            "splits": json.loads(r.splits_json or "[]"),
-        }
-    result = _db_call(_fetch, args["runId"])
-    if result is None:
-        return {"content": [{"type": "text", "text": f"No run found with id {args['runId']}"}], "is_error": True}
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
-
-
-ALL_TOOLS = [
-    get_run_summary, get_weekly_mileage, get_monthly_mileage, get_personal_records,
-    get_pace_trend, get_training_load_trend, get_daily_steps, query_runs, get_run_detail,
-]
-ALLOWED_TOOL_NAMES = [f"mcp__runlog__{t.name}" for t in ALL_TOOLS]
-
-_server = create_sdk_mcp_server(name="runlog", version="0.1.0", tools=ALL_TOOLS)
-
-_options = ClaudeAgentOptions(
-    mcp_servers={"runlog": _server},
-    allowed_tools=ALLOWED_TOOL_NAMES,
-    disallowed_tools=BUILTIN_TOOLS_BLOCKLIST,
-    system_prompt=SYSTEM_PROMPT,
-    permission_mode="bypassPermissions",  # headless container, no TTY to prompt for approval
-    setting_sources=[],  # don't inherit any local .claude/settings.json in the container
-    max_turns=8,
-)
-
-_client: ClaudeSDKClient | None = None
+_clients: dict[str, ClaudeSDKClient] = {}
 
 
 def is_configured() -> bool:
     return bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY"))
 
 
-async def _get_client() -> ClaudeSDKClient:
-    global _client
-    if _client is None:
-        _client = ClaudeSDKClient(options=_options)
-        await _client.connect()
-    return _client
+def _current_personality(user_id: str = DEFAULT_USER_ID) -> str:
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        return (user.coach_personality if user else None) or "normal"
+    finally:
+        db.close()
 
 
-async def reset_client():
-    global _client
-    if _client is not None:
-        await _client.disconnect()
-        _client = None
+async def _get_client(user_id: str = DEFAULT_USER_ID) -> ClaudeSDKClient:
+    """One SDK session per user, not one shared session for the whole app — otherwise
+    two real users' conversations would bleed into each other's live SDK-side context
+    (the turn-by-turn memory the SDK keeps internally, separate from the ChatMessage
+    history in SQLite, which was already correctly scoped per-user via owned_by()), and
+    resetting one user's session (e.g. on a persona change) would silently blow away
+    every other user's conversation too. Options are built fresh per client rather than
+    once at import time, since the system prompt depends on that user's
+    coach_personality. reset_client() (below) forces a rebuild for one user only — the
+    next message from that user rebuilds with the new tone; other users' sessions are
+    untouched."""
+    if user_id not in _clients:
+        server = create_sdk_mcp_server(name="runlog", version="0.1.0", tools=_build_tools(user_id))
+        options = ClaudeAgentOptions(
+            mcp_servers={"runlog": server},
+            allowed_tools=ALLOWED_TOOL_NAMES,
+            disallowed_tools=BUILTIN_TOOLS_BLOCKLIST,
+            system_prompt=coach.build_system_prompt(_current_personality(user_id)),
+            permission_mode="bypassPermissions",  # headless container, no TTY to prompt for approval
+            setting_sources=[],  # don't inherit any local .claude/settings.json in the container
+            max_turns=8,
+        )
+        client = ClaudeSDKClient(options=options)
+        await client.connect()
+        _clients[user_id] = client
+    return _clients[user_id]
+
+
+async def reset_client(user_id: str = DEFAULT_USER_ID):
+    client = _clients.pop(user_id, None)
+    if client is not None:
+        await client.disconnect()
 
 
 def _persist(role: str, content: str, tool_calls=None, user_id: str = DEFAULT_USER_ID):
@@ -222,16 +307,24 @@ def _persist(role: str, content: str, tool_calls=None, user_id: str = DEFAULT_US
         db.close()
 
 
-async def send_message(user_text: str) -> dict:
+async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID) -> dict:
     """Non-streaming: blocks for the full response, persists both sides, returns
     {reply, toolCalls}. toolCalls records which real queries backed the answer, for
     UI transparency — directly serving the "grounded, not hallucinated" requirement."""
     if not is_configured():
         raise RuntimeError("AI assistant not configured — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
 
-    _persist("user", user_text)
-    client = await _get_client()
-    await client.query(user_text)
+    _persist("user", user_text, user_id=user_id)  # persist the ORIGINAL text only — the
+                                  # health context block below is injected into what the
+                                  # model sees, never into chat history or the UI
+    db = SessionLocal()
+    try:
+        health_context = coach.get_health_context_block(db, user_id)
+    finally:
+        db.close()
+
+    client = await _get_client(user_id)
+    await client.query(health_context + user_text)
 
     reply_text = ""
     tool_calls = []
@@ -247,5 +340,5 @@ async def send_message(user_text: str) -> dict:
                 elif block_type == "ToolUseBlock" and str(block.name).startswith("mcp__runlog__"):
                     tool_calls.append({"tool": block.name.replace("mcp__runlog__", ""), "input": block.input})
 
-    _persist("assistant", reply_text, tool_calls)
+    _persist("assistant", reply_text, tool_calls, user_id=user_id)
     return {"reply": reply_text, "toolCalls": tool_calls}

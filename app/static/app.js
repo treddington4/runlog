@@ -1252,7 +1252,7 @@ function wireGarminImportButton() {
 
 async function renderSettingsTab() {
   const el = document.getElementById("settings-tab");
-  const [stravaStatus, syncMeta, garminStatus, config, connections, routeDiag, recentSteps] = await Promise.all([
+  const [stravaStatus, syncMeta, garminStatus, config, connections, routeDiag, recentSteps, coachPersonality] = await Promise.all([
     fetch("/api/strava/status").then((r) => r.json()),
     fetch("/api/sync/meta").then((r) => r.json()),
     fetch("/api/garmin/status").then((r) => r.json()),
@@ -1260,6 +1260,7 @@ async function renderSettingsTab() {
     fetch("/api/connections").then((r) => r.json()).catch(() => []),
     fetch("/api/garmin/route-diagnostics").then((r) => r.json()).catch(() => null),
     fetch("/api/steps?days=7").then((r) => r.json()).catch(() => []),
+    fetch("/api/coach/personality").then((r) => r.json()).catch(() => ({ personality: "normal" })),
   ]);
   const latestSteps = recentSteps.length ? recentSteps[recentSteps.length - 1] : null;
 
@@ -1321,10 +1322,30 @@ async function renderSettingsTab() {
       ${garminFormHtml}
     </div>
     <div class="settings-section">
+      <div class="settings-title">Coach</div>
+      <div class="settings-row">
+        <span class="settings-label">Personality</span>
+        <select id="coach-personality-select" class="map-location-select">
+          <option value="encouraging" ${coachPersonality.personality === "encouraging" ? "selected" : ""}>Encouraging</option>
+          <option value="normal" ${coachPersonality.personality === "normal" ? "selected" : ""}>Normal</option>
+          <option value="spicy" ${coachPersonality.personality === "spicy" ? "selected" : ""}>Spicy</option>
+          <option value="insulting" ${coachPersonality.personality === "insulting" ? "selected" : ""}>Insulting</option>
+        </select>
+      </div>
+      <div class="settings-row"><span class="settings-label" id="coach-personality-saved" style="color:var(--good);font-weight:400"></span></div>
+    </div>
+    <div class="settings-section">
       <div class="settings-title">Sync schedule</div>
       <div class="settings-row"><span class="settings-label">Auto-sync interval</span><span class="settings-value">Every ${config.syncIntervalHours}h (Strava only)</span></div>
       <div class="settings-row"><span class="settings-label">Activities per sync</span><span class="settings-value">${config.syncActivityLimit}</span></div>
       <div class="settings-row"><span class="settings-label"></span><span class="settings-value" style="color:var(--faint);font-weight:400;text-align:right">Backlog Sync pulls a source's entire history in the background — a one-time catch-up, not part of the regular schedule.</span></div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-title">About</div>
+      <div class="settings-row"><span class="settings-label"></span><span class="settings-value" style="color:var(--faint);font-weight:400;text-align:right">RunLog is free and open source. Found a bug, want a feature, or just want to support the project?</span></div>
+      <div class="btn-row" style="justify-content:flex-start;margin-top:10px">
+        <a class="btn btn-ghost" style="text-decoration:none;display:inline-block" href="https://github.com/treddington4/runlog" target="_blank" rel="noopener noreferrer">Contribute / Donate on GitHub</a>
+      </div>
     </div>
   `;
 
@@ -1354,6 +1375,22 @@ async function renderSettingsTab() {
     garminRemoveBtn.onclick = async () => {
       await fetch("/api/connections/garmin", { method: "DELETE" });
       await renderSettingsTab();
+    };
+  }
+
+  const coachPersonalitySelect = document.getElementById("coach-personality-select");
+  if (coachPersonalitySelect) {
+    coachPersonalitySelect.onchange = async () => {
+      const personality = coachPersonalitySelect.value;
+      await fetch("/api/coach/personality", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ personality }),
+      });
+      const savedEl = document.getElementById("coach-personality-saved");
+      if (savedEl) {
+        savedEl.textContent = "Saved";
+        setTimeout(() => { if (savedEl) savedEl.textContent = ""; }, 1500);
+      }
     };
   }
 

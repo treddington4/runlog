@@ -588,7 +588,7 @@ async def chat_message(request: Request):
     if not message:
         raise HTTPException(400, "message is required")
     try:
-        return await assistant.send_message(message)
+        return await assistant.send_message(message, DEFAULT_USER_ID)
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -602,8 +602,52 @@ async def chat_reset():
         db.commit()
     finally:
         db.close()
-    await assistant.reset_client()
+    await assistant.reset_client(DEFAULT_USER_ID)
     return {"status": "reset"}
+
+
+@app.get("/api/coach/personality")
+def get_coach_personality():
+    db = SessionLocal()
+    try:
+        user = db.get(User, DEFAULT_USER_ID)
+        return {"personality": (user.coach_personality if user else None) or "normal"}
+    finally:
+        db.close()
+
+
+@app.post("/api/coach/personality")
+async def set_coach_personality(request: Request):
+    import assistant
+    import coach
+    body = await request.json()
+    personality = body.get("personality")
+    if personality not in coach.VALID_PERSONAS:
+        raise HTTPException(400, f"personality must be one of {coach.VALID_PERSONAS}")
+    db = SessionLocal()
+    try:
+        user = db.get(User, DEFAULT_USER_ID)
+        if user:
+            user.coach_personality = personality
+            db.commit()
+    finally:
+        db.close()
+    # Persona is baked into the SDK's system prompt at client-construction time, not
+    # re-read per message — reset so the next chat message rebuilds it with the new tone.
+    await assistant.reset_client(DEFAULT_USER_ID)
+    return {"personality": personality}
+
+
+@app.get("/api/health-notes")
+def get_health_notes(status: str = None, category: str = None):
+    """Read-only — no POST/PATCH/DELETE. Health-note lifecycle is chat-tool-driven
+    only (see coach.py's log_health_note/update_health_status), not a manual form."""
+    import coach
+    db = SessionLocal()
+    try:
+        return coach.list_health_notes(db, status, category)
+    finally:
+        db.close()
 
 
 # ---------- Dashboard (real computed stats, no LLM involved) ----------

@@ -43,7 +43,7 @@ These are the non-obvious decisions worth knowing before touching related code. 
 
 ## Possible next steps (not started, just noted)
 
-- Visual QA pass across the UI — most of this project's verification has historically been via API/curl checks and logic simulation rather than a real browser session.
+- A full visual QA pass across every tab/breakpoint hasn't been done yet — most of this project's verification has historically been via API/curl checks and logic simulation. `scripts/screenshot.py` (a headless-browser screenshot helper, see its own docstring) now exists to close this gap going forward, but the pass itself is still outstanding.
 - Real weight/strength-training tracking (exercise/set/rep/weight detail, a dedicated view, etc.) — not scoped yet, needs its own design conversation before building. Garmin's live API likely has the underlying set/rep/weight data; unclear whether the export ZIP also carries it.
 - If Garmin sync activity is reliable going forward, bring pace/HR/cadence/grade heatmaps to Garmin-sourced runs at parity with Strava's.
 - Broader activity-type support beyond "capture and list" (dedicated cycling/hiking metrics, a real classification scheme) — deliberately out of scope for now.

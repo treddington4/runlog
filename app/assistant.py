@@ -46,7 +46,7 @@ _TOOL_NAMES = [
     "get_pace_trend", "get_training_load_trend", "get_daily_steps", "query_runs", "get_run_detail",
     "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
     "get_scheduled_workouts", "schedule_workout", "update_workout", "record_workout_completion",
-    "render_chart",
+    "render_chart", "get_goals",
 ]
 ALLOWED_TOOL_NAMES = [f"mcp__runlog__{name}" for name in _TOOL_NAMES]
 
@@ -117,6 +117,13 @@ def _build_tools(user_id: str) -> list:
     })
     async def get_training_load_trend(args):
         result = _db_call(stats.training_load_trend, user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_goals", "The user's active goals with real computed progress (countdown, recent volume, etc — no invented \"on track\" verdict, just the numbers). Returned in priority order — lower priority number is more important. Check this before giving training advice when the user has an active race/consistency/distance goal, so guidance actually serves what they're working toward.", {
+        "type": "object", "properties": {},
+    })
+    async def get_goals(args):
+        result = _db_call(stats.list_active_goals_with_progress, user_id=user_id)
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
     @tool("get_daily_steps", "Daily step counts (Garmin-only) for the trailing N days", {
@@ -372,7 +379,7 @@ def _build_tools(user_id: str) -> list:
         get_pace_trend, get_training_load_trend, get_daily_steps, query_runs, get_run_detail,
         get_health_history, find_related_health_history, log_health_note, update_health_status,
         get_scheduled_workouts, schedule_workout, update_workout, record_workout_completion,
-        render_chart,
+        render_chart, get_goals,
     ]
 
 

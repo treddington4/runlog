@@ -13,7 +13,9 @@ boundary as the existing /api/runs endpoint, not a new gap introduced by this mo
 import json
 from datetime import datetime, timedelta
 
-from models import Run, DailySteps, DEFAULT_USER_ID, owned_by
+from sqlalchemy import func
+
+from models import Run, DailySteps, Goal, DEFAULT_USER_ID, owned_by
 from util import local_today
 
 # Strava's activity_type is a single PascalCase word ("Run","Ride","Walk"); Garmin's raw
@@ -370,6 +372,30 @@ def daily_steps_summary(db, days: int = 30, user_id: str = DEFAULT_USER_ID):
         "days": [{"date": r.date, "steps": r.steps} for r in rows],
         "avgSteps": round(sum(steps) / len(steps)) if steps else None,
     }
+
+
+def list_active_goals_with_progress(db, user_id: str = DEFAULT_USER_ID) -> list:
+    """All active goals, priority order (lower first), each with real computed progress
+    via goal_progress() below — the same function backing /api/goals, so the Coach's
+    view of a goal's progress can never drift from what the Goals tab shows. Exists so
+    the chat tool has something to actually call: previously no tool wrapped Goal data
+    at all, so a goal question had nothing to query (see GitHub issue #2, comment 4)."""
+    goals = (
+        db.query(Goal)
+        .filter(Goal.status == "active", owned_by(Goal.user_id, user_id))
+        .order_by(func.coalesce(Goal.priority, 0))
+        .all()
+    )
+    out = []
+    for g in goals:
+        out.append({
+            "id": g.id, "goalType": g.goal_type, "name": g.name,
+            "activityTypes": json.loads(g.activity_types_json or '["Run"]'),
+            "targetValue": g.target_value, "targetUnit": g.target_unit, "targetDate": g.target_date,
+            "priority": g.priority or 0, "notes": g.notes,
+            "progress": goal_progress(db, g, user_id),
+        })
+    return out
 
 
 def goal_progress(db, goal, user_id: str = DEFAULT_USER_ID):

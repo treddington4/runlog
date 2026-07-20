@@ -207,6 +207,9 @@ class Goal(Base):
     created_at = Column(String)
     completed_at = Column(String, nullable=True)
     linked_run_id = Column(String, nullable=True)  # race goals: the actual Run matched to this event, see stats._find_matching_race_run
+    priority = Column(Integer, default=0)  # lower shows first; legacy-NULL rows (pre-dating this
+                                             # column) treated as 0 at read/sort time, same pattern
+                                             # as everywhere else in this codebase
 
 
 class HealthNote(Base):

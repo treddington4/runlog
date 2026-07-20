@@ -98,6 +98,8 @@ body {
 .dash-bar-fill { height: 100%; border-radius: 4px; }
 
 .chat-thread { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; max-height: 55vh; overflow-y: auto; }
+.chat-history-toggle { align-self: center; font-size: 11px; color: var(--faint); cursor: pointer; padding: 4px 10px; border: 1px solid var(--border); border-radius: 12px; }
+.chat-history-toggle:hover { color: var(--text); border-color: var(--muted); }
 .chat-msg { max-width: 80%; padding: 10px 13px; border-radius: 10px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
 .chat-msg.user { align-self: flex-end; background: var(--surface2); border: 1px solid var(--border); }
 .chat-msg.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); }

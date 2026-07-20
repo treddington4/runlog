@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import requests
+from sqlalchemy import func
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -744,7 +745,7 @@ def _goal_to_dict(g: Goal, db):
         "id": g.id, "goalType": g.goal_type, "name": g.name, "status": g.status,
         "activityTypes": json.loads(g.activity_types_json or "[]"),
         "targetValue": g.target_value, "targetUnit": g.target_unit, "targetDate": g.target_date,
-        "startDate": g.start_date, "notes": g.notes,
+        "startDate": g.start_date, "notes": g.notes, "priority": g.priority or 0,
         "createdAt": g.created_at, "completedAt": g.completed_at,
         "progress": progress,
     }
@@ -755,7 +756,7 @@ def get_goals():
     db = SessionLocal()
     try:
         goals = (db.query(Goal).filter(owned_by(Goal.user_id, DEFAULT_USER_ID))
-                 .order_by(Goal.status, Goal.target_date).all())
+                 .order_by(Goal.status, func.coalesce(Goal.priority, 0), Goal.target_date).all())
         return [_goal_to_dict(g, db) for g in goals]
     finally:
         db.close()
@@ -774,7 +775,8 @@ async def create_goal(request: Request):
             activity_types_json=json.dumps(body.get("activityTypes") or ["Run"]),
             target_value=body.get("targetValue"), target_unit=body.get("targetUnit"),
             target_date=body.get("targetDate"), start_date=body.get("startDate"),
-            notes=body.get("notes"), created_at=datetime.now(timezone.utc).isoformat(),
+            notes=body.get("notes"), priority=body.get("priority") or 0,
+            created_at=datetime.now(timezone.utc).isoformat(),
         )
         db.add(g)
         db.commit()
@@ -805,6 +807,8 @@ async def update_goal(goal_id: str, request: Request):
             g.start_date = body["startDate"]
         if "notes" in body:
             g.notes = body["notes"]
+        if "priority" in body:
+            g.priority = body["priority"] or 0
         if "status" in body and body["status"] != g.status:
             g.status = body["status"]
             g.completed_at = datetime.now(timezone.utc).isoformat() if body["status"] in ("completed", "abandoned") else None

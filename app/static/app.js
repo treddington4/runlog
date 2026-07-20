@@ -2065,6 +2065,7 @@ function openGoalModal(goal) {
           <div class="field"><div class="field-label">Deadline (optional)</div><input id="f-distance-deadline" type="date" value="${type === "distance_target" ? (goal?.targetDate || "") : ""}" /></div>
         </div>
 
+        <div class="field"><div class="field-label">Priority</div><input id="f-goal-priority" type="number" step="1" value="${goal?.priority ?? 0}" placeholder="0" /><div style="font-size:11px;color:var(--faint);margin-top:4px">Lower shows first when more than one goal is active</div></div>
         <div class="field"><div class="field-label">Notes</div><textarea id="f-goal-notes">${goal?.notes ?? ""}</textarea></div>
         <button class="modal-save" id="modal-save">${isEdit ? "Save" : "Create Goal"}</button>
       </div>
@@ -2088,6 +2089,7 @@ function openGoalModal(goal) {
       goalType, name: document.getElementById("f-goal-name").value || "Untitled goal",
       activityTypes: activityTypes.length ? activityTypes : ["Run"],
       notes: document.getElementById("f-goal-notes").value,
+      priority: Number(document.getElementById("f-goal-priority").value) || 0,
     };
     if (goalType === "race") {
       body.targetDate = document.getElementById("f-target-date").value || null;
@@ -2259,6 +2261,9 @@ function openWorkoutModal(workout) {
 // ---------- Chat (AI assistant grounded in real synced data, plus a real-data dashboard) ----------
 let chatConfigured = null;
 let chatSending = false;
+let chatHistoryExpanded = false; // collapsed to the latest exchange by default — full
+                                   // history still goes to the model via the persistent
+                                   // SDK session regardless of what's rendered here
 
 function fmtPctChange(pct) {
   if (pct == null) return "--";
@@ -2354,6 +2359,29 @@ function renderDashboardCards(d) {
 }
 
 function destroyChatCharts() { chatCharts.forEach((c) => c.destroy()); chatCharts = []; }
+
+// Collapsed to the latest exchange by default (long histories get cluttered, especially
+// on mobile) with a toggle to expand — display-only, the model still gets full history
+// via the persistent SDK session in assistant.py regardless of what's rendered here.
+const CHAT_COLLAPSE_VISIBLE_COUNT = 2;
+
+function renderChatThread(history) {
+  const thread = document.getElementById("chat-thread");
+  destroyChatCharts();
+  const shouldCollapse = !chatHistoryExpanded && history.length > CHAT_COLLAPSE_VISIBLE_COUNT;
+  const visible = shouldCollapse ? history.slice(-CHAT_COLLAPSE_VISIBLE_COUNT) : history;
+  const offset = history.length - visible.length;
+  const toggleHtml = shouldCollapse
+    ? `<div class="chat-history-toggle" id="chat-history-toggle">▲ Show earlier (${offset})</div>`
+    : history.length > CHAT_COLLAPSE_VISIBLE_COUNT
+      ? `<div class="chat-history-toggle" id="chat-history-toggle">▼ Hide earlier</div>`
+      : "";
+  thread.innerHTML = toggleHtml + visible.map((m, i) => chatBubble(m, `hist-${offset + i}`)).join("");
+  visible.forEach((m, i) => mountChatCharts(m, `hist-${offset + i}`));
+  thread.scrollTop = thread.scrollHeight;
+  const toggle = document.getElementById("chat-history-toggle");
+  if (toggle) toggle.onclick = () => { chatHistoryExpanded = !chatHistoryExpanded; renderChatThread(history); };
+}
 
 // Minimal Markdown -> HTML for assistant replies (tables, lists, headings, bold/italic/code).
 // Escapes text first, then only ever injects tags this function itself generates — never
@@ -2494,11 +2522,8 @@ async function renderChatTab() {
   document.getElementById("chat-input-row").style.display = chatConfigured ? "flex" : "none";
   document.getElementById("chat-not-configured").style.display = chatConfigured ? "none" : "block";
 
-  const thread = document.getElementById("chat-thread");
-  destroyChatCharts();
-  thread.innerHTML = history.map((m, i) => chatBubble(m, `hist-${i}`)).join("");
-  history.forEach((m, i) => mountChatCharts(m, `hist-${i}`));
-  thread.scrollTop = thread.scrollHeight;
+  chatHistoryExpanded = false;
+  renderChatThread(history);
 
   document.getElementById("chat-reset-btn").onclick = async () => {
     await fetch("/api/chat/reset", { method: "POST" });

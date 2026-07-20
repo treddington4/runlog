@@ -765,15 +765,25 @@ function activityFamily(activityType) {
   return "other";
 }
 
+// Weather/temperature/treadmill only mean anything for an activity where covering
+// distance outdoors-or-not is the point — classifying by that property directly
+// (rather than hand-listing "outdoor-capable" families) is what caught a real miss:
+// the first version of this omitted "swim" from the whitelist, which would have
+// silently dropped weather fields for a swim too.
+const DISTANCE_FAMILIES = new Set(["run", "ride", "walk", "hike", "swim"]);
+function isDistanceActivity(activityType) {
+  return DISTANCE_FAMILIES.has(activityFamily(activityType));
+}
+
 function openEditModal(run) {
   const root = document.getElementById("modal-root");
   const family = activityFamily(run.activityType);
   // "Run type" (Tempo/Interval/Hill/...) is meaningless for a strength session, and
-  // temperature/weather/treadmill only apply to something you could plausibly do
-  // outdoors — showing them unconditionally is exactly how a lifting session ends up
-  // mislabeled "Treadmill" by hand, the same class of bug already fixed at sync time
-  // for the automatic case (see strava.py's is_treadmill gating).
-  const isOutdoorCapable = family === "run" || family === "ride" || family === "walk" || family === "hike";
+  // temperature/weather/treadmill only apply to a distance activity — showing them
+  // unconditionally is exactly how a lifting session ends up mislabeled "Treadmill" by
+  // hand, the same class of bug already fixed at sync time (see strava.py's
+  // is_treadmill gating).
+  const isDistance = isDistanceActivity(run.activityType);
 
   let typeFieldHtml = "";
   if (family === "run") {
@@ -789,7 +799,7 @@ function openEditModal(run) {
       <div class="modal">
         <div class="modal-head"><div style="font-weight:700">${run.name}</div><button class="modal-close" id="modal-close">✕</button></div>
         ${typeFieldHtml}
-        ${isOutdoorCapable ? `
+        ${isDistance ? `
         <div class="field"><div class="field-label">Temperature (°F)</div><input id="f-temp" type="number" value="${run.tempF ?? ""}" placeholder="e.g. 72" /></div>
         <div class="field"><div class="field-label">Weather condition</div><input id="f-cond" type="text" value="${run.weatherCondition ?? ""}" placeholder="e.g. Clear, humid" /></div>
         <div class="field"><label class="checkbox-row"><input type="checkbox" id="f-treadmill" ${run.isTreadmill ? "checked" : ""}/> Treadmill run (not outdoors)</label></div>
@@ -814,7 +824,7 @@ function openEditModal(run) {
     // Only send fields that were actually shown — sending type:null for an activity
     // with no type dropdown would silently clear any existing override on every save.
     if (typeEl) body.type = typeEl.value;
-    if (isOutdoorCapable) {
+    if (isDistance) {
       body.isTreadmill = isTreadmill;
       body.tempF = isTreadmill ? null : (tempEl.value === "" ? null : Number(tempEl.value));
       body.weatherCondition = isTreadmill ? null : condEl.value;

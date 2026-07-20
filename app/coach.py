@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import stats
 from models import HealthNote, Workout, Run, DEFAULT_USER_ID, owned_by
+from util import local_today
 
 VALID_PERSONAS = ("encouraging", "normal", "spicy", "insulting")
 
@@ -198,6 +199,17 @@ def build_system_prompt(personality: str) -> str:
     return f"{BASE_PROMPT}\n\n{persona_text}\n\n{SAFETY_OVERRIDE_PROMPT}"
 
 
+def get_date_context_block() -> str:
+    """Injected per-message (like get_health_context_block below), not baked into the
+    system prompt — a session can span midnight, and this must never go stale mid-
+    conversation. Without this, the model had no explicit ground truth for "today" and
+    could only infer it indirectly from tool output, which silently ran a day ahead of
+    the user's actual local day whenever the container's UTC clock had rolled past
+    midnight before the user's local calendar day had (see GitHub issue #2)."""
+    today = local_today()
+    return f"[Today's date is {today.isoformat()} ({today.strftime('%A')}).]\n\n"
+
+
 def _hours_since(iso_timestamp: str) -> float:
     try:
         then = datetime.fromisoformat(iso_timestamp)
@@ -228,7 +240,7 @@ def get_health_context_block(db, user_id: str = DEFAULT_USER_ID) -> str:
     if not notes:
         return ""
 
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = local_today().isoformat()
     now_iso = datetime.now(timezone.utc).isoformat()
     lines = []
     dirty = False
@@ -311,7 +323,7 @@ def log_health_note(db, category, suspected_type=None, suspected_severity=None,
     note = HealthNote(
         id=f"health_{uuid.uuid4().hex[:12]}", user_id=user_id, category=category,
         body_area=body_area, suspected_type=suspected_type, suspected_severity=suspected_severity,
-        training_impact=training_impact, date_reported=datetime.now(timezone.utc).date().isoformat(),
+        training_impact=training_impact, date_reported=local_today().isoformat(),
         expected_clear_date=expected_clear_date, status="active", related_note_id=related_note_id,
         notes=notes, created_at=datetime.now(timezone.utc).isoformat(),
     )
@@ -492,7 +504,7 @@ def list_workouts(db, start_date=None, end_date=None, status=None, user_id: str 
     # can flip a row's status out from under the `status` filter applied above (a
     # `status=planned` query can trigger a row to become "completed" mid-call) — re-
     # apply the filter after linking so the response always matches what was asked for.
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = local_today().isoformat()
     for w in workouts:
         if w.status == "planned" and w.scheduled_date <= today and not w.linked_run_id:
             _find_and_link_workout_run(db, w, user_id)

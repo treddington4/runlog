@@ -1,4 +1,24 @@
 """Shared calculation helpers."""
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# Single-user app, no per-user timezone column yet (see CLAUDE.md — no real login/
+# multi-user session layer exists), so one env var is the right scope for now —
+# matches the existing SYNC_INTERVAL_HOURS pattern rather than a DB migration for a
+# feature (real multi-user) that isn't built yet.
+APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "America/New_York")
+
+
+def local_today():
+    """The user's local calendar date — never the container's own (UTC) clock.
+    Docker containers default to UTC; once UTC has rolled past midnight but the
+    user's local calendar day hasn't yet (any evening/night west of UTC), a naive
+    datetime.now().date() silently runs a day ahead of the user's actual "today" —
+    every "today"/"days ago" calculation in this app (stats.py's weekly/monthly
+    summaries, goal countdowns, the Coach's notion of "today") must go through this
+    instead. See GitHub issue #2."""
+    return datetime.now(ZoneInfo(APP_TIMEZONE)).date()
 
 
 def decode_polyline(encoded: str):

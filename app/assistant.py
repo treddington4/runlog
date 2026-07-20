@@ -461,7 +461,7 @@ async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID) -> dict:
         db.close()
 
     client = await _get_client(user_id)
-    await client.query(health_context + user_text)
+    await client.query(coach.get_date_context_block() + health_context + user_text)
 
     reply_text = ""
     tool_calls = []

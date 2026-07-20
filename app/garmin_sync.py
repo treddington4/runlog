@@ -26,7 +26,7 @@ from models import (
     day_needs_wellness_sync,
 )
 from weather import get_historical_weather
-from util import classify_run_type, detect_intervals
+from util import classify_run_type, detect_intervals, local_today
 
 log = logging.getLogger("runlog")
 
@@ -200,7 +200,7 @@ def _sync_daily_steps(client, user_id: str, days: int = 30) -> int:
     (as this used to) cost ~14 API calls for data that's almost entirely already stored
     and never changes. Assumes no historical gaps in what's already stored, which holds
     by construction — every DailySteps row only ever comes from this same function."""
-    end = datetime.now().date()
+    end = local_today()
     volatile_start = end - timedelta(days=GARMIN_STEPS_VOLATILE_DAYS - 1)
     requested_start = end - timedelta(days=days - 1)
 
@@ -348,7 +348,7 @@ def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> i
     metric's absence/failure never blocks the others — same discipline as
     _fetch_running_dynamics. A genuine rate-limit hit propagates up unchanged so the
     caller's existing GarminMidSyncRateLimitError/cooldown handling applies uniformly."""
-    end = datetime.now().date()
+    end = local_today()
     volatile_start = end - timedelta(days=GARMIN_WELLNESS_VOLATILE_DAYS - 1)
     start = end - timedelta(days=days - 1)
 

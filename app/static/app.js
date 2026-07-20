@@ -2522,6 +2522,7 @@ async function renderChatTab() {
   document.getElementById("chat-input-row").style.display = chatConfigured ? "flex" : "none";
   document.getElementById("chat-not-configured").style.display = chatConfigured ? "none" : "block";
 
+  const thread = document.getElementById("chat-thread");
   chatHistoryExpanded = false;
   renderChatThread(history);
 
@@ -2542,33 +2543,43 @@ async function renderChatTab() {
     input.value = "";
     input.disabled = true;
     sendBtn.disabled = true;
-    thread.insertAdjacentHTML("beforeend", chatBubble({ role: "user", content: text }));
-    const pendingId = "chat-pending-" + Date.now();
-    thread.insertAdjacentHTML("beforeend", `<div class="chat-msg assistant" id="${pendingId}">Thinking…</div>`);
-    thread.scrollTop = thread.scrollHeight;
+    // Everything from here down is wrapped in try/finally, not just the fetch — a stray
+    // exception anywhere in this function (e.g. a bad DOM reference) must never leave
+    // the input permanently disabled/cleared with no way to retype, which is exactly
+    // what happened before this was hardened (see GitHub issue #2 follow-up report).
     try {
-      const res = await fetch("/api/chat/message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      const data = await res.json().catch(() => ({}));
-      const pendingEl = document.getElementById(pendingId);
-      if (!res.ok) {
-        pendingEl.outerHTML = chatBubble({ role: "assistant", content: `Error: ${data.detail || "something went wrong"}` });
-      } else {
-        pendingEl.outerHTML = chatBubble({ role: "assistant", content: data.reply, toolCalls: data.toolCalls, charts: data.charts }, pendingId);
-        mountChatCharts({ charts: data.charts }, pendingId);
+      thread.insertAdjacentHTML("beforeend", chatBubble({ role: "user", content: text }));
+      const pendingId = "chat-pending-" + Date.now();
+      thread.insertAdjacentHTML("beforeend", `<div class="chat-msg assistant" id="${pendingId}">Thinking…</div>`);
+      thread.scrollTop = thread.scrollHeight;
+      try {
+        const res = await fetch("/api/chat/message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const pendingEl = document.getElementById(pendingId);
+        if (!res.ok) {
+          pendingEl.outerHTML = chatBubble({ role: "assistant", content: `Error: ${data.detail || "something went wrong"}` });
+        } else {
+          pendingEl.outerHTML = chatBubble({ role: "assistant", content: data.reply, toolCalls: data.toolCalls, charts: data.charts }, pendingId);
+          mountChatCharts({ charts: data.charts }, pendingId);
+        }
+      } catch (e) {
+        const pendingEl = document.getElementById(pendingId);
+        if (pendingEl) pendingEl.outerHTML = chatBubble({ role: "assistant", content: "Network error — try again." });
       }
+      thread.scrollTop = thread.scrollHeight;
     } catch (e) {
-      const pendingEl = document.getElementById(pendingId);
-      if (pendingEl) pendingEl.outerHTML = chatBubble({ role: "assistant", content: "Network error — try again." });
+      console.error("Chat send failed:", e);
+      input.value = text; // restore what they typed rather than silently losing it
+    } finally {
+      input.disabled = false;
+      sendBtn.disabled = false;
+      chatSending = false;
+      input.focus();
     }
-    thread.scrollTop = thread.scrollHeight;
-    input.disabled = false;
-    sendBtn.disabled = false;
-    chatSending = false;
-    input.focus();
   };
   sendBtn.onclick = send;
   input.onkeydown = (e) => { if (e.key === "Enter") send(); };

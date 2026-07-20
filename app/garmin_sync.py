@@ -65,6 +65,20 @@ GARMIN_STEPS_VOLATILE_DAYS = int(os.environ.get("GARMIN_STEPS_VOLATILE_DAYS", "2
 # not the single cheap list call activities get.
 GARMIN_WELLNESS_VOLATILE_DAYS = int(os.environ.get("GARMIN_WELLNESS_VOLATILE_DAYS", "3"))
 GARMIN_WELLNESS_BACKFILL_DAYS = int(os.environ.get("GARMIN_WELLNESS_BACKFILL_DAYS", "90"))
+# The volatile window used to be re-fetched in full (9 calls: 3 days x 3 metrics) on
+# *every* sync invocation with no throttle at all — two manual syncs a minute apart
+# cost the same 9 calls twice for data that couldn't plausibly have changed. Skipping
+# a re-check within this many seconds of the last one keeps the "today's data can still
+# change" guarantee (still re-checked at least this often) while cutting the fixed tax
+# on repeated syncs close together.
+GARMIN_WELLNESS_RECHECK_MIN_SEC = int(os.environ.get("GARMIN_WELLNESS_RECHECK_MIN_SEC", "1800"))
+# Shorter than the wellness throttle above on purpose — the whole point of syncing the
+# adaptive plan at all is catching Garmin revising a suggested workout shortly before
+# you start it (see coach.sync_garmin_suggested_workouts), so this stays fresher, but
+# still throttled: repeated manual syncs a minute apart shouldn't each cost 2 calls for
+# a plan that hasn't had time to change.
+GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC = int(os.environ.get("GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC", "900"))
+GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY = "garmin_adaptive_plan_last_checked_at"
 # Cross-invocation cooldown: separate from every per-call retry/pause above, which all
 # operate *within* one sync attempt. This instead gates *starting a new attempt at all*
 # once a real rate limit has been hit — repeated manual clicks (or any other trigger)
@@ -108,6 +122,18 @@ class GarminMidSyncRateLimitError(RuntimeError):
 def _is_rate_limit_error(e: Exception) -> bool:
     msg = str(e)
     return "429" in msg or "not supported between instances" in msg
+
+
+def _seconds_since(iso_timestamp: str) -> float:
+    """Distinct from coach.py's _hours_since (seconds resolution, needed for the much
+    shorter recheck windows used here) — same tz-naive-timestamp tolerance."""
+    try:
+        then = datetime.fromisoformat(iso_timestamp)
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return float("inf")
+    return (datetime.now(timezone.utc) - then).total_seconds()
 
 
 def is_rate_limit_related(e: Exception) -> bool:
@@ -341,13 +367,16 @@ def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> i
     to just these 3 metrics (not the full 9-field wellness set from the original plan)
     since each additional metric is another live API call per day, and this account's
     rate-limit sensitivity argued for keeping that cost down. Dedups via
-    day_needs_wellness_sync (same principle as run_needs_detail_sync) except for a
-    trailing GARMIN_WELLNESS_VOLATILE_DAYS window that's always re-checked (today's/
-    yesterday's data can still change). Three separate API calls per day
-    (get_stats/get_max_metrics/get_sleep_data), each independently wrapped so one
-    metric's absence/failure never blocks the others — same discipline as
-    _fetch_running_dynamics. A genuine rate-limit hit propagates up unchanged so the
-    caller's existing GarminMidSyncRateLimitError/cooldown handling applies uniformly."""
+    day_needs_wellness_sync (same principle as run_needs_detail_sync) for settled days;
+    the trailing GARMIN_WELLNESS_VOLATILE_DAYS window (today's/yesterday's data can
+    still change) is re-checked on a GARMIN_WELLNESS_RECHECK_MIN_SEC throttle rather
+    than unconditionally every call — two syncs a minute apart shouldn't both pay the
+    full 3-days x 3-metrics cost for data that couldn't plausibly have changed in
+    between. Three separate API calls per day (get_stats/get_max_metrics/
+    get_sleep_data), each independently wrapped so one metric's absence/failure never
+    blocks the others — same discipline as _fetch_running_dynamics. A genuine
+    rate-limit hit propagates up unchanged so the caller's existing
+    GarminMidSyncRateLimitError/cooldown handling applies uniformly."""
     end = local_today()
     volatile_start = end - timedelta(days=GARMIN_WELLNESS_VOLATILE_DAYS - 1)
     start = end - timedelta(days=days - 1)
@@ -358,7 +387,12 @@ def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> i
         cursor = start
         while cursor <= end:
             date_str = cursor.isoformat()
-            if cursor >= volatile_start or day_needs_wellness_sync(db, date_str):
+            if cursor >= volatile_start:
+                row = db.get(DailySteps, date_str)
+                last_synced = row.wellness_synced_at if row else None
+                if not last_synced or _seconds_since(last_synced) >= GARMIN_WELLNESS_RECHECK_MIN_SEC:
+                    dates_to_sync.append(date_str)
+            elif day_needs_wellness_sync(db, date_str):
                 dates_to_sync.append(date_str)
             cursor += timedelta(days=1)
     finally:
@@ -731,46 +765,56 @@ def _process_activity(act: dict, client, db, user_id: str) -> bool:
     avg_pace = moving_time / distance_mi if distance_mi else None
     is_treadmill = "treadmill" in (act.get("activityType", {}).get("typeKey") or "")
 
+    # strength_training never has GPS/mile-splits (confirmed against real activities:
+    # distance is always 0 for these) — get_activity_splits/get_activity_details would
+    # just return empty structures at the cost of 2 real API calls, so skip them
+    # entirely for this activity type instead of discovering the same "nothing here"
+    # result the expensive way. Not extended to other non-running types (e.g. yoga can
+    # carry incidental GPS/movement data) — only where empty is a certainty.
+    skip_gps_calls = activity_type == "strength_training"
+
     splits = []
-    try:
-        laps = client.get_activity_splits(act["activityId"])
-        lap_dtos = laps.get("lapDTOs", [])
-        for i, lap in enumerate(lap_dtos, 1):
-            lap_dist_mi = (lap.get("distance") or 0) / METERS_PER_MILE
-            lap_time = lap.get("movingDuration") or lap.get("duration") or 0
-            if lap_dist_mi > 0:
-                splits.append(
-                    {
-                        "mile": i,
-                        "paceSecPerMi": round(lap_time / lap_dist_mi, 1),
-                        "elevGainFt": round(
-                            (lap.get("elevationGain") or 0) * 3.28084, 1
-                        ),
-                        "avgHR": round(lap["averageHR"])
-                        if lap.get("averageHR")
-                        else None,
-                        "maxHR": round(lap["maxHR"]) if lap.get("maxHR") else None,
-                        # Garmin's runningCadenceInStepsPerMinute is already total spm — no doubling needed
-                        "avgCadence": lap.get("averageRunCadence"),
-                    }
-                )
-    except Exception as e:
-        if _is_rate_limit_error(e):
-            raise
-        # else: fall through, splits stays []
+    if not skip_gps_calls:
+        try:
+            laps = client.get_activity_splits(act["activityId"])
+            lap_dtos = laps.get("lapDTOs", [])
+            for i, lap in enumerate(lap_dtos, 1):
+                lap_dist_mi = (lap.get("distance") or 0) / METERS_PER_MILE
+                lap_time = lap.get("movingDuration") or lap.get("duration") or 0
+                if lap_dist_mi > 0:
+                    splits.append(
+                        {
+                            "mile": i,
+                            "paceSecPerMi": round(lap_time / lap_dist_mi, 1),
+                            "elevGainFt": round(
+                                (lap.get("elevationGain") or 0) * 3.28084, 1
+                            ),
+                            "avgHR": round(lap["averageHR"])
+                            if lap.get("averageHR")
+                            else None,
+                            "maxHR": round(lap["maxHR"]) if lap.get("maxHR") else None,
+                            # Garmin's runningCadenceInStepsPerMinute is already total spm — no doubling needed
+                            "avgCadence": lap.get("averageRunCadence"),
+                        }
+                    )
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                raise
+            # else: fall through, splits stays []
 
     polyline_route = []
-    try:
-        details = client.get_activity_details(act["activityId"], maxpoly=500)
-        polyline_route = [
-            [p["lat"], p["lon"]]
-            for p in details.get("geoPolylineDTO", {}).get("polyline", [])
-            if p.get("lat") is not None and p.get("lon") is not None
-        ]
-    except Exception as e:
-        if _is_rate_limit_error(e):
-            raise
-        # else: fall through, polyline_route stays []
+    if not skip_gps_calls:
+        try:
+            details = client.get_activity_details(act["activityId"], maxpoly=500)
+            polyline_route = [
+                [p["lat"], p["lon"]]
+                for p in details.get("geoPolylineDTO", {}).get("polyline", [])
+                if p.get("lat") is not None and p.get("lon") is not None
+            ]
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                raise
+            # else: fall through, polyline_route stays []
 
     # The geoPolylineDTO fetch above doubles as a free "does this even have GPS" signal
     # before spending a FIT download on it — see GARMIN_FIT_ROUTE_ALL_GPS.
@@ -985,26 +1029,31 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
 
     # Adaptive-plan suggested workouts, if any — cheap (2 calls total, not per-day) and
     # independent, same reasoning as steps above. Garmin can revise a suggestion right
-    # up until the workout starts, so capturing it as early/often as this syncs runs is
-    # the whole point — see coach.sync_garmin_suggested_workouts for the
+    # up until the workout starts, so capturing it is the whole point — but throttled
+    # (GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC) rather than unconditional every sync, so
+    # repeated manual syncs close together don't each burn 2 calls on a plan that
+    # hasn't had time to change. See coach.sync_garmin_suggested_workouts for the
     # change-preserving upsert logic.
-    try:
-        today = local_today()
-        window_end = (today + timedelta(days=6)).isoformat()
-        plan_entries = _fetch_adaptive_plan_workouts(client, today.isoformat(), window_end)
-        if plan_entries:
-            import coach
-            db = SessionLocal()
-            try:
-                n = coach.sync_garmin_suggested_workouts(db, plan_entries, user_id)
-            finally:
-                db.close()
-            if progress_cb and n:
-                progress_cb(f"Synced {n} suggested workout(s) from Garmin's adaptive plan")
-    except Exception as e:
-        if _is_rate_limit_error(e):
-            raise
-        log.debug(f"garmin adaptive plan sync skipped/failed: {e}")
+    last_plan_check = get_sync_meta(GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY)
+    if not last_plan_check or _seconds_since(last_plan_check) >= GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC:
+        try:
+            today = local_today()
+            window_end = (today + timedelta(days=6)).isoformat()
+            plan_entries = _fetch_adaptive_plan_workouts(client, today.isoformat(), window_end)
+            set_sync_meta(GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY, datetime.now(timezone.utc).isoformat())
+            if plan_entries:
+                import coach
+                db = SessionLocal()
+                try:
+                    n = coach.sync_garmin_suggested_workouts(db, plan_entries, user_id)
+                finally:
+                    db.close()
+                if progress_cb and n:
+                    progress_cb(f"Synced {n} suggested workout(s) from Garmin's adaptive plan")
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                raise
+            log.debug(f"garmin adaptive plan sync skipped/failed: {e}")
 
     # Quick sync only ever covers the volatile window (today's/yesterday's wellness data
     # can still change) — the deeper historical backfill is sync_all_garmin_activities'

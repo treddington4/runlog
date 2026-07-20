@@ -274,6 +274,17 @@ class Workout(Base):
     linked_run_id = Column(String, nullable=True)  # set once matched/critiqued, mirrors Goal.linked_run_id
     critique_text = Column(Text, nullable=True)
     created_at = Column(String)
+    source = Column(String, default="coach")  # "coach"|"garmin" — a Garmin adaptive-training-plan
+                                                 # suggestion lives in its own row, never overwriting a
+                                                 # Coach-scheduled workout for the same date (and vice
+                                                 # versa); legacy-NULL rows (pre-dating this column) are
+                                                 # treated as "coach" at read time, same pattern as
+                                                 # owned_by()'s NULL-user_id handling
+    garmin_workout_uuid = Column(String, nullable=True)  # only set when source="garmin" — Garmin's own
+                                                            # identifier for this specific suggestion, so a
+                                                            # resync can detect Garmin silently swapping the
+                                                            # suggested workout for a date (see
+                                                            # garmin_sync._fetch_adaptive_plan_workouts)
 
 
 def get_sync_meta(key: str):

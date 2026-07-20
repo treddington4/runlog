@@ -2161,11 +2161,11 @@ function workoutCardHTML(w) {
   return `
     <div class="settings-section" style="margin-bottom:10px">
       <div class="settings-row">
-        <span class="settings-label">${w.scheduledDate} · ${WORKOUT_TYPE_LABELS[w.workoutType] || w.workoutType} (${escapeHtml(w.activityType)})</span>
+        <span class="settings-label">${w.scheduledDate} · ${WORKOUT_TYPE_LABELS[w.workoutType] || w.workoutType} (${escapeHtml(w.activityType)})${w.source === "garmin" ? ` <span class="badge" style="color:#8B93A1;border:1px solid #242B35;background:#1A2029">Garmin Suggested</span>` : ""}</span>
         <span class="settings-value" style="color:${WORKOUT_STATUS_COLORS[w.status] || "var(--faint)"}">${w.status}</span>
       </div>
       ${targetParts.length ? `<div class="settings-row"><span class="settings-label">Target</span><span class="settings-value">${escapeHtml(targetParts.join(" · "))}</span></div>` : ""}
-      ${w.notes ? `<div class="settings-row"><span class="settings-label">Notes</span><span class="settings-value" style="font-weight:400;text-align:right">${escapeHtml(w.notes)}</span></div>` : ""}
+      ${w.notes ? `<div class="settings-row"><span class="settings-label">Notes</span><span class="settings-value" style="font-weight:400;text-align:right;white-space:pre-line">${escapeHtml(w.notes)}</span></div>` : ""}
       ${w.steps && w.steps.length ? `<ol class="workout-steps">${w.steps.map(workoutStepLineHTML).join("")}</ol>` : ""}
       ${w.critiqueText ? `<div class="settings-row"><span class="settings-label">Critique</span><span class="settings-value" style="font-weight:400;text-align:right">${escapeHtml(w.critiqueText)}</span></div>` : ""}
       <div class="btn-row" style="justify-content:flex-start;margin-top:8px">

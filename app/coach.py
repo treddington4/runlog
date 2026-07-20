@@ -18,6 +18,18 @@ VALID_PERSONAS = ("encouraging", "normal", "spicy", "insulting")
 
 VALID_WORKOUT_TYPES = ("easy", "tempo", "interval", "long", "rest", "strength", "cross_train")
 VALID_WORKOUT_STATUSES = ("planned", "completed", "skipped", "modified")
+VALID_WORKOUT_SOURCES = ("coach", "garmin")
+
+# Garmin's adaptive-plan workoutPhrase -> our workout_type vocab. Deliberately
+# defaults unrecognized phrases to "easy" (see sync_garmin_suggested_workouts) rather
+# than guessing something more intense — a wrongly-conservative label is a much safer
+# failure mode than a wrongly-aggressive one.
+GARMIN_WORKOUT_PHRASE_MAP = {
+    "HIGH_RECOVERY_TIME_BASE": "easy", "REST_POSTPONED_BASE": "easy", "AEROBIC_BASE": "easy",
+    "ANAEROBIC_CAPACITY": "interval", "LACTATE_THRESHOLD": "tempo", "TEMPO": "tempo",
+    "LONG_WORKOUT": "long", "EASY_WEEK_LOAD_REST": "rest", "FORCED_REST": "rest",
+}
+GARMIN_SPORT_TYPE_MAP = {"running": "Run", "cycling": "Ride", "walking": "Walk", "swimming": "Swim"}
 
 # A step is one exercise/segment in a workout ("leg swings", "side plank", "800m repeat").
 # `side` only applies to unilateral movements (leg swings, single-leg work, side planks) —
@@ -363,6 +375,7 @@ def _workout_to_dict(w: Workout) -> dict:
         "targetPaceSecPerMi": w.target_pace_sec_per_mi, "targetDurationSec": w.target_duration_sec,
         "notes": w.notes, "steps": _steps_from_json(w.steps_json), "status": w.status,
         "linkedRunId": w.linked_run_id, "critiqueText": w.critique_text, "createdAt": w.created_at,
+        "source": w.source or "coach",  # legacy-NULL rows predate this column
     }
 
 
@@ -377,6 +390,58 @@ _NON_RUN_WORKOUT_TYPES = ("rest", "cross_train", "strength")
 
 def _default_activity_type(workout_type: str) -> str:
     return "Other" if workout_type in _NON_RUN_WORKOUT_TYPES else "Run"
+
+
+def sync_garmin_suggested_workouts(db, entries: list, user_id: str = DEFAULT_USER_ID) -> int:
+    """Upserts Garmin adaptive-training-plan suggestions as source="garmin" Workout rows,
+    one per (scheduled_date, source) so these never collide with a Coach-scheduled
+    workout for the same day. Each entry: {scheduledDate, workoutType, activityType,
+    targetDistanceMi?, targetDurationSec?, notes?, garminWorkoutUuid}.
+
+    Garmin can revise its suggestion for a date right up until the workout starts —
+    the whole reason this exists is to catch that early and make the change visible
+    rather than silently losing the original. On a genuine revision (garmin_workout_uuid
+    differs from what's stored), the new suggestion becomes current but the old one is
+    preserved as a change note prepended to notes, not discarded. A workout the user has
+    already completed is left alone entirely — a later Garmin revision must never
+    retroactively rewrite what was actually prescribed/done at the time."""
+    synced = 0
+    for e in entries:
+        existing = (
+            db.query(Workout)
+            .filter(Workout.scheduled_date == e["scheduledDate"], Workout.source == "garmin",
+                    owned_by(Workout.user_id, user_id))
+            .first()
+        )
+        if existing and existing.status != "planned":
+            continue  # already completed/skipped — immutable, don't rewrite history
+        if existing and existing.garmin_workout_uuid == e.get("garminWorkoutUuid"):
+            continue  # unchanged since last sync
+        if existing:
+            change_note = (
+                f"[Garmin revised this suggestion on {local_today().isoformat()} — was: "
+                f"{existing.workout_type}"
+                f"{f', {existing.target_distance_mi}mi' if existing.target_distance_mi else ''}"
+                f"{f', {round(existing.target_duration_sec / 60)}min' if existing.target_duration_sec else ''}]"
+            )
+            existing.notes = "\n".join(filter(None, [e.get("notes"), change_note, existing.notes]))
+            existing.workout_type = e["workoutType"]
+            existing.activity_type = e["activityType"]
+            existing.target_distance_mi = e.get("targetDistanceMi")
+            existing.target_duration_sec = e.get("targetDurationSec")
+            existing.garmin_workout_uuid = e.get("garminWorkoutUuid")
+        else:
+            db.add(Workout(
+                id=f"workout_{uuid.uuid4().hex[:12]}", user_id=user_id,
+                scheduled_date=e["scheduledDate"], workout_type=e["workoutType"],
+                activity_type=e["activityType"], target_distance_mi=e.get("targetDistanceMi"),
+                target_duration_sec=e.get("targetDurationSec"), notes=e.get("notes"),
+                status="planned", source="garmin", garmin_workout_uuid=e.get("garminWorkoutUuid"),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            ))
+        synced += 1
+    db.commit()
+    return synced
 
 
 def create_workout(db, scheduled_date, workout_type, activity_type=None, target_distance_mi=None,

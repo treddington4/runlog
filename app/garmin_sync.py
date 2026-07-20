@@ -654,6 +654,63 @@ def _fetch_exercise_sets(client, activity_id) -> list:
     return sets
 
 
+def _fetch_adaptive_plan_workouts(client, start_date: str, end_date: str) -> list:
+    """Garmin's adaptive-coach suggested workouts for any active running plan, if one
+    exists — raw fetch + unit conversion only; coach.py owns the semantic workout_type
+    mapping and the upsert-with-change-tracking logic (see
+    coach.sync_garmin_suggested_workouts). Non-fatal on any failure: not every account
+    has an active adaptive plan, and this should never block the rest of a sync over it.
+    """
+    import coach
+    try:
+        plans = client.get_training_plans()
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
+        return []
+    active_plans = [
+        p for p in plans.get("trainingPlanList", [])
+        if p.get("trainingStatus", {}).get("statusKey") == "Scheduled"
+        and p.get("trainingPlanCategory") == "FBT_ADAPTIVE"
+    ]
+    entries = []
+    for plan in active_plans:
+        try:
+            full_plan = client.get_adaptive_training_plan_by_id(plan["trainingPlanId"])
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                raise
+            continue
+        for task in full_plan.get("taskList", []):
+            date = task.get("calendarDate")
+            if not date or not (start_date <= date <= end_date):
+                continue
+            tw = task.get("taskWorkout") or {}
+            if tw.get("restDay"):
+                entries.append({
+                    "scheduledDate": date, "workoutType": "rest", "activityType": "Other",
+                    "notes": "Rest day (Garmin adaptive plan)",
+                    "garminWorkoutUuid": tw.get("workoutUuid") or f"restday_{date}",
+                })
+                continue
+            if not tw.get("workoutUuid"):
+                continue
+            phrase = tw.get("workoutPhrase") or tw.get("trainingEffectLabel") or ""
+            sport_key = (tw.get("sportType") or {}).get("sportTypeKey", "running")
+            distance_m = tw.get("estimatedDistanceInMeters")
+            desc = tw.get("workoutDescription")
+            entries.append({
+                "scheduledDate": date,
+                "workoutType": coach.GARMIN_WORKOUT_PHRASE_MAP.get(phrase, "easy"),
+                "activityType": coach.GARMIN_SPORT_TYPE_MAP.get(sport_key, "Run"),
+                "targetDistanceMi": round(distance_m / METERS_PER_MILE, 2) if distance_m else None,
+                "targetDurationSec": tw.get("estimatedDurationInSecs"),
+                "notes": f"Garmin adaptive plan: {tw.get('workoutName') or phrase}" + (f" — {desc}" if desc else ""),
+                "garminWorkoutUuid": tw.get("workoutUuid"),
+            })
+    return entries
+
+
 def _process_activity(act: dict, client, db, user_id: str) -> bool:
     """Fetch splits/weather for one Garmin activity of any type and upsert it as a Run row.
     Always returns True — every activity type is captured, not just running; only running
@@ -925,6 +982,29 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
     steps = _sync_daily_steps(client, user_id)
     if progress_cb and steps:
         progress_cb(f"Synced {steps} days of step data")
+
+    # Adaptive-plan suggested workouts, if any — cheap (2 calls total, not per-day) and
+    # independent, same reasoning as steps above. Garmin can revise a suggestion right
+    # up until the workout starts, so capturing it as early/often as this syncs runs is
+    # the whole point — see coach.sync_garmin_suggested_workouts for the
+    # change-preserving upsert logic.
+    try:
+        today = local_today()
+        window_end = (today + timedelta(days=6)).isoformat()
+        plan_entries = _fetch_adaptive_plan_workouts(client, today.isoformat(), window_end)
+        if plan_entries:
+            import coach
+            db = SessionLocal()
+            try:
+                n = coach.sync_garmin_suggested_workouts(db, plan_entries, user_id)
+            finally:
+                db.close()
+            if progress_cb and n:
+                progress_cb(f"Synced {n} suggested workout(s) from Garmin's adaptive plan")
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
+        log.debug(f"garmin adaptive plan sync skipped/failed: {e}")
 
     # Quick sync only ever covers the volatile window (today's/yesterday's wellness data
     # can still change) — the deeper historical backfill is sync_all_garmin_activities'

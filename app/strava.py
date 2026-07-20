@@ -254,7 +254,12 @@ def _process_activity(act: dict, headers: dict, db, user_id: str) -> bool:
     is_run = activity_type == "Run"
 
     run_id = f"strava_{act['id']}"
-    is_treadmill = bool(act.get("trainer"))
+    # Strava's "trainer" flag just means "recorded on stationary/indoor equipment" —
+    # true for an indoor bike trainer, and (per Hevy's Strava export) even weight
+    # training. "Treadmill" is specifically a running concept, so only running
+    # activities should ever get labeled with it — everything else stays False
+    # rather than showing a nonsensical "Treadmill" badge on a weight session.
+    is_treadmill = is_run and bool(act.get("trainer"))
 
     streams_resp = requests.get(
         f"{API_BASE}/activities/{act['id']}/streams",

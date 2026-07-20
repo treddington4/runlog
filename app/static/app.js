@@ -523,8 +523,12 @@ function renderRunsTab() {
             <div class="run-date">${new Date(run.date + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}${run.startTime ? " · " + run.startTime : ""}</div>
           </div>
           <div>
-            <div class="run-dist">${run.distanceMi?.toFixed(2)} mi</div>
+            ${run.distanceMi ? `
+            <div class="run-dist">${run.distanceMi.toFixed(2)} mi</div>
             <div class="run-pace">${isPlausiblePace(run.avgPaceSecPerMi, run.distanceMi) ? paceStr(run.avgPaceSecPerMi) : "--:--"}/mi</div>
+            ` : `
+            <div class="run-dist">${timeStr(run.movingTimeSec)}</div>
+            `}
           </div>
         </div>
         <div class="mini-stats">

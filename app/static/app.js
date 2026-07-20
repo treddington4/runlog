@@ -749,18 +749,52 @@ function buildIntervalsTable(intervals, recovery) {
 }
 
 // ---------- Edit modal ----------
+const STRENGTH_TYPES = ["Full Body", "Upper Body", "Lower Body", "Push", "Pull", "Legs", "Core", "Other"];
+
+// Mirrors stats._normalize_activity_type's substring-matching convention (Garmin and
+// Strava spell activity types differently — "running" vs "Run", "strength_training"
+// vs "WeightTraining") plus a strength bucket that Python function doesn't need.
+function activityFamily(activityType) {
+  const t = (activityType || "run").toLowerCase();
+  if (t.includes("run")) return "run";
+  if (t.includes("strength") || t.includes("weight")) return "strength";
+  if (t.includes("cycl") || t === "ride") return "ride";
+  if (t.includes("walk")) return "walk";
+  if (t.includes("hik")) return "hike";
+  if (t.includes("swim")) return "swim";
+  return "other";
+}
+
 function openEditModal(run) {
   const root = document.getElementById("modal-root");
-  const optionsHtml = RUN_TYPES.map((t) => `<option value="${t}" ${t === (run.type || "Easy") ? "selected" : ""}>${t}</option>`).join("");
+  const family = activityFamily(run.activityType);
+  // "Run type" (Tempo/Interval/Hill/...) is meaningless for a strength session, and
+  // temperature/weather/treadmill only apply to something you could plausibly do
+  // outdoors — showing them unconditionally is exactly how a lifting session ends up
+  // mislabeled "Treadmill" by hand, the same class of bug already fixed at sync time
+  // for the automatic case (see strava.py's is_treadmill gating).
+  const isOutdoorCapable = family === "run" || family === "ride" || family === "walk" || family === "hike";
+
+  let typeFieldHtml = "";
+  if (family === "run") {
+    const optionsHtml = RUN_TYPES.map((t) => `<option value="${t}" ${t === (run.type || "Easy") ? "selected" : ""}>${t}</option>`).join("");
+    typeFieldHtml = `<div class="field"><div class="field-label">Run type</div><select id="f-type">${optionsHtml}</select></div>`;
+  } else if (family === "strength") {
+    const optionsHtml = STRENGTH_TYPES.map((t) => `<option value="${t}" ${t === run.type ? "selected" : ""}>${t}</option>`).join("");
+    typeFieldHtml = `<div class="field"><div class="field-label">Session type</div><select id="f-type">${optionsHtml}</select></div>`;
+  }
+
   root.innerHTML = `
     <div class="modal-backdrop" id="modal-backdrop">
       <div class="modal">
         <div class="modal-head"><div style="font-weight:700">${run.name}</div><button class="modal-close" id="modal-close">✕</button></div>
-        <div class="field"><div class="field-label">Run type</div><select id="f-type">${optionsHtml}</select></div>
+        ${typeFieldHtml}
+        ${isOutdoorCapable ? `
         <div class="field"><div class="field-label">Temperature (°F)</div><input id="f-temp" type="number" value="${run.tempF ?? ""}" placeholder="e.g. 72" /></div>
         <div class="field"><div class="field-label">Weather condition</div><input id="f-cond" type="text" value="${run.weatherCondition ?? ""}" placeholder="e.g. Clear, humid" /></div>
-        <div class="field"><div class="field-label">Perceived effort (RPE, 1-10)</div><input id="f-rpe" type="number" min="1" max="10" value="${run.rpe ?? ""}" /></div>
         <div class="field"><label class="checkbox-row"><input type="checkbox" id="f-treadmill" ${run.isTreadmill ? "checked" : ""}/> Treadmill run (not outdoors)</label></div>
+        ` : ""}
+        <div class="field"><div class="field-label">Perceived effort (RPE, 1-10)</div><input id="f-rpe" type="number" min="1" max="10" value="${run.rpe ?? ""}" /></div>
         <div class="field"><div class="field-label">Notes</div><textarea id="f-notes">${run.notes ?? ""}</textarea></div>
         <button class="modal-save" id="modal-save">Save</button>
       </div>
@@ -768,16 +802,23 @@ function openEditModal(run) {
   document.getElementById("modal-close").onclick = () => (root.innerHTML = "");
   document.getElementById("modal-backdrop").onclick = (e) => { if (e.target.id === "modal-backdrop") root.innerHTML = ""; };
   document.getElementById("modal-save").onclick = async () => {
-    const isTreadmill = document.getElementById("f-treadmill").checked;
-    const tempVal = document.getElementById("f-temp").value;
+    const typeEl = document.getElementById("f-type");
+    const treadmillEl = document.getElementById("f-treadmill");
+    const isTreadmill = treadmillEl ? treadmillEl.checked : false;
+    const tempEl = document.getElementById("f-temp");
+    const condEl = document.getElementById("f-cond");
     const body = {
-      type: document.getElementById("f-type").value,
-      tempF: isTreadmill ? null : (tempVal === "" ? null : Number(tempVal)),
-      weatherCondition: isTreadmill ? null : document.getElementById("f-cond").value,
       rpe: document.getElementById("f-rpe").value === "" ? null : Number(document.getElementById("f-rpe").value),
-      isTreadmill,
       notes: document.getElementById("f-notes").value,
     };
+    // Only send fields that were actually shown — sending type:null for an activity
+    // with no type dropdown would silently clear any existing override on every save.
+    if (typeEl) body.type = typeEl.value;
+    if (isOutdoorCapable) {
+      body.isTreadmill = isTreadmill;
+      body.tempF = isTreadmill ? null : (tempEl.value === "" ? null : Number(tempEl.value));
+      body.weatherCondition = isTreadmill ? null : condEl.value;
+    }
     await fetch(`/api/runs/${run.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });

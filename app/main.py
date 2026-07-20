@@ -73,6 +73,30 @@ def startup():
     log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
 
 
+DASHBOARD_CACHE_KEY = "dashboard_summary_cache"
+DASHBOARD_CACHE_UPDATED_AT_KEY = "dashboard_summary_cache_updated_at"
+
+
+def _refresh_dashboard_cache():
+    """Recomputes the Home tab's stat-card data and caches it in sync_meta (reusing the
+    existing generic key-value store rather than a new single-purpose table — same
+    pattern already used for the geocode cache) so /api/dashboard/summary is a plain
+    lookup instead of recomputing 8 stats functions on every page load. Called from
+    _record_sync, the one place every sync path (auto/manual Strava, manual Garmin,
+    both backlog syncs) already funnels through, so the cache is refreshed at least as
+    often as SYNC_INTERVAL_HOURS even on a day with zero new activities — day-counting
+    stats like "days since longest run" still need to advance without new data."""
+    db = SessionLocal()
+    try:
+        summary = stats.dashboard_summary(db, user_id=DEFAULT_USER_ID)
+        set_sync_meta(DASHBOARD_CACHE_KEY, json.dumps(summary))
+        set_sync_meta(DASHBOARD_CACHE_UPDATED_AT_KEY, datetime.now(timezone.utc).isoformat())
+    except Exception as e:
+        log.warning(f"Dashboard cache refresh failed (stale cache will keep serving): {e}")
+    finally:
+        db.close()
+
+
 def _record_sync(source: str, count: int = None, error: str = None):
     """Persist last-sync info to sync_meta so the UI can show real history
     across page loads instead of only reflecting the current browser session.
@@ -84,6 +108,7 @@ def _record_sync(source: str, count: int = None, error: str = None):
         set_sync_meta(f"{source}_last_synced_at", datetime.now(timezone.utc).isoformat())
         set_sync_meta(f"{source}_last_count", str(count))
     set_sync_meta(f"{source}_last_error", error or "")
+    _refresh_dashboard_cache()
 
 
 def _users_with_credential(provider: str):
@@ -715,20 +740,22 @@ def delete_workout_endpoint(workout_id: str):
 # ---------- Dashboard (real computed stats, no LLM involved) ----------
 @app.get("/api/dashboard/summary")
 def dashboard_summary():
+    cached = get_sync_meta(DASHBOARD_CACHE_KEY)
+    if cached:
+        try:
+            return json.loads(cached)
+        except (TypeError, ValueError):
+            pass  # corrupt cache entry — fall through to live compute below
+    # Cache miss (fresh install, or the cache write never ran yet) — compute live once
+    # and populate the cache so every subsequent load is a plain lookup.
     db = SessionLocal()
     try:
-        return {
-            "weeklyMileage": stats.weekly_mileage(db, weeks=12),
-            "trainingLoad": stats.training_load_trend(db),
-            "consistencyStreak": stats.weekly_consistency_streak(db),
-            "daysSinceLongestRun": stats.days_since_longest_run(db),
-            "daysSinceLastRun": stats.days_since_last_run(db),
-            "paceTrend": stats.rolling_pace_trend(db, days=90),
-            "personalRecords": stats.personal_records(db),
-            "monthlyMileage": stats.monthly_mileage(db, months=2),
-        }
+        summary = stats.dashboard_summary(db, user_id=DEFAULT_USER_ID)
     finally:
         db.close()
+    set_sync_meta(DASHBOARD_CACHE_KEY, json.dumps(summary))
+    set_sync_meta(DASHBOARD_CACHE_UPDATED_AT_KEY, datetime.now(timezone.utc).isoformat())
+    return summary
 
 
 # ---------- Goals ----------

@@ -304,6 +304,23 @@ def days_since_last_run(db, activity_type: str = "Run", user_id: str = DEFAULT_U
     return {"days": days, "date": latest.date, "runId": latest.id, "name": latest.name}
 
 
+def dashboard_summary(db, user_id: str = DEFAULT_USER_ID) -> dict:
+    """Everything the Home tab's stat-card grid needs, in one call. Moved here from
+    main.py's dashboard_summary endpoint so the cached and live-fallback paths (see
+    main.py's dashboard cache, keyed off _record_sync) can never compute this two
+    different ways — one function, one meaning, matching this module's own discipline."""
+    return {
+        "weeklyMileage": weekly_mileage(db, weeks=12, user_id=user_id),
+        "trainingLoad": training_load_trend(db, user_id=user_id),
+        "consistencyStreak": weekly_consistency_streak(db, user_id=user_id),
+        "daysSinceLongestRun": days_since_longest_run(db, user_id=user_id),
+        "daysSinceLastRun": days_since_last_run(db, user_id=user_id),
+        "paceTrend": rolling_pace_trend(db, days=90, user_id=user_id),
+        "personalRecords": personal_records(db, user_id=user_id),
+        "monthlyMileage": monthly_mileage(db, months=2, user_id=user_id),
+    }
+
+
 def run_summary(db, start_date=None, end_date=None, activity_type="Run", user_id: str = DEFAULT_USER_ID):
     runs = _all_runs(db, activity_type, user_id)
     if start_date:

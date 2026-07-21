@@ -92,3 +92,6 @@ classification are all deterministic code.
 
 ## License
 MIT — see [LICENSE](LICENSE).
+
+## Support
+If RunLog is useful to you, consider [buying me a coffee](https://buymeacoffee.com/treddington4).

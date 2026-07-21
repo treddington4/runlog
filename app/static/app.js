@@ -1947,6 +1947,22 @@ function renderGoalCards(list, { actions = false, linkToGoalsTab = false } = {})
   `).join("")}</div>`;
 }
 
+// Extracted so the bootstrap's loadGoals().then() can refresh just the goals-dependent
+// slice of an already-rendered Home tab, instead of calling dispatchCurrentTab() (which
+// would rebuild the whole tab and re-fetch /api/dashboard/summary + /api/wellness a
+// second time — loadRuns() and loadGoals() both resolve independently on initial load,
+// and both used to trigger a full renderHomeTab(), causing a real double-render/
+// double-fetch on every fresh page load, not just a screenshot-timing artifact).
+function renderHomeGoalsSection() {
+  const homeGoalsEl = document.getElementById("home-goals");
+  if (!homeGoalsEl) return; // Home tab isn't the one currently mounted
+  const activeGoals = goals.filter((g) => g.status === "active");
+  homeGoalsEl.innerHTML = activeGoals.length
+    ? renderGoalCards(activeGoals, { linkToGoalsTab: true })
+    : `<div class="empty-chart">No active goals yet — add one on the Goals tab.</div>`;
+  wireNavCards(homeGoalsEl);
+}
+
 async function renderHomeTab() {
   const el = document.getElementById("home-tab");
   el.innerHTML = `
@@ -1964,12 +1980,7 @@ async function renderHomeTab() {
   updateHeaderStats();
   wireNavCards(el.querySelector(".stat-strip"));
 
-  const activeGoals = goals.filter((g) => g.status === "active");
-  const homeGoalsEl = document.getElementById("home-goals");
-  homeGoalsEl.innerHTML = activeGoals.length
-    ? renderGoalCards(activeGoals, { linkToGoalsTab: true })
-    : `<div class="empty-chart">No active goals yet — add one on the Goals tab.</div>`;
-  wireNavCards(homeGoalsEl);
+  renderHomeGoalsSection();
 
   const dashboard = await fetch("/api/dashboard/summary").then((r) => r.json()).catch(() => null);
   const homeDashboardEl = document.getElementById("home-dashboard");
@@ -2645,7 +2656,18 @@ async function renderChatTab() {
 
 // ---------- Init ----------
 loadRuns();
-loadGoals().then(() => { renderRaceCountdown(); if (currentTab === "home" || currentTab === "goals") dispatchCurrentTab(); });
+loadGoals().then(() => {
+  renderRaceCountdown();
+  // Home tab already rendered once from loadRuns()'s own completion (using whatever
+  // `goals` held at that moment, possibly still empty if this fetch was slower) — patch
+  // in the now-current goals instead of a full dispatchCurrentTab() re-render, which
+  // would also redundantly re-fetch /api/dashboard/summary and /api/wellness. Goals tab
+  // has no such partial-update path (and no extra network cost from re-rendering it —
+  // it's driven entirely by the already-fetched `goals` array), so it still gets a full,
+  // cheap dispatch.
+  if (currentTab === "home") renderHomeGoalsSection();
+  else if (currentTab === "goals") dispatchCurrentTab();
+});
 loadRestingHR();
 checkStravaStatus();
 updateFilterBar();

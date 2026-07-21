@@ -484,10 +484,16 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 1.1: daily_steps composite PK migration"
 
 ### 1.2 Auth schema
-- [ ] `User.oidc_subject` (unique, nullable) — `users` already in `_MIGRATABLE_TABLES`
-- [ ] New `ApiToken` table: `id, user_id, token_hash (sha256), name, created_at,
-      last_used_at` — device tokens for headless clients
-- [ ] Commit: "Phase 1.2: auth schema (oidc_subject, api_tokens)"
+- [x] `User.oidc_subject` (unique, nullable) — `users` already in `_MIGRATABLE_TABLES`,
+      so `_migrate_add_missing_columns()` picks it up with no extra migration code
+- [x] New `ApiToken` table: `id, user_id, token_hash (sha256), name, created_at,
+      last_used_at` — device tokens for headless clients. A whole new table
+      (`create_all()` creates it from scratch), no `_MIGRATABLE_TABLES` entry needed
+- [x] Verify: deployed via `docker compose up -d --build`; confirmed against the
+      live production DB that `users` gained the `oidc_subject` column and
+      `api_tokens` exists as a real table; confirmed `GET /api/coach/personality`
+      (a `User`-table read) and `GET /api/config` still work correctly post-migration
+- [x] Commit: "Phase 1.2: auth schema (oidc_subject, api_tokens)"
 
 ### 1.3 Auth middleware
 - [ ] `app/auth.py`: `current_user_id()` FastAPI dependency — `AUTH_MODE=disabled`

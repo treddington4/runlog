@@ -159,6 +159,7 @@ class User(Base):
     id = Column(String, primary_key=True)  # DEFAULT_USER_ID or f"user_{uuid.uuid4().hex[:12]}"
     email = Column(String, nullable=True, unique=True)
     password_hash = Column(String, nullable=True)
+    oidc_subject = Column(String, nullable=True, unique=True)  # OIDC `sub` claim (Phase 1.3), one IdP per user for now
     coach_personality = Column(String, default="normal")  # "encouraging"|"normal"|"spicy"|"insulting"
     created_at = Column(String)
 
@@ -183,6 +184,23 @@ class ProviderCredential(Base):
     username = Column(String, nullable=True)        # Garmin
     password = Column(String, nullable=True)        # Garmin
     created_at = Column(String)
+
+
+class ApiToken(Base):
+    """Device/headless-client auth tokens (Phase 1.5's token management UI, Phase 3's
+    Android client). Issued once, shown to the user exactly once at creation time —
+    only a SHA-256 hash is ever persisted, never the raw token, so a DB leak alone
+    can't be used to authenticate as the user. A whole new table, so create_all()
+    picks it up automatically — no _MIGRATABLE_TABLES entry needed for its first
+    version, same as ProviderCredential/HealthNote/Workout before it."""
+    __tablename__ = "api_tokens"
+
+    id = Column(String, primary_key=True)  # f"tok_{uuid.uuid4().hex[:12]}"
+    user_id = Column(String, nullable=False)
+    token_hash = Column(String, nullable=False, unique=True)  # sha256 hex digest of the raw token
+    name = Column(String, nullable=True)  # user-chosen label, e.g. "Pixel 9 Pro"
+    created_at = Column(String)
+    last_used_at = Column(String, nullable=True)
 
 
 class Goal(Base):

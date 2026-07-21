@@ -409,7 +409,11 @@ function updateHeaderStats() {
     document.getElementById("stat-week").textContent = `${(hs.weekMileageRun || 0).toFixed(1)} mi`;
     document.getElementById("stat-pace").textContent = hs.avgPaceSecPerMiAllTime ? `${paceStr(hs.avgPaceSecPerMiAllTime)}/mi` : "--";
     document.getElementById("stat-count").textContent = hs.runCountAllTime || 0;
-    renderStatBreakdown(hs.weeklyBreakdown || {});
+    // No breakdown line here on purpose — see stats.py's _header_stats() docstring. A
+    // duplicate Strava+Garmin pair shows up under each source's own raw activity_type
+    // string until the real merged data lands, which reads as broken (e.g. "running
+    // 5.9 mi · Ran 10.0 mi" for the same physical runs) rather than just approximate.
+    // Left blank until runsLoaded flips this branch to the exact, already-deduped one.
   }
   // else: neither source ready yet — leave the "--" placeholders already in the DOM.
 }

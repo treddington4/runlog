@@ -306,28 +306,29 @@ def days_since_last_run(db, activity_type: str = "Run", user_id: str = DEFAULT_U
 
 def _header_stats(db, user_id: str = DEFAULT_USER_ID) -> dict:
     """Cheap approximation of the Home tab's stat-strip (This week / avg pace / runs
-    logged) and weekly per-activity-type breakdown — computed from the DB directly,
-    not from the several-MB /api/runs payload (full splits/weather/route data for
-    every run) app.js normally derives these from. Included in dashboard_summary()
-    (small, already cached in sync_meta) so the Home tab's first paint doesn't have to
-    wait on that fetch. Approximate for one specific, documented reason (see module
-    docstring): no client-side mergeDuplicateRuns() dedup, so counts/totals here can be
-    off by however many Strava+Garmin duplicate pairs exist, until the real /api/runs
-    data lands and app.js's updateHeaderStats() corrects it with the exact numbers."""
+    logged) — computed from the DB directly, not from the several-MB /api/runs payload
+    (full splits/weather/route data for every run) app.js normally derives these from.
+    Included in dashboard_summary() (small, already cached in sync_meta) so the Home
+    tab's first paint doesn't have to wait on that fetch. Approximate for one specific,
+    documented reason (see module docstring): no client-side mergeDuplicateRuns() dedup,
+    so counts/totals here can be off by however many Strava+Garmin duplicate pairs
+    exist, until the real /api/runs data lands and app.js's updateHeaderStats() corrects
+    it with the exact numbers. Deliberately does NOT include a per-activity-type weekly
+    breakdown (unlike the exact version) — a duplicate pair shows up under each source's
+    own raw activity_type string here (e.g. Strava's "Run" and Garmin's "running" as two
+    separate lines for the same physical runs), which mergeDuplicateRuns() would collapse
+    into one but this function has no way to detect without reimplementing that same-run
+    matching logic — not worth it for a display that's only visible for a second or two.
+    app.js simply leaves the breakdown line blank until the exact, already-merged data
+    replaces this approximation."""
     week_ago = (local_today() - timedelta(days=7)).isoformat()
     all_time = run_summary(db, activity_type="Run", user_id=user_id)
     this_week = run_summary(db, start_date=week_ago, activity_type="Run", user_id=user_id)
-    week_runs = [r for r in _all_runs(db, activity_type=None, user_id=user_id) if r.date and r.date >= week_ago]
-    breakdown = {}
-    for r in week_runs:
-        t = r.activity_type or "Run"
-        breakdown[t] = round(breakdown.get(t, 0) + (r.distance_mi or 0), 2)
     return {
         "totalActivityCount": len(_all_runs(db, activity_type=None, user_id=user_id)),
         "runCountAllTime": all_time["runCount"],
         "avgPaceSecPerMiAllTime": all_time["avgPaceSecPerMi"],
         "weekMileageRun": this_week["totalDistanceMi"],
-        "weeklyBreakdown": breakdown,
     }
 
 

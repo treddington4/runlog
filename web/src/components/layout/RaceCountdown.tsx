@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { api, type Goal } from "@/lib/api"
+import { useGoals } from "@/hooks/useGoals"
+import type { Goal } from "@/lib/api"
 
 // Ports the legacy app.js renderRaceCountdown() logic (nearest active race-type
 // goal, by targetDate) — but reads daysUntil from stats.goal_progress() (already
@@ -14,17 +14,11 @@ function nearestActiveRace(goals: Goal[]): Goal | null {
 }
 
 export function RaceCountdown() {
-  const [race, setRace] = useState<Goal | null>(null)
-
-  useEffect(() => {
-    api
-      .goals()
-      .then((goals) => setRace(nearestActiveRace(goals)))
-      .catch(() => setRace(null))
-  }, [])
+  const { data: goals } = useGoals()
+  const race = goals ? nearestActiveRace(goals) : null
 
   if (!race) return null
-  const days = race.progress.daysUntil as number
+  const days = race.progress.daysUntil ?? 0
   return (
     <span className="text-muted-foreground font-mono text-xs tabular-nums">
       {days > 0 ? `${days} days to ${race.name}` : "Race day!"}

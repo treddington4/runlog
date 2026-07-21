@@ -109,13 +109,32 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.2: app shell — sidebar/bottom-tab nav, skeletons, empty states"
 
 ### 0.3 Home tab port
-- [ ] Stat strip (fast paint from `/api/dashboard/summary` headerStats, exact numbers
+- [x] Stat strip (fast paint from `/api/dashboard/summary` headerStats, exact numbers
       after `/api/runs` — preserve the existing two-source pattern), goals cards,
-      dashboard cards, wellness cards
-- [ ] Card component system (replaces settings-row-for-everything): title/value/
-      sub-metric hierarchy, hover states, click-through navigation preserved
-- [ ] Verify: side-by-side screenshot vs legacy Home; all numbers identical
-- [ ] Commit: "Phase 0.3: Home tab ported"
+      dashboard cards, wellness cards — added TanStack Query (`lib/queryClient.ts`)
+      for shared/cached fetching (`hooks/useRuns.ts`, `useGoals.ts`,
+      `useDashboardSummary.ts`, `useWellness.ts`); `lib/runs.ts` ports
+      `mergeDuplicateRuns`/`isLikelyDuplicate`/`mergeRunPair`/`canonicalActivityType`
+      1:1 from `app.js` (same client-side, never-in-storage duplicate merge — see
+      CLAUDE.md); `RaceCountdown` refactored onto the shared `useGoals()` query
+      instead of its own fetch, so the chip and Home's Goals section can't drift
+- [x] Card component system (replaces settings-row-for-everything): `ChartCard` +
+      `CardGrid` (`components/home/`) — title/value/sub-metric hierarchy, hover
+      state + click-through navigation on `onClick` (`data-nav-tab`/`data-nav-run`
+      from the legacy `wireNavCards()` become `navigate("/activities?filter=...")`
+      / `navigate("/activities?run=...")` — query params 0.5's Activities port
+      will read); `GoalCard` ports the race/consistency/distance_target dispatch
+      from `goalCardBody()`
+- [x] Verify: side-by-side screenshot vs legacy Home; all numbers identical —
+      `tsc`/`oxlint`/`build` clean via the NAS-container workflow; screenshotted
+      desktop + mobile against the live backend and confirmed byte-for-byte
+      identical values against a fresh legacy-Home screenshot (This week 10.0 mi,
+      avg pace 10:57/mi, 201 runs, breakdown line, both goal cards, all 7 dashboard
+      cards incl. bar-fill widths/colors, all 3 wellness cards); confirmed the
+      mobile bottom-tab-bar "gap" seen in a full-page capture is a `position:fixed`
+      screenshot artifact, not a real overlap (re-verified with a scrolled
+      viewport-only capture)
+- [x] Commit: "Phase 0.3: Home tab ported"
 
 ### 0.4 Workouts + Recovery port
 - [ ] Unified date-ordered list (workouts + recovery sessions interleaved — preserve

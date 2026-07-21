@@ -25,6 +25,10 @@ export function useConfig() {
   return useQuery({ queryKey: ["config"], queryFn: api.config })
 }
 
+export function useTokens() {
+  return useQuery({ queryKey: ["tokens"], queryFn: api.tokens })
+}
+
 // One-shot fetch on mount, auto-poll only while genuinely "running" — the React-
 // idiomatic equivalent of legacy's checkBacklogOnce()/pollBacklogStatus() pair.
 // TanStack Query's refetchInterval callback decides per-fetch whether to keep
@@ -86,6 +90,17 @@ export function useSettingsMutations() {
       }
     },
   })
+  const createToken = useMutation({
+    mutationFn: (name: string) => api.createToken(name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tokens"] }),
+  })
+  const deleteToken = useMutation({
+    mutationFn: (id: string) => api.deleteToken(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tokens"] }),
+  })
 
-  return { manualSync, backlogSync, saveGarminConnection, deleteConnection, setCoachPersonality, garminImport }
+  return {
+    manualSync, backlogSync, saveGarminConnection, deleteConnection, setCoachPersonality, garminImport,
+    createToken, deleteToken,
+  }
 }

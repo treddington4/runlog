@@ -382,6 +382,19 @@ export interface RunUpdate {
   notes?: string
 }
 
+export interface ApiTokenSummary {
+  id: string
+  name: string | null
+  createdAt: string
+  lastUsedAt: string | null
+}
+
+// Only the create response ever carries the raw token — the server persists just
+// its SHA-256 hash, so this is the one and only chance to see/copy it.
+export interface ApiTokenCreated extends ApiTokenSummary {
+  token: string
+}
+
 export const api = {
   dashboardSummary: () => request<DashboardSummary>("/api/dashboard/summary"),
   config: () => request<Config>("/api/config"),
@@ -446,6 +459,10 @@ export const api = {
       return { ok: false, message: `Import failed: ${String(e)}` }
     }
   },
+  tokens: () => request<ApiTokenSummary[]>("/api/tokens"),
+  createToken: (name: string) =>
+    request<ApiTokenCreated>("/api/tokens", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteToken: (id: string) => request<{ deleted: true }>(`/api/tokens/${id}`, { method: "DELETE" }),
   runs: (query: RunsQuery = {}) => {
     const params = new URLSearchParams()
     if (query.all) params.set("all", "true")

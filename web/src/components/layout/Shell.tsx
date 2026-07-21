@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { NAV_ITEMS } from "./nav-config"
 import { RaceCountdown } from "./RaceCountdown"
+import { useOnboardingGate } from "@/hooks/useOnboardingGate"
 
 function Wordmark() {
   return (
@@ -55,6 +56,7 @@ function BottomNavLink({ item }: { item: (typeof NAV_ITEMS)[number] }) {
 }
 
 export function Shell() {
+  useOnboardingGate()
   return (
     <div className="flex min-h-svh">
       {/* Desktop sidebar — persistent, >=900px */}

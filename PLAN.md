@@ -584,11 +584,45 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 1.4: per-user scoping of endpoints, job state, sync_meta"
 
 ### 1.5 Token management + onboarding
-- [ ] `POST/GET/DELETE /api/tokens` (raw token shown once); Settings UI section
-- [ ] First-run wizard (new frontend): connect Strava/Garmin → create goal → confirm
-      training config (feeds Phase 4's UserTrainingConfig)
-- [ ] Verify: token round-trip incl. ingest auth (after 2.2); wizard screenshot
-- [ ] Commit: "Phase 1.5: device tokens + onboarding wizard"
+- [x] `POST/GET/DELETE /api/tokens` (raw token shown once); Settings UI section —
+      the raw token (`secrets.token_urlsafe(32)`) is only ever returned from the
+      create call; every other read persists/returns just its SHA-256 hash,
+      matching `ApiToken`'s existing design from Phase 1.2. New `TokensSection` in
+      Settings shows a one-time "copy now" box on create, plus a list of existing
+      tokens (name/created/last-used) with a revoke action
+- [x] First-run wizard (new frontend): connect Strava/Garmin → create goal —
+      ~~confirm training config (feeds Phase 4's UserTrainingConfig)~~ struck: that
+      table/settings don't exist yet (Phase 4 hasn't started), so there's nothing
+      real to confirm — a step that configures nothing isn't worth building yet;
+      revisit once Phase 4.2 ships. New `OnboardingPage.tsx` (`/onboarding`, outside
+      the `Shell` nav chrome) with the 2 real steps, reusing `GoalFormDialog` from
+      0.9 rather than a new form. New `useOnboardingGate()` hook (called from
+      `Shell`) redirects there automatically only when every one of 4 signals
+      agrees the account is genuinely fresh (no Strava, no Garmin, zero goals, zero
+      runs) — deliberately conservative so it can never misfire against an
+      already-populated account. While here: fixed a real gap noticed along the
+      way — the new Settings page had no way to actually *connect* Strava if
+      disconnected at all (legacy had this as a header button, never ported when
+      the header was rebuilt in 0.2) — added a "Connect Strava" link to Settings'
+      Strava section too, not just the wizard
+- [x] Verify: token round-trip incl. ingest auth (after 2.2); wizard screenshot —
+      the "(after 2.2)" qualifier in this checklist item is load-bearing: Phase
+      2.2's ingest endpoint doesn't exist yet, so there's no real endpoint to test
+      token-gated ingest auth against. Verified everything that *is* testable now:
+      real `POST/GET/DELETE /api/tokens` round-trip against the live production
+      backend (create → list shows it without the raw token → delete → list empty).
+      Verified actual authentication (not just CRUD) in an isolated test — same
+      technique as Phase 1.3, a throwaway scratch DB, never production data:
+      created a token the same way the real endpoint does (`secrets.token_urlsafe`
+      + SHA-256 hash), confirmed it authenticates via `X-Api-Token`, stamps
+      `last_used_at`, and correctly stops authenticating once revoked (401).
+      Screenshotted the wizard directly (`/onboarding`) against live production —
+      both steps correctly detect and reflect the account's real state (Strava
+      "Connected", Garmin "Configured", "4 goals set." on step 2) rather than
+      showing empty-account UI against populated data. Screenshotted Home to
+      confirm the onboarding gate correctly stays dormant for the real,
+      already-populated account (no unwanted redirect)
+- [x] Commit: "Phase 1.5: device tokens + onboarding wizard"
 
 ---
 

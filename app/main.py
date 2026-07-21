@@ -3,6 +3,8 @@ import json
 import time
 import logging
 import threading
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -16,7 +18,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import uuid
 from fastapi import Depends
 from models import (
-    init_db, SessionLocal, Run, DailySteps, ChatMessage, User, ProviderCredential, Goal,
+    init_db, SessionLocal, Run, DailySteps, ChatMessage, User, ProviderCredential, Goal, ApiToken,
     DEFAULT_USER_ID, owned_by, get_sync_meta, set_sync_meta, user_key,
 )
 import auth
@@ -448,6 +450,55 @@ def delete_connection(provider: str, user_id: str = Depends(auth.current_user_id
         cred = db.query(ProviderCredential).filter_by(user_id=user_id, provider=provider).first()
         if cred:
             db.delete(cred)
+            db.commit()
+        return {"deleted": True}
+    finally:
+        db.close()
+
+
+# ---------- API tokens (Phase 1.5 — device/headless-client auth, e.g. the Android
+# client planned for Phase 3, or any script hitting the ingest endpoint planned for
+# Phase 2.2). Meaningful even with AUTH_MODE=disabled: the tokens themselves are
+# created and listed now, ready to actually authenticate the moment AUTH_MODE is
+# turned on and a caller starts sending X-Api-Token — see app/auth.py. ----------
+@app.get("/api/tokens")
+def list_tokens(user_id: str = Depends(auth.current_user_id)):
+    db = SessionLocal()
+    try:
+        rows = db.query(ApiToken).filter(ApiToken.user_id == user_id).order_by(ApiToken.created_at.desc()).all()
+        return [{"id": t.id, "name": t.name, "createdAt": t.created_at, "lastUsedAt": t.last_used_at} for t in rows]
+    finally:
+        db.close()
+
+
+@app.post("/api/tokens")
+async def create_token(request: Request, user_id: str = Depends(auth.current_user_id)):
+    """Returns the raw token exactly once — only its SHA-256 hash is ever persisted
+    (see ApiToken/auth._verify_api_token), so this response is the only chance to see it."""
+    body = await request.json()
+    name = (body.get("name") or "").strip() or None
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    db = SessionLocal()
+    try:
+        row = ApiToken(
+            id=f"tok_{uuid.uuid4().hex[:12]}", user_id=user_id, token_hash=token_hash,
+            name=name, created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        db.add(row)
+        db.commit()
+        return {"id": row.id, "name": row.name, "createdAt": row.created_at, "token": raw_token}
+    finally:
+        db.close()
+
+
+@app.delete("/api/tokens/{token_id}")
+def delete_token(token_id: str, user_id: str = Depends(auth.current_user_id)):
+    db = SessionLocal()
+    try:
+        row = db.query(ApiToken).filter(ApiToken.id == token_id, ApiToken.user_id == user_id).first()
+        if row:
+            db.delete(row)
             db.commit()
         return {"deleted": True}
     finally:

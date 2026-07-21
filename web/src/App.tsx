@@ -10,12 +10,14 @@ import { MapPage } from "@/pages/MapPage"
 import { ChatPage } from "@/pages/ChatPage"
 import { GoalsPage } from "@/pages/GoalsPage"
 import { SettingsPage } from "@/pages/SettingsPage"
+import { OnboardingPage } from "@/pages/OnboardingPage"
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
+          <Route path="/onboarding" element={<OnboardingPage />} />
           <Route element={<Shell />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/goals" element={<GoalsPage />} />

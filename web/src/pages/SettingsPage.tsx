@@ -6,11 +6,12 @@ import {
   useConnections,
   useRouteDiagnostics,
   useConfig,
+  useTokens,
   useSettingsMutations,
 } from "@/hooks/useSettings"
 import { useCoachPersonality } from "@/hooks/useChat"
 import { useSteps } from "@/hooks/useSteps"
-import type { CoachPersonality, SyncMetaInfo } from "@/lib/api"
+import type { CoachPersonality, SyncMetaInfo, ApiTokenCreated } from "@/lib/api"
 import { SyncControls } from "@/components/settings/SyncControls"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -63,6 +64,16 @@ function StravaSection() {
       <SettingsRow label="Last synced" value={fmtMeta(syncMeta?.strava)} />
       {syncMeta?.strava.lastError && (
         <SettingsRow label="Last error" value={<span className="text-hale-hot">{syncMeta.strava.lastError}</span>} />
+      )}
+      {status && !status.connected && (
+        // Real gap fixed here (Phase 1.5): the new frontend had no way to actually
+        // *connect* Strava if disconnected — legacy had this as a header button
+        // (app.js's #connect-btn), never ported when the header was rebuilt in 0.2.
+        // A plain navigation (not a fetch) since /auth/strava/login is an OAuth
+        // redirect, not a JSON endpoint.
+        <Button size="sm" className="mt-2.5" asChild>
+          <a href="/auth/strava/login">Connect Strava</a>
+        </Button>
       )}
       <SyncControls source="strava" enabled={!!status?.connected} />
     </SettingsSection>
@@ -290,6 +301,74 @@ function AboutSection() {
   )
 }
 
+function TokensSection() {
+  const { data: tokens } = useTokens()
+  const { createToken, deleteToken } = useSettingsMutations()
+  const [name, setName] = useState("")
+  const [justCreated, setJustCreated] = useState<ApiTokenCreated | null>(null)
+
+  function handleCreate() {
+    createToken.mutate(name.trim() || "Unnamed device", {
+      onSuccess: (created) => {
+        setJustCreated(created)
+        setName("")
+      },
+    })
+  }
+
+  return (
+    <SettingsSection title="API Tokens">
+      <div className="text-hale-faint pb-2 text-xs">
+        Device tokens for headless/API clients (e.g. a future mobile client, or a script
+        calling the ingest API). Only meaningful once real auth is turned on via the
+        AUTH_MODE env var — see app/auth.py.
+      </div>
+      {justCreated && (
+        <div className="border-hale-good bg-background mb-3 rounded-md border p-3">
+          <div className="text-hale-good text-xs font-semibold">Copy this token now — it won't be shown again</div>
+          <code className="mt-1 block font-mono text-xs break-all">{justCreated.token}</code>
+          <Button variant="link" size="sm" className="mt-1 h-auto p-0" onClick={() => setJustCreated(null)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <Input
+          placeholder="Token name (e.g. Pixel 9 Pro)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <Button size="sm" disabled={createToken.isPending} onClick={handleCreate}>
+          {createToken.isPending ? "Creating…" : "Create token"}
+        </Button>
+      </div>
+      {tokens && tokens.length > 0 && (
+        <div className="mt-3 flex flex-col gap-2">
+          {tokens.map((t) => (
+            <div key={t.id} className="border-border flex items-center justify-between border-t pt-2 text-[13px]">
+              <div>
+                <div>{t.name || "Unnamed"}</div>
+                <div className="text-hale-faint text-xs">
+                  Created {new Date(t.createdAt).toLocaleDateString()}
+                  {t.lastUsedAt ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}` : " · never used"}
+                </div>
+              </div>
+              <Button
+                variant="link"
+                size="sm"
+                className="text-hale-hot h-auto p-0"
+                onClick={() => deleteToken.mutate(t.id)}
+              >
+                Revoke
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </SettingsSection>
+  )
+}
+
 export function SettingsPage() {
   return (
     <div className="flex flex-col gap-4">
@@ -297,6 +376,7 @@ export function SettingsPage() {
       <GarminSection />
       <GarminImportSection />
       <ConnectionsSection />
+      <TokensSection />
       <CoachSection />
       <SyncScheduleSection />
       <AboutSection />

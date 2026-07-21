@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 from sqlalchemy import func
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Query
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -971,4 +971,31 @@ def delete_goal(goal_id: str):
         db.close()
 
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+# Legacy vanilla-JS frontend (Phase 0 predecessor) — kept reachable at /legacy for
+# one release during the parity window (see PLAN.md 0.10), then deleted along with
+# app/static/ once the new frontend below is confirmed stable.
+app.mount("/legacy", StaticFiles(directory="static", html=True), name="legacy-static")
+
+# New built frontend (web/dist, copied in by the Dockerfile's web-builder stage).
+# Vite content-hashes everything under assets/, so that directory alone can be
+# served as plain static files; every other path (every React Router route, a
+# hard reload on /insights, /map, etc.) needs to fall through to index.html so
+# client-side routing can take over — StaticFiles(html=True) only auto-serves
+# index.html for the mount's own root, not for arbitrary unmatched sub-paths, so
+# this is a explicit catch-all rather than a second bare StaticFiles mount.
+WEB_DIST_DIR = os.path.join(os.path.dirname(__file__), "web-dist")
+
+if os.path.isdir(WEB_DIST_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(WEB_DIST_DIR, "assets")), name="web-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_web_app(full_path: str):
+        candidate = os.path.join(WEB_DIST_DIR, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(WEB_DIST_DIR, "index.html"))
+else:
+    # Local dev without a built web-dist/ (e.g. running main.py directly against
+    # the Vite dev server on :5173 instead) — fall back to legacy at the root so
+    # the app is never left with literally nothing at "/".
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")

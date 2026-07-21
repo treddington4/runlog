@@ -45,6 +45,22 @@ from playwright.sync_api import sync_playwright
 
 ALL_TABS = ["home", "goals", "runs", "insights", "map", "chat", "workouts", "settings"]
 
+# Phase 0.10 cutover: the new frontend is a real React Router app (paths, not
+# app.js's old single-page tab-switch), so navigation is a URL change per tab
+# rather than calling a global navigateTo() function that no longer exists.
+# "runs" is kept as the CLI tab name (matching the legacy nav label muscle
+# memory this flag was named after) even though the route itself is /activities.
+TAB_PATHS = {
+    "home": "/",
+    "goals": "/goals",
+    "runs": "/activities",
+    "insights": "/insights",
+    "map": "/map",
+    "chat": "/chat",
+    "workouts": "/workouts",
+    "settings": "/settings",
+}
+
 # Matches the preset sizes used by Claude Code's own browser tooling, for consistency.
 VIEWPORTS = {
     "mobile": {"width": 375, "height": 812},
@@ -99,13 +115,11 @@ def main():
         browser = p.chromium.launch()
         for vp_name in viewports:
             page = browser.new_page(viewport=VIEWPORTS[vp_name])
-            page.goto(args.url, timeout=15000)
-            page.wait_for_timeout(1000)
             for tab in tabs:
-                # navigateTo() is app.js's own tab-switch function — calling it directly
-                # is more reliable than clicking through the nav menu each time, and
-                # keeps active-state/menu-label consistent with a real tab click.
-                page.evaluate(f"navigateTo({{tab: '{tab}'}})")
+                # A real URL navigation per tab — simpler and more robust than trying
+                # to click through icon-only mobile nav, and works identically across
+                # every viewport since it doesn't depend on which nav chrome is visible.
+                page.goto(args.url.rstrip("/") + TAB_PATHS[tab], timeout=15000)
                 page.wait_for_timeout(800)
 
                 # Capture lossless first; scale, then do the one lossy JPEG encode at

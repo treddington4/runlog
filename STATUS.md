@@ -8,6 +8,7 @@ _Written for picking this project back up in a fresh session — see [CLAUDE.md]
 - **Git**: [github.com/treddington4/runlog](https://github.com/treddington4/runlog), `master` branch.
 - **Strava**: connected and auto-syncing (official OAuth, every `SYNC_INTERVAL_HOURS` + immediately on container start). Captures every activity type, not just runs (Run, Ride, Walk, WeightTraining, Yoga, Workout, Swim, etc.) — running-specific classification only applies to `Run`-typed activities.
 - **Garmin**: optional, manual-only sync via the unofficial `garminconnect` library (see the "Garmin is explicitly best-effort" note in CLAUDE.md). Session tokens are cached to disk after login so a normal sync doesn't repeat a full credential login every time — only a real rate-limit block forces a fresh one.
+- **Frontend rewrite (Phase 0, see PLAN.md) is complete and cut over.** The React+TypeScript frontend (`web/`) now serves at `/` in production (multi-stage Dockerfile, `node:22-slim` build stage → `python:3.12-slim` runtime); the legacy vanilla-JS frontend (`app/static/`) is kept reachable at `/legacy` for a short parity window before deletion. All 8 tabs (Home, Goals, Activities, Insights, Map, Chat, Workouts, Settings) are ported with real-data verification (screenshots + live round-trips) at every step — see PLAN.md's 0.1–0.9 entries for what was verified and what deliberately changed behavior along the way (e.g. `GET /api/runs` now defaults to a 90-day window with `all=true` for full history).
 
 ## Architecture notes and gotchas
 
@@ -32,7 +33,7 @@ These are the non-obvious decisions worth knowing before touching related code. 
 - **No test suite** exists in this repo.
 - **`DailyWellness` (daily steps/resting HR/etc.) has a plain `date` primary key, not composite with `user_id`**: fine with one real user, but two users syncing the same calendar date would overwrite each other. Needs a real migration before true multi-user wellness tracking works. `sync_meta` (used for cross-sync bookkeeping, including the Garmin resting-HR floor) is similarly a single global table, not yet per-user.
 - **No login, no password enforcement, no encryption at rest** — deliberately deferred. `User.password_hash` exists but is unused. Anyone with network access to the app acts as the single default user; don't expose this beyond a trusted network until real auth ships.
-- **GAP (grade-adjusted pace) is implemented twice** — once in `app/util.py` (backend, sync time) and once in `app/static/app.js` (frontend, live split recalculation). If the Minetti formula ever changes, both need updating.
+- **GAP (grade-adjusted pace) is implemented twice** — once in `app/util.py` (backend, sync time) and once client-side (`web/src/lib/gap.ts`, and still in the not-yet-deleted `app/static/app.js` too) for live split recalculation without a round trip. If the Minetti formula ever changes, all copies need updating.
 - Plain HTTP, no TLS/reverse proxy built in — fine on a trusted LAN, needs attention before any exposure beyond that.
 - **Backlog sync job state is in-memory only** — a container restart mid-run loses the live progress/log (though already-committed activities stay committed, since it commits per-activity). The "last completed" summary persists fine via `sync_meta`.
 - Strava backlog sync makes roughly 2 API requests per activity — for very large histories this could approach Strava's rate limits (100/15min, 1000/day for default apps). Not an issue at moderate history sizes.
@@ -43,7 +44,7 @@ These are the non-obvious decisions worth knowing before touching related code. 
 
 ## Possible next steps (not started, just noted)
 
-- A full visual QA pass across every tab/breakpoint hasn't been done yet — most of this project's verification has historically been via API/curl checks and logic simulation. `scripts/screenshot.py` (a headless-browser screenshot helper, see its own docstring) now exists to close this gap going forward, but the pass itself is still outstanding.
+- ~~A full visual QA pass across every tab/breakpoint hasn't been done yet~~ — done as part of the Phase 0 frontend rewrite: every tab was screenshot-verified (desktop + mobile) against live data at each phase, plus a full-suite pass (`scripts/screenshot.py`, updated for the new React Router-based navigation) against the production cutover deployment.
 - Real weight/strength-training tracking (exercise/set/rep/weight detail, a dedicated view, etc.) — not scoped yet, needs its own design conversation before building. Garmin's live API likely has the underlying set/rep/weight data; unclear whether the export ZIP also carries it.
 - If Garmin sync activity is reliable going forward, bring pace/HR/cadence/grade heatmaps to Garmin-sourced runs at parity with Strava's.
 - Broader activity-type support beyond "capture and list" (dedicated cycling/hiking metrics, a real classification scheme) — deliberately out of scope for now.

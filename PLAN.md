@@ -388,14 +388,53 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.9: Goals + Settings ported"
 
 ### 0.10 Cutover
-- [ ] Dockerfile → multi-stage: `node:22-slim` builds `web/dist` → copied into the
+- [x] Dockerfile → multi-stage: `node:22-slim` builds `web/dist` → copied into the
       python image; FastAPI serves `web/dist` at `/` (keep legacy at `/legacy` for
-      one release)
-- [ ] `scripts/screenshot.py`: update tab navigation for the new shell
-- [ ] Delete `app/static/` legacy after one week of parity (separate commit)
-- [ ] Verify: full-container build + deploy; every tab screenshot; `STATUS.md` +
-      `CLAUDE.md` updated (build step now exists; architecture section rewritten)
-- [ ] Commit: "Phase 0.10: cutover to built frontend"
+      one release) — `main.py`'s final route registration replaced the old bare
+      `app.mount("/", StaticFiles(directory="static", html=True))` with: a
+      `/legacy` mount for the old app unchanged, a plain `StaticFiles` mount at
+      `/assets` for Vite's content-hashed bundle, and an explicit catch-all
+      `@app.get("/{full_path:path}")` (`serve_web_app`) that serves a real file
+      in `web-dist/` if one exists at that path, else falls through to
+      `index.html` — needed because `StaticFiles(html=True)` only auto-serves
+      `index.html` at a mount's own root, not for arbitrary unmatched sub-paths,
+      so a hard reload on a React Router route like `/insights` would otherwise
+      404 rather than letting client-side routing take over. Falls back to
+      serving legacy at `/` if `web-dist/` doesn't exist (e.g. local dev running
+      `main.py` directly against the Vite dev server on :5173 instead of a built
+      image) so the app is never left with nothing at `/`
+- [x] `scripts/screenshot.py`: updated tab navigation for the new shell — the old
+      `navigateTo()` global JS function doesn't exist in the new frontend
+      (React Router paths, not client-side tab-switching in one page); replaced
+      with a `TAB_PATHS` map and a real `page.goto()` per tab, which is simpler
+      than the old approach and works identically across every viewport
+      regardless of which nav chrome (sidebar vs. icon-only bottom bar) is visible
+- [ ] Delete `app/static/` legacy after one week of parity (separate commit) —
+      deliberately not done yet; `/legacy` needs to stay reachable for the parity
+      window described above before this is safe
+- [x] Verify: full-container build + deploy; every tab screenshot; `STATUS.md` +
+      `CLAUDE.md` updated (build step now exists; architecture section rewritten) —
+      caught and fixed one real Dockerfile bug during the first build attempt
+      (`chown ... /web-dist` referenced an absolute path that doesn't exist —
+      the copy target was `/app/web-dist` given `WORKDIR /app`, already covered
+      by the recursive `chown -R runlog:runlog /app`). After the fix: full
+      `docker compose up -d --build` succeeded; curl-verified `/` serves the new
+      React shell (real `<script src="/assets/...">` tags), `/legacy` serves the
+      unchanged old app, a hard-reload-style request to `/insights` returns 200
+      (SPA fallback working), `/api/config` still responds correctly, and
+      `/assets/*` files serve with 200. Ran the full updated `scripts/screenshot.py`
+      suite (all 8 tabs × desktop + mobile = 16 screenshots) against the live
+      production deployment at `192.168.68.80:8000` (not the dev server) and
+      read every one: Home/Goals/Activities/Insights/Map/Chat/Workouts/Settings
+      all render real data correctly on both viewports, mobile bottom nav intact.
+      Updated `CLAUDE.md`'s "What this is"/Commands/Architecture sections (new
+      "Frontend" section describing the SPA-fallback serving approach, corrected
+      the stale "no Node.js needed in the Dockerfile" claim, updated file-path
+      references from `app/static/app.js` to their `web/src/` equivalents) and
+      `STATUS.md` (new frontend-rewrite-complete status line, resolved the
+      "no visual QA pass" backlog item, corrected the GAP-duplication note to
+      mention all copies)
+- [x] Commit: "Phase 0.10: cutover to built frontend"
 
 ### 0.11 PWA
 - [ ] Manifest (name HALE, amber-E icon set), service worker (offline shell,

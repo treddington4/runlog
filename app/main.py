@@ -26,7 +26,7 @@ logging.basicConfig(level=LOG_LEVEL)
 log = logging.getLogger("runlog")
 log.setLevel(LOG_LEVEL)
 
-app = FastAPI(title="RunLog")
+app = FastAPI(title="meliora")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 

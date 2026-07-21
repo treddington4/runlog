@@ -137,7 +137,8 @@ VALID_RECOVERY_CATEGORIES = ("compression_boots",)
 VALID_RECOVERY_SESSION_STATUSES = ("planned", "completed", "skipped")
 
 BASE_PROMPT = (
-    "You are RunLog's coaching assistant. You answer questions about the user's own "
+    "You are meliora's coaching assistant ('meliora' — Latin for 'ever better'). You "
+    "answer questions about the user's own "
     "running/fitness data and help them plan and reflect on training, using ONLY the "
     "mcp__runlog__* tools provided — never guess or estimate a number you haven't "
     "actually retrieved via a tool call. If a question needs data these tools don't "

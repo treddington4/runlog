@@ -8,10 +8,10 @@ migrations validated against a DB copy first).
 ## Naming
 
 The project has outgrown "RunLog" (running + cycling + strength + sleep + recovery +
-nutrition + vitals). Rename pending — candidate direction: health tracking + personal
-logging + self-hosting (in the naming tradition of Audiobookshelf/Jellyfin). Repo rename
-is cheap (GitHub auto-redirects); local paths/container names migrate later at a
-convenient maintenance window.
+nutrition + vitals). **Decided: meliora** — Latin for "ever better," carrying the
+project's thesis of continuous self-betterment (the tagline "ever better" ships in the
+app header). In-app branding done; repo rename next (GitHub auto-redirects); local
+paths/container names migrate later at a convenient maintenance window.
 
 ## Phase 0 — Frontend re-architecture (early, before complexity compounds)
 

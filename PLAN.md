@@ -39,16 +39,42 @@ Stack decision (made): Vite + React + TypeScript + Tailwind + shadcn/ui in a new
 This supersedes the "no build step" principle — deliberate, documented in ROADMAP.
 
 ### 0.1 Scaffold + design tokens
-- [ ] `web/`: Vite React-TS scaffold; Tailwind; shadcn/ui init; ESLint+Prettier
-- [ ] Vite dev proxy: `/api/*` and `/auth/*` → live backend URL (env var, not hardcoded)
-- [ ] Design tokens in Tailwind config: dark palette from current app (`#0B0F14` bg
-      family, amber accent), spacing/radius scale, Inter (or Geist) with
-      `font-variant-numeric: tabular-nums` for stat values; keep JetBrains Mono only
-      as an accent for the wordmark
-- [ ] Shared API client (`web/src/lib/api.ts`) with typed responses for existing
-      endpoints (start with the ones Home needs)
-- [ ] Verify: `npm run dev` renders a token-styled placeholder against live API data
-- [ ] Commit: "Phase 0.1: web/ scaffold, design tokens, API client"
+- [x] `web/`: Vite React-TS scaffold; Tailwind; shadcn/ui init; ESLint+Prettier —
+      shadcn CLI init was skipped in favor of a hand-written `components.json` +
+      `button.tsx`/`card.tsx` (avoided a second interactive install after two prior
+      installs already raced each other on this machine's SMB-mounted working copy;
+      see below); scaffold's default `oxlint` kept in place of ESLint (paired with
+      Prettier) — same purpose, already wired by create-vite, not worth fighting
+- [x] Vite dev proxy: `/api/*` and `/auth/*` → live backend URL (env var, not hardcoded)
+- [x] Design tokens in Tailwind config: dark palette from current app (`#0B0E12` bg
+      family, amber `#FFC857` accent), spacing/radius scale, Inter with
+      `font-variant-numeric: tabular-nums` for stat values; JetBrains Mono kept
+      as the wordmark/stat-value accent — ported 1:1 from `app/static/style.css`
+      into `web/src/index.css` as shadcn-compatible CSS variables (dark-only, no
+      light theme — matches the legacy app)
+- [x] Shared API client (`web/src/lib/api.ts`) with typed responses for existing
+      endpoints (start with the ones Home needs) — `dashboardSummary()` +
+      `HeaderStats`/`DashboardSummary` types, matching `stats._header_stats`'s
+      real field names exactly
+- [x] Verify: `npm run dev` renders a token-styled placeholder against live API data —
+      `npx tsc -b --noEmit` clean, `npx oxlint` clean (one expected fast-refresh
+      warning on `button.tsx`, matches upstream shadcn), `npm run build` succeeds,
+      screenshotted desktop+mobile against the live NAS backend via the dev proxy —
+      HALE wordmark (white HAL + amber E) renders correctly, card shows real
+      `headerStats` JSON (`totalActivityCount`, `runCountAllTime`, etc.) fetched
+      through `/api/dashboard/summary`
+- [x] Commit: "Phase 0.1: web/ scaffold, design tokens, API client"
+
+  **Environment note for future sections**: this machine's working copy
+  (`Y:\runlog`) is an SMB share (`\\DXP2800-C0A1\docker`), not a local disk —
+  confirmed via `net use Y:`. Two known SMB-specific issues, both fixed here:
+  (1) `npm install`/`rm -rf node_modules` can be extremely slow (~15min for a
+  ~60-package install) and bulk deletes can fail with `ENOTEMPTY` from
+  network-latency races — avoid running concurrent `npm install`s in the same
+  `web/` directory; (2) Vite's dev server crashes on startup with
+  `Error: UNKNOWN: unknown error, watch` because native `fs.watch()` isn't
+  supported over network shares — fixed via `server.watch.usePolling` in
+  `vite.config.ts`, needed by every later section that runs `npm run dev`.
 
 ### 0.2 App shell
 - [ ] Persistent left sidebar (desktop ≥900px) / bottom tab bar (mobile): Home, Goals,

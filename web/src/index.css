@@ -1,0 +1,114 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * HALE design tokens — ported 1:1 from the legacy app/static/style.css palette
+ * so Phase 0 tabs are visually identical to the app being replaced, not a
+ * fresh redesign. shadcn/ui's --background/--foreground/etc naming is layered
+ * on top so shadcn components resolve to the same colors automatically.
+ */
+:root {
+  --hale-bg: #0b0e12;
+  --hale-surface: #12161d;
+  --hale-surface-2: #1a2029;
+  --hale-border: #242b35;
+  --hale-text: #edeef0;
+  --hale-muted: #8b93a1;
+  --hale-faint: #5a6270;
+  --hale-gold: #ffc857;
+  --hale-cold: rgb(76 201 240);
+  --hale-hot: rgb(255 107 53);
+  --hale-good: #5fd68a;
+
+  --radius: 0.625rem;
+  --background: var(--hale-bg);
+  --foreground: var(--hale-text);
+  --card: var(--hale-surface);
+  --card-foreground: var(--hale-text);
+  --popover: var(--hale-surface);
+  --popover-foreground: var(--hale-text);
+  --primary: var(--hale-gold);
+  --primary-foreground: #1a1300;
+  --secondary: var(--hale-surface-2);
+  --secondary-foreground: var(--hale-text);
+  --muted: var(--hale-surface-2);
+  --muted-foreground: var(--hale-muted);
+  --accent: var(--hale-surface-2);
+  --accent-foreground: var(--hale-text);
+  --destructive: #e5484d;
+  --border: var(--hale-border);
+  --input: var(--hale-border);
+  --ring: var(--hale-gold);
+}
+
+/* HALE ships dark-only (matches the legacy app) — .dark class always applied, see App.tsx */
+.dark {
+  --background: var(--hale-bg);
+  --foreground: var(--hale-text);
+  --card: var(--hale-surface);
+  --card-foreground: var(--hale-text);
+  --popover: var(--hale-surface);
+  --popover-foreground: var(--hale-text);
+  --primary: var(--hale-gold);
+  --primary-foreground: #1a1300;
+  --secondary: var(--hale-surface-2);
+  --secondary-foreground: var(--hale-text);
+  --muted: var(--hale-surface-2);
+  --muted-foreground: var(--hale-muted);
+  --accent: var(--hale-surface-2);
+  --accent-foreground: var(--hale-text);
+  --destructive: #e5484d;
+  --border: var(--hale-border);
+  --input: var(--hale-border);
+  --ring: var(--hale-gold);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-hale-cold: var(--hale-cold);
+  --color-hale-hot: var(--hale-hot);
+  --color-hale-good: var(--hale-good);
+  --color-hale-faint: var(--hale-faint);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+  /* Stat values use tabular figures so digits don't jitter width on update — a
+     legacy-app requirement carried over (see .stat-value in the old stylesheet). */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}

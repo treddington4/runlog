@@ -190,6 +190,24 @@ export interface Goal {
   progress: GoalProgress
 }
 
+// Only the fields relevant to the currently-selected goalType are ever sent —
+// matches legacy's openGoalModal() save handler exactly, which builds this
+// object with an if/else per type rather than always including every field
+// (e.g. editing a race goal into a consistency goal never re-sends targetDate,
+// so a stale value harmlessly persists server-side but is never read again,
+// since goal_progress()'s dispatch is entirely keyed on goal_type).
+export interface GoalInput {
+  goalType: GoalType
+  name: string
+  activityTypes: string[]
+  notes: string
+  priority: number
+  targetValue?: number | null
+  targetUnit?: string | null
+  targetDate?: string | null
+  startDate?: string | null
+}
+
 export type WorkoutType = "easy" | "tempo" | "interval" | "long" | "rest" | "strength" | "cross_train"
 export type WorkoutStatus = "planned" | "completed" | "skipped" | "modified"
 
@@ -283,6 +301,72 @@ export interface Config {
   restingHrBpm: number | null
 }
 
+export interface StravaStatus {
+  connected: boolean
+}
+
+export interface GarminStatus {
+  configured: boolean
+}
+
+export interface SyncMetaInfo {
+  lastSyncedAt: string | null
+  lastCount: number | null
+  lastError: string | null
+}
+
+export interface SyncMeta {
+  strava: SyncMetaInfo
+  garmin: SyncMetaInfo
+}
+
+export interface Connection {
+  provider: string
+  username: string
+}
+
+export interface RouteDiagnostics {
+  fit_record_stream: number
+  geopolyline_summary: number
+  none: number
+  unknown: number
+}
+
+export type SyncSource = "strava" | "garmin"
+
+export interface SyncJob {
+  status: "idle" | "running" | "done" | "error"
+  count: number
+  log: string[]
+  startedAt: string | null
+  finishedAt: string | null
+  error: string | null
+}
+
+export interface BacklogJob extends SyncJob {
+  lastCompleted: { syncedAt: string | null; count: number | null; error: string | null }
+}
+
+export interface GarminImportSummary {
+  filesScanned: number
+  jsonFilesParsed: number
+  fitFilesFound: number
+  activityRecordsFound: number
+  activitiesImported: number
+  activitiesSkippedExisting: number
+  activitiesSkippedMalformed: number
+  dailyWellnessRecordsFound: number
+  dailyStepsImported: number
+  errors: string[]
+}
+
+// These three mirror legacy's per-button fetch handlers, which read `data.detail`
+// on a non-OK response — request<T>() (below) doesn't expose the response body
+// on failure, so these bypass it and never throw, matching the button-disables-
+// then-shows-an-inline-message UX exactly.
+export type SyncStartResult = { ok: true } | { ok: false; message: string }
+export type GarminImportResult = { ok: true; summary: GarminImportSummary } | { ok: false; message: string }
+
 export interface RunsQuery {
   start?: string
   end?: string
@@ -302,6 +386,66 @@ export const api = {
   dashboardSummary: () => request<DashboardSummary>("/api/dashboard/summary"),
   config: () => request<Config>("/api/config"),
   goals: () => request<Goal[]>("/api/goals"),
+  createGoal: (body: GoalInput) => request<Goal>("/api/goals", { method: "POST", body: JSON.stringify(body) }),
+  updateGoal: (id: string, body: Partial<GoalInput> & { status?: GoalStatus }) =>
+    request<Goal>(`/api/goals/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteGoal: (id: string) => request<{ deleted: true }>(`/api/goals/${id}`, { method: "DELETE" }),
+
+  stravaStatus: () => request<StravaStatus>("/api/strava/status"),
+  garminStatus: () => request<GarminStatus>("/api/garmin/status"),
+  syncMeta: () => request<SyncMeta>("/api/sync/meta"),
+  connections: () => request<Connection[]>("/api/connections"),
+  routeDiagnostics: () => request<RouteDiagnostics>("/api/garmin/route-diagnostics"),
+  syncStatus: (source: SyncSource) => request<SyncJob>(`/api/sync/${source}/status`),
+  backlogStatus: (source: SyncSource) => request<BacklogJob>(`/api/sync/${source}/backlog/status`),
+  saveGarminConnection: (username: string, password: string) =>
+    request<{ status: string }>("/api/connections/garmin", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  deleteConnection: (provider: string) =>
+    request<{ deleted: boolean }>(`/api/connections/${provider}`, { method: "DELETE" }),
+  setCoachPersonality: (personality: CoachPersonality) =>
+    request<{ personality: CoachPersonality }>("/api/coach/personality", {
+      method: "POST",
+      body: JSON.stringify({ personality }),
+    }),
+  manualSync: async (source: SyncSource): Promise<SyncStartResult> => {
+    try {
+      const res = await fetch(`/api/sync/${source}`, { method: "POST" })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        return { ok: false, message: data.detail || "Failed to start sync" }
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false, message: "Failed to start sync" }
+    }
+  },
+  backlogSync: async (source: SyncSource): Promise<SyncStartResult> => {
+    try {
+      const res = await fetch(`/api/sync/${source}/backlog`, { method: "POST" })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        return { ok: false, message: data.detail || "Failed to start backlog sync" }
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false, message: "Failed to start backlog sync" }
+    }
+  },
+  garminImport: async (file: File): Promise<GarminImportResult> => {
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+      const res = await fetch("/api/garmin/import", { method: "POST", body: formData })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) return { ok: false, message: data.detail || "Import failed" }
+      return { ok: true, summary: data }
+    } catch (e) {
+      return { ok: false, message: `Import failed: ${String(e)}` }
+    }
+  },
   runs: (query: RunsQuery = {}) => {
     const params = new URLSearchParams()
     if (query.all) params.set("all", "true")

@@ -12,6 +12,7 @@ export function ChartCard({
   valueColor,
   breakdown,
   bar,
+  actions,
   onClick,
   className,
 }: {
@@ -20,6 +21,7 @@ export function ChartCard({
   valueColor?: string
   breakdown?: React.ReactNode
   bar?: React.ReactNode
+  actions?: React.ReactNode
   onClick?: () => void
   className?: string
 }) {
@@ -38,6 +40,7 @@ export function ChartCard({
       </div>
       {bar}
       {breakdown != null && <div className="text-muted-foreground text-xs">{breakdown}</div>}
+      {actions}
     </Card>
   )
 }

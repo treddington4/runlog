@@ -342,11 +342,50 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.8: Chat tab ported"
 
 ### 0.9 Goals + Settings port
-- [ ] Goals CRUD + progress cards; Settings: connections, sync controls with live
-      sync/backlog status panels (preserve poll-only-while-running discipline —
-      see the flashing-loop bug history in git log), coach personality, import, About
-- [ ] Verify: sync-now round-trip shows live status; screenshot
-- [ ] Commit: "Phase 0.9: Goals + Settings ported"
+- [x] Goals CRUD + progress cards — `GoalCard.tsx` (already ported in 0.3) extended
+      with optional `onEdit`/`onComplete`/`onAbandon`/`onDelete` props rendering the
+      legacy action row (Home's usage is unaffected, passes none of them);
+      `ChartCard` gained a generic `actions` slot to carry them. New
+      `GoalFormDialog.tsx` (discriminated race/consistency/distance_target fields,
+      activity-type checklist data-driven from real run history via `useAllRuns()`,
+      same "only send the fields relevant to the current type" behavior as legacy
+      — switching goal type on edit leaves old fields stale server-side but
+      harmless, since `goal_progress()`'s dispatch is entirely keyed on
+      `goal_type`), `GoalsPage.tsx` (Active/Completed/Abandoned sections),
+      `useGoalMutations()` (create/update/delete, one shared `["goals"]`
+      invalidation covering the Shell's race countdown and Home's goals section too)
+- [x] Settings: connections, sync controls with live sync/backlog status panels,
+      coach personality, Garmin import, About — `hooks/useSettings.ts` ports every
+      remaining endpoint (`stravaStatus`, `garminStatus`, `syncMeta`, `connections`,
+      `routeDiagnostics`, `config`) plus `useSyncStatus`/`useBacklogStatus`, which
+      reproduce the poll-only-while-running discipline (see the flashing-loop bug
+      history) via TanStack Query's `refetchInterval` callback — `(query) =>
+      query.state.data?.status === "running" ? interval : false` — rather than
+      porting the manual `setTimeout`/`stopBacklogPolling`/`checkBacklogOnce` state
+      machine: a query with no active observers simply doesn't refetch, so there is
+      no way to reintroduce the original unconditional-poll bug this pattern was
+      written to fix. `manualSync`/`backlogSync`/`garminImport` in `api.ts` never
+      throw (mirrors Chat's `sendChatMessage` convention from 0.8) so the UI can
+      show the exact inline failure text a non-OK response or network error
+      produces. `components/settings/SyncControls.tsx` is shared by both sources'
+      Strava/Garmin sections
+- [x] Verify: sync-now round-trip shows live status; screenshot — `tsc -b --noEmit`
+      and `oxlint` clean (same one expected `button.tsx` warning), `npm run build`
+      succeeds. Screenshotted Goals (active/completed cards with real countdown/
+      progress data) and every Settings section against live data — status dots,
+      last-synced/last-error text (including Garmin's real rate-limit cooldown
+      message), route-source diagnostics, resting HR, steps, connections, coach
+      personality, sync schedule, About. Did real round-trips against the live
+      backend, not mocks: created a distance-target test goal through the actual
+      dialog (confirmed via screenshot: "0 / 100 mi", "0% complete"), then deleted
+      it through the UI and confirmed via `GET /api/goals` it's gone; clicked
+      "Sync Now" for Strava and confirmed via network-request logging that the
+      button correctly POSTs, the status panel shows "Syncing…"/"N runs synced so
+      far…" while running, polling stops and the button/panel revert to idle once
+      the job finishes; toggled the coach personality select (Insulting →
+      Encouraging → back to Insulting) and confirmed the "Saved" flash and that
+      `POST /api/coach/personality` actually fired each time
+- [x] Commit: "Phase 0.9: Goals + Settings ported"
 
 ### 0.10 Cutover
 - [ ] Dockerfile → multi-stage: `node:22-slim` builds `web/dist` → copied into the

@@ -1,0 +1,305 @@
+import { useState, type ReactNode } from "react"
+import {
+  useStravaStatus,
+  useGarminStatus,
+  useSyncMeta,
+  useConnections,
+  useRouteDiagnostics,
+  useConfig,
+  useSettingsMutations,
+} from "@/hooks/useSettings"
+import { useCoachPersonality } from "@/hooks/useChat"
+import { useSteps } from "@/hooks/useSteps"
+import type { CoachPersonality, SyncMetaInfo } from "@/lib/api"
+import { SyncControls } from "@/components/settings/SyncControls"
+import { Card } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
+
+function SettingsSection({ title, children }: { title: ReactNode; children: ReactNode }) {
+  return (
+    <Card className="gap-2">
+      <div className="mb-1 text-sm font-bold">{title}</div>
+      {children}
+    </Card>
+  )
+}
+
+function SettingsRow({ label, value }: { label?: ReactNode; value: ReactNode }) {
+  return (
+    <div className="border-border flex items-center justify-between gap-3 border-t py-2 text-[13px] first:border-t-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-mono">{value}</span>
+    </div>
+  )
+}
+
+function StatusDot({ color }: { color: string }) {
+  return <span className="mr-1.5 inline-block size-2 rounded-full" style={{ background: color }} />
+}
+
+function fmtMeta(m: SyncMetaInfo | undefined) {
+  if (!m?.lastSyncedAt) return "Never synced"
+  return `${new Date(m.lastSyncedAt).toLocaleString()} · ${m.lastCount} run${m.lastCount === 1 ? "" : "s"}`
+}
+
+function StravaSection() {
+  const { data: status } = useStravaStatus()
+  const { data: syncMeta } = useSyncMeta()
+
+  return (
+    <SettingsSection title="Strava">
+      <SettingsRow
+        label="Status"
+        value={
+          <span className="inline-flex items-center font-sans font-normal">
+            <StatusDot color={status?.connected ? "var(--hale-good)" : "var(--hale-hot)"} />
+            {status?.connected ? "Connected" : "Not connected"}
+          </span>
+        }
+      />
+      <SettingsRow label="Last synced" value={fmtMeta(syncMeta?.strava)} />
+      {syncMeta?.strava.lastError && (
+        <SettingsRow label="Last error" value={<span className="text-hale-hot">{syncMeta.strava.lastError}</span>} />
+      )}
+      <SyncControls source="strava" enabled={!!status?.connected} />
+    </SettingsSection>
+  )
+}
+
+function GarminSection() {
+  const { data: status } = useGarminStatus()
+  const { data: syncMeta } = useSyncMeta()
+  const { data: routeDiag } = useRouteDiagnostics()
+  const { data: config } = useConfig()
+  const { data: recentSteps } = useSteps(7)
+  const latestSteps = recentSteps?.length ? recentSteps[recentSteps.length - 1] : null
+
+  const routeDiagTotal = routeDiag ? routeDiag.fit_record_stream + routeDiag.geopolyline_summary + routeDiag.none : 0
+
+  return (
+    <SettingsSection title={<>Garmin <span className="text-hale-faint font-normal">(optional, unofficial)</span></>}>
+      <SettingsRow
+        label="Status"
+        value={
+          <span className="inline-flex items-center font-sans font-normal">
+            <StatusDot color={status?.configured ? "var(--hale-good)" : "var(--hale-faint)"} />
+            {status?.configured ? "Configured" : "Not configured"}
+          </span>
+        }
+      />
+      <SettingsRow label="Last synced" value={fmtMeta(syncMeta?.garmin)} />
+      {syncMeta?.garmin.lastError && (
+        <SettingsRow label="Last error" value={<span className="text-hale-hot">{syncMeta.garmin.lastError}</span>} />
+      )}
+      {routeDiagTotal > 0 && routeDiag && (
+        <SettingsRow
+          label="Route source"
+          value={
+            <span className="font-normal">
+              {routeDiag.fit_record_stream} unmasked (FIT) · {routeDiag.geopolyline_summary} Garmin summary ·{" "}
+              {routeDiag.none} none
+            </span>
+          }
+        />
+      )}
+      {config?.restingHrBpm && <SettingsRow label="Resting HR" value={`${config.restingHrBpm} bpm`} />}
+      {latestSteps && (
+        <SettingsRow label={`Steps (${latestSteps.date})`} value={(latestSteps.steps ?? 0).toLocaleString()} />
+      )}
+      <SyncControls source="garmin" enabled={!!status?.configured} />
+    </SettingsSection>
+  )
+}
+
+function GarminImportSection() {
+  const { garminImport } = useSettingsMutations()
+  const [file, setFile] = useState<File | null>(null)
+  const [noFileError, setNoFileError] = useState(false)
+
+  function handleImport() {
+    if (!file) {
+      setNoFileError(true)
+      return
+    }
+    setNoFileError(false)
+    garminImport.mutate(file)
+  }
+
+  return (
+    <SettingsSection title="Garmin data export import">
+      <div className="text-hale-faint text-xs">
+        Upload the ZIP from Garmin's "Export Your Data" (account.garmin.com) to backfill history without leaning on
+        the rate-limited live sync. Safe to re-upload the same or a newer export.
+      </div>
+      <div className="mt-2.5 flex items-center gap-2">
+        <input type="file" accept=".zip" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-xs" />
+        <Button size="sm" disabled={garminImport.isPending} onClick={handleImport}>
+          {garminImport.isPending ? "Importing…" : "Import"}
+        </Button>
+      </div>
+      {noFileError && <div className="text-hale-hot mt-2 text-xs">Choose a .zip file first</div>}
+      {garminImport.isPending && file && (
+        <div className="text-muted-foreground mt-2 text-xs">
+          Uploading and parsing {file.name} — this can take a while for a large export…
+        </div>
+      )}
+      {garminImport.data &&
+        (garminImport.data.ok ? (
+          <div className="mt-2 text-xs">
+            <div className="text-muted-foreground">
+              Scanned {garminImport.data.summary.filesScanned} files ({garminImport.data.summary.jsonFilesParsed}{" "}
+              JSON, {garminImport.data.summary.fitFilesFound} FIT)
+              <br />
+              Activities: {garminImport.data.summary.activityRecordsFound} found —{" "}
+              {garminImport.data.summary.activitiesImported} imported,{" "}
+              {garminImport.data.summary.activitiesSkippedExisting} already synced,{" "}
+              {garminImport.data.summary.activitiesSkippedMalformed} skipped
+              <br />
+              Daily steps: {garminImport.data.summary.dailyWellnessRecordsFound} found —{" "}
+              {garminImport.data.summary.dailyStepsImported} imported
+            </div>
+            {garminImport.data.summary.errors.length > 0 && (
+              <pre className="bg-background border-border text-muted-foreground mt-1.5 max-h-40 overflow-y-auto rounded-md border p-2 font-mono text-[11px] whitespace-pre-wrap">
+                {garminImport.data.summary.errors.slice(0, 5).join("\n")}
+              </pre>
+            )}
+          </div>
+        ) : (
+          <div className="text-hale-hot mt-2 text-xs">{garminImport.data.message}</div>
+        ))}
+    </SettingsSection>
+  )
+}
+
+function ConnectionsSection() {
+  const { data: status } = useGarminStatus()
+  const { data: connections } = useConnections()
+  const { saveGarminConnection, deleteConnection } = useSettingsMutations()
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
+
+  const garminConn = connections?.find((c) => c.provider === "garmin")
+
+  return (
+    <SettingsSection title="Connections">
+      <div className="text-hale-faint pb-2 text-xs">
+        Manage your Garmin login here instead of container env vars. Strava connects via the button in the header.
+      </div>
+      {status?.configured ? (
+        <>
+          <SettingsRow label="Username" value={garminConn?.username ?? ""} />
+          <Button
+            variant="link"
+            size="sm"
+            className="mt-2 h-auto p-0"
+            onClick={() => deleteConnection.mutate("garmin")}
+          >
+            Remove connection
+          </Button>
+        </>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label>Garmin email</Label>
+            <Input placeholder="you@example.com" value={username} onChange={(e) => setUsername(e.target.value)} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Garmin password</Label>
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </div>
+          <Button
+            size="sm"
+            disabled={!username || !password || saveGarminConnection.isPending}
+            onClick={() => saveGarminConnection.mutate({ username: username.trim(), password })}
+          >
+            {saveGarminConnection.isPending ? "Saving…" : "Save connection"}
+          </Button>
+        </div>
+      )}
+    </SettingsSection>
+  )
+}
+
+function CoachSection() {
+  const { data } = useCoachPersonality()
+  const { setCoachPersonality } = useSettingsMutations()
+  const [saved, setSaved] = useState(false)
+
+  function handleChange(v: string) {
+    setCoachPersonality.mutate(v as CoachPersonality, {
+      onSuccess: () => {
+        setSaved(true)
+        setTimeout(() => setSaved(false), 1500)
+      },
+    })
+  }
+
+  return (
+    <SettingsSection title="Coach">
+      <div className="flex items-center justify-between py-2 text-[13px]">
+        <span className="text-muted-foreground">Personality</span>
+        <Select value={data?.personality ?? "normal"} onValueChange={handleChange}>
+          <SelectTrigger className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="encouraging">Encouraging</SelectItem>
+            <SelectItem value="normal">Normal</SelectItem>
+            <SelectItem value="spicy">Spicy</SelectItem>
+            <SelectItem value="insulting">Insulting</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {saved && <div className="text-hale-good text-xs">Saved</div>}
+    </SettingsSection>
+  )
+}
+
+function SyncScheduleSection() {
+  const { data: config } = useConfig()
+  return (
+    <SettingsSection title="Sync schedule">
+      <SettingsRow label="Auto-sync interval" value={`Every ${config?.syncIntervalHours ?? "--"}h (Strava only)`} />
+      <SettingsRow label="Activities per sync" value={config?.syncActivityLimit ?? "--"} />
+      <div className="text-hale-faint pt-2 text-xs">
+        Backlog Sync pulls a source's entire history in the background — a one-time catch-up, not part of the
+        regular schedule.
+      </div>
+    </SettingsSection>
+  )
+}
+
+function AboutSection() {
+  return (
+    <SettingsSection title="About">
+      <div className="text-hale-faint text-xs">
+        HALE — HALE's Adaptive Life Engine — is free and open source. Found a bug, want a feature, or just want to
+        support the project?
+      </div>
+      <div className="mt-2.5">
+        <Button variant="outline" size="sm" asChild>
+          <a href="https://github.com/treddington4/hale" target="_blank" rel="noopener noreferrer">
+            Contribute / Donate on GitHub
+          </a>
+        </Button>
+      </div>
+    </SettingsSection>
+  )
+}
+
+export function SettingsPage() {
+  return (
+    <div className="flex flex-col gap-4">
+      <StravaSection />
+      <GarminSection />
+      <GarminImportSection />
+      <ConnectionsSection />
+      <CoachSection />
+      <SyncScheduleSection />
+      <AboutSection />
+    </div>
+  )
+}

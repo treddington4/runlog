@@ -4,6 +4,7 @@ import type { Goal } from "@/lib/api"
 import { paceStr, timeStr, fmtGoalDate } from "@/lib/format"
 import { ChartCard } from "./ChartCard"
 import { DashBar } from "./DashBar"
+import { Button } from "@/components/ui/button"
 
 // Ports the legacy goalCardBody() dispatch (app.js) — one card body per goal type,
 // each surfacing whatever progress.py's goal_progress() computed server-side.
@@ -41,9 +42,27 @@ function goalCardBody(g: Goal): { value: React.ReactNode; breakdown: React.React
   }
 }
 
-export function GoalCard({ goal, linkToGoalsTab }: { goal: Goal; linkToGoalsTab?: boolean }) {
+// The Goals tab passes onEdit/onComplete/onAbandon/onDelete to render the
+// legacy renderGoalCards()'s action row (Edit/Mark complete/Abandon/Delete) —
+// Home's usage omits all of these and just gets a plain card.
+export function GoalCard({
+  goal,
+  linkToGoalsTab,
+  onEdit,
+  onComplete,
+  onAbandon,
+  onDelete,
+}: {
+  goal: Goal
+  linkToGoalsTab?: boolean
+  onEdit?: () => void
+  onComplete?: () => void
+  onAbandon?: () => void
+  onDelete?: () => void
+}) {
   const navigate = useNavigate()
   const { value, breakdown, bar } = goalCardBody(goal)
+  const hasActions = onEdit || onComplete || onAbandon || onDelete
   return (
     <ChartCard
       label={goal.name}
@@ -51,6 +70,32 @@ export function GoalCard({ goal, linkToGoalsTab }: { goal: Goal; linkToGoalsTab?
       breakdown={breakdown}
       bar={bar}
       onClick={linkToGoalsTab ? () => navigate("/goals") : undefined}
+      actions={
+        hasActions ? (
+          <div className="mt-1 flex flex-wrap gap-3">
+            {onEdit && (
+              <Button variant="link" size="sm" className="h-auto p-0" onClick={onEdit}>
+                Edit
+              </Button>
+            )}
+            {goal.status === "active" && onComplete && (
+              <Button variant="link" size="sm" className="h-auto p-0" onClick={onComplete}>
+                Mark complete
+              </Button>
+            )}
+            {goal.status === "active" && onAbandon && (
+              <Button variant="link" size="sm" className="h-auto p-0" onClick={onAbandon}>
+                Abandon
+              </Button>
+            )}
+            {onDelete && (
+              <Button variant="link" size="sm" className="text-hale-hot h-auto p-0" onClick={onDelete}>
+                Delete
+              </Button>
+            )}
+          </div>
+        ) : undefined
+      }
     />
   )
 }

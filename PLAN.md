@@ -196,10 +196,45 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.5: Activities tab ported + windowed /api/runs fetching"
 
 ### 0.6 Insights port
-- [ ] All existing charts (weekly mileage, pace trend, HR, cadence, dynamics, steps,
-      wellness, sleep hypnogram) on a unified Chart.js theme (palette, axes, tooltips)
-- [ ] Verify: screenshot vs legacy for chart parity
-- [ ] Commit: "Phase 0.6: Insights tab ported"
+- [x] All existing charts (temp-vs-pace/HR/cadence scatter, weekly mileage, pace/
+      cadence/HR trend, 7-day rolling pace, cadence-vs-pace scatter, steps, resting
+      HR, VO2max, sleep score/duration, sleep-stage hypnogram) ported — `chart.js`
+      added as a real dependency (legacy had no build step so it loaded via CDN);
+      `lib/chartTheme.ts`'s `applyChartTheme()` centralizes the palette + grid/tick
+      defaults legacy hand-repeated per chart (called once in `main.tsx`, before
+      any chart mounts anywhere — fixes a real legacy fragility where Chat's charts
+      silently depended on Insights having rendered first to set `Chart.defaults`);
+      `components/insights/ChartCanvas.tsx` is a small per-canvas Chart.js
+      lifecycle wrapper (create/destroy via `useEffect` cleanup keyed on a
+      `useMemo`'d config) — deliberately not the legacy global `charts` array +
+      manual `destroyCharts()`, since React's unmount timing doesn't line up with
+      that pattern's assumptions; `ChartPanel.tsx` ports the title/sub/canvas/
+      empty-state card shell (`chartCardHTML`); `lib/sleepStages.ts` ports the
+      hypnogram's EST-timezone tick/label helpers 1:1; reused the existing
+      `FilterBar`/`useHrFloor`/`isPlausiblePace`/`isPlausibleHR` rather than
+      duplicating; added `api.steps()`/`api.sleepStages()` + `useSteps`/
+      `useSleepStages` hooks (previously unused by any ported tab). One
+      Chart.js/TS typing gap hit and resolved: the sleep hypnogram's floating-bar-
+      on-a-category-axis pattern (`x: [start,end], y: label`) isn't modeled by
+      Chart.js's bundled bar-chart types (they expect `Point`/`BubbleDataPoint`) —
+      narrowly cast just the `dataset.data` field rather than the whole config
+      object, which preserves contextual typing (and real type-checking) for
+      every sibling callback (tooltip formatters, `afterBuildTicks`)
+- [x] Verify: screenshot vs legacy for chart parity — `tsc -b --noEmit` and
+      `oxlint` clean (same one expected `button.tsx` fast-refresh warning as every
+      prior phase), `npm run build` succeeds. Screenshotted against the live NAS
+      backend at both the default 7-day range and a wider "Month" range: real
+      data renders correctly in every panel — temp-effect scatters, weekly
+      mileage bars, the dual-axis pace/cadence/HR trend line with its legend row,
+      7-day rolling pace, cadence-vs-pace scatter, daily steps bars, resting HR,
+      VO2max (stepped line), sleep score+duration dual-axis line, and the sleep
+      hypnogram (correct per-stage colors, EST time-of-night axis, working
+      night-picker showing "2026-07-20") — no broken canvases, no console/page
+      errors. Confirmed chart cleanup works correctly by navigating Insights →
+      Activities → Insights and re-checking for console errors (none) — this
+      exercises the `ChartCanvas` unmount path the legacy app never had to handle
+      (it only ever tore down charts on tab-*in*, never on tab-away)
+- [x] Commit: "Phase 0.6: Insights tab ported"
 
 ### 0.7 Map port
 - [ ] Leaflet map, location select, metric modes (density/pace/HR/cadence/grade),

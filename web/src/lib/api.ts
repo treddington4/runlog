@@ -89,6 +89,23 @@ export interface WellnessDay {
   awakeSleepSeconds: number | null
 }
 
+export interface DailyStepsPoint {
+  date: string
+  steps: number | null
+}
+
+export interface SleepStageSegment {
+  stage: string
+  start: string
+  end: string
+}
+
+export interface SleepStagesResponse {
+  availableDates: string[]
+  date: string | null
+  segments: SleepStageSegment[]
+}
+
 export type GoalType = "race" | "consistency" | "distance_target"
 export type GoalStatus = "active" | "completed" | "abandoned"
 
@@ -256,6 +273,9 @@ export const api = {
     return request<Run[]>(`/api/runs${qs ? `?${qs}` : ""}`)
   },
   wellness: (days = 30) => request<WellnessDay[]>(`/api/wellness?days=${days}`),
+  steps: (days = 30) => request<DailyStepsPoint[]>(`/api/steps?days=${days}`),
+  sleepStages: (date?: string) =>
+    request<SleepStagesResponse>(`/api/wellness/sleep-stages${date ? `?date=${date}` : ""}`),
   updateRun: (id: string, body: RunUpdate) =>
     request<Run>(`/api/runs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
 

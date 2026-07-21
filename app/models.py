@@ -203,6 +203,23 @@ class ApiToken(Base):
     last_used_at = Column(String, nullable=True)
 
 
+class PushSubscription(Base):
+    """Web Push subscription (Phase 0.11). One row per browser/device the user has
+    granted notification permission on — a user with two devices has two rows, both
+    valid targets for push.send_push(). A whole new table, so create_all() picks it
+    up automatically, same as ApiToken above. Unlike Run/Goal there's no pre-multi-
+    tenant legacy-NULL user_id to handle for a table this new, so plain equality
+    filtering (not owned_by()) is correct here — matches ApiToken's own convention."""
+    __tablename__ = "push_subscriptions"
+
+    id = Column(String, primary_key=True)  # f"push_{uuid.uuid4().hex[:12]}"
+    user_id = Column(String, nullable=False)
+    endpoint = Column(String, nullable=False, unique=True)  # push service URL, unique per browser subscription
+    p256dh = Column(String, nullable=False)
+    auth = Column(String, nullable=False)
+    created_at = Column(String)
+
+
 class Goal(Base):
     """A user's training goal — one wide table covers all three types (matches this
     app's existing convention, e.g. Run's nullable Garmin-only columns, rather than a

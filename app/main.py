@@ -505,6 +505,62 @@ def delete_token(token_id: str, user_id: str = Depends(auth.current_user_id)):
         db.close()
 
 
+# ---------- Web Push (Phase 0.11, PWA push notifications) ----------
+@app.get("/api/push/vapid-public-key")
+def get_vapid_public_key():
+    """Unauthenticated on purpose — this is a public key by definition (it's handed to
+    PushManager.subscribe() client-side), same non-secret status as an OAuth client id."""
+    import push
+    return {"configured": push.is_configured(), "publicKey": push.VAPID_PUBLIC_KEY}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request, user_id: str = Depends(auth.current_user_id)):
+    import push
+    body = await request.json()
+    endpoint = body.get("endpoint")
+    keys = body.get("keys") or {}
+    if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
+        raise HTTPException(400, "endpoint and keys.p256dh/keys.auth are required")
+    db = SessionLocal()
+    try:
+        push.subscribe(db, user_id, endpoint, keys["p256dh"], keys["auth"])
+        return {"subscribed": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request, user_id: str = Depends(auth.current_user_id)):
+    import push
+    body = await request.json()
+    endpoint = body.get("endpoint")
+    if not endpoint:
+        raise HTTPException(400, "endpoint is required")
+    db = SessionLocal()
+    try:
+        push.unsubscribe(db, user_id, endpoint)
+        return {"unsubscribed": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/push/test")
+def push_test(user_id: str = Depends(auth.current_user_id)):
+    """Sends a real notification to every device this user has subscribed — the one
+    genuinely useful verification hook, independent of any feature (daily insight,
+    generated workout) that would otherwise trigger a push, since neither exists yet."""
+    import push
+    if not push.is_configured():
+        raise HTTPException(400, "Push not configured — set VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY")
+    db = SessionLocal()
+    try:
+        sent = push.send_push(db, user_id, "HALE", "Push notifications are working.", "/")
+        return {"sent": sent}
+    finally:
+        db.close()
+
+
 # ---------- Settings ----------
 @app.get("/api/garmin/status")
 def garmin_status(user_id: str = Depends(auth.current_user_id)):
@@ -530,6 +586,7 @@ def garmin_route_diagnostics(user_id: str = Depends(auth.current_user_id)):
 
 @app.get("/api/config")
 def get_config(user_id: str = Depends(auth.current_user_id)):
+    import push
     db = SessionLocal()
     try:
         resting_hr = stats.latest_resting_hr_bpm(db, user_id)
@@ -539,6 +596,7 @@ def get_config(user_id: str = Depends(auth.current_user_id)):
         "syncIntervalHours": SYNC_INTERVAL_HOURS,
         "syncActivityLimit": SYNC_LIMIT,
         "restingHrBpm": resting_hr,
+        "pushConfigured": push.is_configured(),
     }
 
 

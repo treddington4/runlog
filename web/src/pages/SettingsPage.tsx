@@ -11,6 +11,7 @@ import {
 } from "@/hooks/useSettings"
 import { useCoachPersonality } from "@/hooks/useChat"
 import { useSteps } from "@/hooks/useSteps"
+import { usePush } from "@/hooks/usePush"
 import type { CoachPersonality, SyncMetaInfo, ApiTokenCreated } from "@/lib/api"
 import { SyncControls } from "@/components/settings/SyncControls"
 import { Card } from "@/components/ui/card"
@@ -269,6 +270,58 @@ function CoachSection() {
   )
 }
 
+function PushSection() {
+  const { data: config } = useConfig()
+  const push = usePush()
+
+  // Hidden entirely when the server has no VAPID keypair set — same "clean no-op,
+  // not a broken control" degrade as the Chat tab when neither Claude credential is set.
+  if (!config?.pushConfigured) return null
+
+  return (
+    <SettingsSection title="Push notifications">
+      {!push.supported ? (
+        <div className="text-hale-faint text-xs">Not supported in this browser.</div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between py-2 text-[13px]">
+            <span className="text-muted-foreground">Enable on this device</span>
+            <Button
+              size="sm"
+              variant={push.subscribed ? "outline" : "default"}
+              disabled={push.checking || push.enable.isPending || push.disable.isPending}
+              onClick={push.toggle}
+            >
+              {push.subscribed ? "Disable" : "Enable"}
+            </Button>
+          </div>
+          {push.subscribed && (
+            <Button
+              size="sm"
+              variant="link"
+              className="h-auto p-0"
+              disabled={push.sendTest.isPending}
+              onClick={() => push.sendTest.mutate()}
+            >
+              {push.sendTest.isPending ? "Sending…" : "Send test notification"}
+            </Button>
+          )}
+          {push.sendTest.isSuccess && (
+            <div className="text-hale-good mt-1 text-xs">
+              Sent to {push.sendTest.data?.sent ?? 0} device{push.sendTest.data?.sent === 1 ? "" : "s"}.
+            </div>
+          )}
+          {(push.enable.isError || push.disable.isError) && (
+            <div className="text-hale-hot mt-1 text-xs">
+              {(push.enable.error || push.disable.error)?.message || "Something went wrong"}
+            </div>
+          )}
+        </>
+      )}
+    </SettingsSection>
+  )
+}
+
 function SyncScheduleSection() {
   const { data: config } = useConfig()
   return (
@@ -378,6 +431,7 @@ export function SettingsPage() {
       <ConnectionsSection />
       <TokensSection />
       <CoachSection />
+      <PushSection />
       <SyncScheduleSection />
       <AboutSection />
     </div>

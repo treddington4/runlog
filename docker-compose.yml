@@ -21,6 +21,9 @@ services:
       - DB_PATH=/data/runlog.db
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_CLAIMS_EMAIL=${VAPID_CLAIMS_EMAIL:-mailto:admin@example.com}
     volumes:
       - runlog_data:/data
     restart: unless-stopped

@@ -299,6 +299,12 @@ export interface Config {
   syncIntervalHours: number
   syncActivityLimit: number
   restingHrBpm: number | null
+  pushConfigured: boolean
+}
+
+export interface PushVapidKey {
+  configured: boolean
+  publicKey: string | null
 }
 
 export interface StravaStatus {
@@ -511,4 +517,14 @@ export const api = {
     request<RecoverySession>(`/api/recovery-sessions/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   deleteRecoverySession: (id: string) =>
     request<{ deleted: true }>(`/api/recovery-sessions/${id}`, { method: "DELETE" }),
+
+  pushVapidKey: () => request<PushVapidKey>("/api/push/vapid-public-key"),
+  pushSubscribe: (subscription: PushSubscriptionJSON) =>
+    request<{ subscribed: true }>("/api/push/subscribe", { method: "POST", body: JSON.stringify(subscription) }),
+  pushUnsubscribe: (endpoint: string) =>
+    request<{ unsubscribed: true }>("/api/push/unsubscribe", {
+      method: "POST",
+      body: JSON.stringify({ endpoint }),
+    }),
+  pushTest: () => request<{ sent: number }>("/api/push/test", { method: "POST" }),
 }

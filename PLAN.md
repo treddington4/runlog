@@ -437,11 +437,98 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.10: cutover to built frontend"
 
 ### 0.11 PWA
-- [ ] Manifest (name HALE, amber-E icon set), service worker (offline shell,
-      network-first API), web push: backend `POST /api/push/subscribe` +
-      `pywebpush` sends on daily insight/generated workout
-- [ ] Verify: Lighthouse installability pass; real push received on phone
-- [ ] Commit: "Phase 0.11: PWA + push notifications"
+- [x] Manifest (`web/vite.config.ts`'s `VitePWA({ manifest: {...} })`) — name
+      "HALE — HALE's Adaptive Life Engine", short name "HALE", `#0b0e12`
+      background/theme (matches `--hale-bg`), `standalone` display. Icon set
+      generated via a one-off Pillow script (bold amber "E" on `--hale-bg`,
+      matching the Wordmark's `HAL<span class="text-primary">E</span>`
+      treatment): `pwa-192`/`pwa-512` (purpose `any`), `maskable-512` (extra
+      padding so circular/squircle OS masks don't clip the glyph),
+      `apple-touch-icon` (opaque, for iOS home screen) — all under
+      `web/public/icons/`
+- [x] Service worker (`web/src/sw.ts`, `strategies: 'injectManifest'` — the
+      default `generateSW` can't inject a custom `push`/`notificationclick`
+      listener, which this needs): precaches the app shell via
+      `precacheAndRoute(self.__WB_MANIFEST)`, `NetworkFirst` runtime caching
+      for `/api/**` (8s timeout, falls back to last-known-good when offline).
+      `registerType: 'autoUpdate'` — no update-available prompt, matching a
+      single-user self-hosted app's low-stakes update model.
+      `web/tsconfig.app.json` excludes `sw.ts` from the app's `tsc -b` project
+      (its `webworker` lib conflicts with the app's `DOM` lib) — vite-plugin-pwa
+      builds it via its own separate esbuild pass regardless
+- [x] Web push backend: `PushSubscription` table (`models.py`, brand-new — no
+      `_MIGRATABLE_TABLES` entry needed, same as `ApiToken`); `app/push.py`
+      (`is_configured()`/`subscribe()`/`unsubscribe()`/`send_push()`, degrades
+      cleanly with no VAPID keypair set, same pattern as `assistant.py`'s
+      Claude-credential check). `POST /api/push/subscribe`,
+      `POST /api/push/unsubscribe`, unauthenticated `GET
+      /api/push/vapid-public-key` (a public key by definition — same non-secret
+      status as an OAuth client id), `POST /api/push/test` (sends a real
+      notification to every device the current user has subscribed — the one
+      concrete verification hook, independent of the two triggers this
+      checklist names below, since neither exists as a feature yet).
+      `GET /api/config` gained `pushConfigured` so the frontend can hide the
+      whole Settings section cleanly when unconfigured. VAPID keypair
+      generated once via `py-vapid` or `pywebpush==2.3.0`, stored in `.env`
+      (`VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_CLAIMS_EMAIL`) and
+      threaded through `docker-compose.yml`
+- [x] Frontend: `usePush()` hook (`web/src/hooks/usePush.ts`) — checks
+      `serviceWorker`/`PushManager` support, calls
+      `Notification.requestPermission()` + `pushManager.subscribe()`, POSTs the
+      subscription; a `PushSection` in Settings shows Enable/Disable + "Send
+      test notification", hidden entirely when `pushConfigured` is false
+- [x] **Known gap, explicitly deferred**: `send_push()` has no real caller yet.
+      This checklist item's own two named triggers — a daily insight and a
+      generated workout — aren't features that exist in this codebase (no
+      `assistant.get_daily_insight()`, no workout-generator). Wiring either one
+      up is out of scope until that feature itself is built; today's one real
+      caller is the manual "Send test notification" action, which exists
+      specifically to prove the plumbing end-to-end without waiting on either
+- [x] Verify: `tsc -b`/`oxlint`/`npm run build` all clean (build output
+      confirmed `manifest.webmanifest` + `sw.js` with 14 precached entries);
+      full `docker compose up -d --build` deploy, clean startup logs.
+      `GET /api/config` confirmed `pushConfigured:true` post-deploy (had to add
+      the 3 new env vars to `docker-compose.yml` — a real gap hit here:
+      `.env`'s own values are invisible to the container unless also listed in
+      compose's `environment:` block, same lesson as every other secret in
+      this file). Screenshotted Settings against the live LAN URL (plain HTTP)
+      — Push section correctly rendered "Not supported in this browser" (no
+      `serviceWorker` in an insecure context — this *is* correct browser
+      behavior, not a bug); re-screenshotted against the tailnet HTTPS URL —
+      same section now showed a live "Enable" button, confirming the SW
+      registered and `PushManager` is available under a real secure context.
+      Drove the actual subscribe flow with a real (non-headless-limited logic)
+      Chromium context with notification permission pre-granted: got as far as
+      `Notification.requestPermission()` resolving `"granted"` and the app
+      correctly calling `pushManager.subscribe()`, which then failed with
+      "Registration failed - permission denied" — a well-documented headless-
+      Chromium limitation (no real FCM sender registration path without an
+      actual signed-in browser), not a bug in this implementation; confirmed
+      the failure surfaced cleanly through the UI's own error state rather
+      than hanging or crashing. Backend robustness verified directly: inserted
+      a fake/malformed `PushSubscription` row via `docker exec` + a scratch
+      script, called `POST /api/push/test`, confirmed it returned a clean
+      `{"sent":0}` (200, not a 500) with the failure logged — this caught and
+      fixed a real gap along the way (the original `except WebPushException`
+      only handler didn't cover a plain `requests` exception from an
+      unreachable endpoint, which would have 500'd the whole call and blocked
+      delivery to a user's *other*, healthy devices; broadened to catch
+      `Exception` generally, pruning only on a genuine 404/410 from the push
+      service itself). Cleaned up the fake row afterward. **Not verified from
+      this environment** (documented limitation, same shape as the existing
+      LAN-visibility one in `.RUNBOOK.md`): an actual OS-level notification
+      arriving on a real device — headless Chromium can't complete a real push
+      subscription, and there's no phone on hand here. Next real step is the
+      user clicking Enable + Send test notification on their own phone/browser
+      via the tailnet HTTPS URL. Also fixed a real regression in
+      `scripts/screenshot.py` hit while verifying this: the earlier sidebar-
+      scroll fix (`Shell.tsx`, `h-svh overflow-hidden` + `overflow-y-auto` on
+      `<main>`) capped the *document* to viewport height, so the script's
+      `full_page=True` capture silently stopped seeing anything below the
+      fold on any tab taller than one screen (Settings, Insights) — fixed by
+      temporarily neutralizing the scroll-capping styles on the throwaway
+      Playwright page right before capture
+- [x] Commit: "Phase 0.11: PWA + push notifications"
 
 ---
 
@@ -820,6 +907,46 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
       `glucose_instability` TIR<70% 7d) — act as ramp-cap ceilings (0% increase),
       not daily downgrades; persist until next panel; rationale named in notes
 - [ ] Commit per sub-task
+
+---
+
+## Phase 11 — Interactive Ephemeral Demo Environment
+
+### 11.1 Ephemeral Auth & Session Lifecycle
+- [ ] `User` schema: Add `is_demo` (boolean, default false) and `expires_at` (nullable timestamp) to the `users` table. Ensure all child tables (`daily_steps`, `runs`, `goals`, `api_tokens`, etc.) have `ON DELETE CASCADE` foreign keys back to `users(id)` to make cleanup a single query.
+- [ ] `POST /auth/demo/login`: New endpoint accepting `demo`/`demo`. 
+  - Validates `SELECT COUNT(*) FROM users WHERE is_demo = 1` is `< 5`. Returns 429 "Demo capacity full" if over limit.
+  - Creates a new `User` with `is_demo=1` and `expires_at = NOW() + 2 hours`.
+  - Returns a standard API token / JWT for this specific temporary user.
+- [ ] Session Teardown: 
+  - `POST /auth/logout` (or demo-specific logout): Executes `DELETE FROM users WHERE id = {current_user_id}` and revokes the token.
+  - Background Sweeper: Add a lightweight startup/periodic task in `main.py` that executes `DELETE FROM users WHERE is_demo = 1 AND expires_at < NOW()` to catch users who simply close their browser tabs without logging out.
+- [ ] Verify: Send login request, confirm DB creates `is_demo=1` user. Hit the capacity limit (generate 5 demo users, confirm 6th gets 429). Log out one user, confirm immediate DB cascade deletion. Simulate time travel on `expires_at`, confirm sweeper deletes abandoned account.
+- [ ] Commit: "Phase 11.1: ephemeral demo auth, capacity limits, and cascade teardown"
+
+### 11.2 On-the-Fly Sandbox Seeding
+- [ ] `app/seed_engine.py`: Refactor the seed script from a global DB creator into a user-scoped function `seed_demo_user(db, user_id)`.
+- [ ] Seed Data: Inject 90 days of `DailySteps`, ~50 `Run` rows, pre-calculated `RouteHex` spatial data, an active `Goal`, and a pre-populated `Chat` thread tied strictly to the generated `user_id`.
+- [ ] Async injection: Call `seed_demo_user` as a FastAPI `BackgroundTask` inside the `/auth/demo/login` endpoint so the login request returns immediately, while the UI shows a loading state (or simply populates over the first 2-3 seconds of the user's session).
+- [ ] Verify: Log in via demo route. Confirm the isolated `user_id` instantly populates with runs, goals, and heatmaps. Create a second demo user in an incognito window, confirm zero data cross-talk between the two active demo sessions.
+- [ ] Commit: "Phase 11.2: isolated on-the-fly data seeding per user"
+
+### 11.3 Sandbox Guardrails & Mock Overrides
+- [ ] Environment Guardrail: Add `ENABLE_DEMO_LOGIN=true` env var. The `/auth/demo/login` route strictly 404s if this is false, ensuring production instances don't accidentally expose demo generation.
+- [ ] Feature Flags (`config.py` & `main.py`): When `current_user.is_demo == 1`:
+  - **External APIs:** Intercept triggers for Strava/Garmin syncs. Return synthetic `200 OK` "Sync complete" payloads without making outbound HTTP requests.
+  - **LLM Proxy:** Intercept `/api/chat/message`. Bypass the real Anthropic/OpenAI SDK clients to prevent burning your Fable credits on demo users. Return a hardcoded or randomized mock response simulating the coach persona.
+  - **Settings Lock:** Prevent demo users from changing global configs or viewing real system API keys.
+- [ ] Verify: As a demo user, click "Sync Strava" and confirm no network call hits Strava. Send a chat message, confirm mock response returns instantly without hitting the Anthropic API.
+- [ ] Commit: "Phase 11.3: demo guardrails and external API mocks"
+
+### 11.4 GitHub CI/CD & 1-Click Cloud Deployment
+- [ ] `.github/workflows/docker-publish.yml`: Create a GitHub Action triggered on push to `main` and release tags.
+  - Steps: Checkout, Set up Docker Buildx, login to GHCR (`ghcr.io`), build the standard `Dockerfile`, and push as `ghcr.io/YOUR_GITHUB_USER/hale:latest`.
+- [ ] Render / Railway `docker-compose` template: Add a `render.yaml` (or `railway.json`) Infrastructure-as-Code file to your repository root targeting the GHCR image, exposing port 8000, setting `ENABLE_DEMO_LOGIN=true`, and provisioning an attached SQLite persistent disk.
+- [ ] `README.md` Hooks: Add standard Markdown badges linking to the 1-click deployment URLs (e.g., `[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=...)`).
+- [ ] Verify: Push to `main`. Confirm GitHub Actions successfully builds and publishes the package to your GitHub repo's "Packages" sidebar. Click the "Deploy" badge in your README from a clean browser, confirm it provisions the cloud container directly from GitHub and boots the login screen.
+- [ ] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
 
 ---
 

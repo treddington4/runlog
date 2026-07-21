@@ -122,6 +122,24 @@ def main():
                 page.goto(args.url.rstrip("/") + TAB_PATHS[tab], timeout=15000)
                 page.wait_for_timeout(800)
 
+                # Shell.tsx (post sidebar-scroll-fix) caps the document to viewport
+                # height and makes <main> the sole internally-scrolling region — so a
+                # plain full_page capture would now just be the viewport, cutting off
+                # anything below the fold. Temporarily let the page grow to its natural
+                # content height for this one capture (throwaway page instance, not the
+                # live app) so tall tabs (Insights, Settings) are still fully visible.
+                page.evaluate("""() => {
+                    document.documentElement.style.height = 'auto';
+                    document.documentElement.style.overflow = 'visible';
+                    document.body.style.height = 'auto';
+                    document.body.style.overflow = 'visible';
+                    document.querySelectorAll('#root, #root > div, main, aside').forEach(el => {
+                        el.style.height = 'auto';
+                        el.style.maxHeight = 'none';
+                        el.style.overflow = 'visible';
+                    });
+                }""")
+
                 # Capture lossless first; scale, then do the one lossy JPEG encode at
                 # the end, rather than compressing twice (once in-browser, once here).
                 raw_png = page.screenshot(full_page=True, type="png")

@@ -11,6 +11,7 @@ import json
 import time
 import logging
 import zipfile
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
@@ -153,6 +154,32 @@ def is_rate_limit_related(e: Exception) -> bool:
     )
 
 
+def _harden_tokenstore_permissions(token_store: str):
+    """Mitigates GHSA-wjhr-76vg-2hvc (CWE-732, High) — garminconnect's Client.dump()
+    writes garmin_tokens.json under the process umask, which defaults to world-readable
+    (0o644) in a file inside a world-readable/listable (0o755) directory. The file holds
+    the DI refresh token: anyone who can read it gets persistent account access,
+    bypassing password/MFA. Confirmed exploitable on this exact deployment (checked real
+    file perms on /data before writing this). Fixed upstream in garminconnect 0.3.5,
+    but that requires Python 3.12 and this project is pinned to 0.3.2 on python:3.11-slim
+    (see Dockerfile) — so this replicates the fix (0o600 file inside 0o700 directory)
+    independently of which garminconnect version is installed, rather than waiting on
+    an upgrade path that isn't available yet. Best-effort: a permission error here
+    (e.g. read-only filesystem) shouldn't break a login that otherwise succeeded, so
+    failures are logged, not raised."""
+    try:
+        path = Path(token_store)
+        if path.is_dir():
+            os.chmod(path, 0o700)
+            for f in path.iterdir():
+                if f.is_file():
+                    os.chmod(f, 0o600)
+        elif path.is_file():
+            os.chmod(path, 0o600)
+    except Exception as e:
+        log.debug(f"garmin login: tokenstore permission hardening failed (non-fatal): {e}")
+
+
 def _get_garmin_credential(user_id: str):
     db = SessionLocal()
     try:
@@ -246,6 +273,7 @@ def _login(user_id: str):
         # to disk — without this, a refreshed-but-unpersisted token would force a real
         # network round-trip again on every subsequent process restart.
         client.client.dump(token_store)
+        _harden_tokenstore_permissions(token_store)
     except Exception as e:
         log.debug(f"garmin login: token persist failed (non-fatal): {e}")
 

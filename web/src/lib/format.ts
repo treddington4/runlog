@@ -30,6 +30,17 @@ export function fmtSleepDuration(seconds: number | null | undefined): string | n
   return `${h}h ${m}m`
 }
 
+// Local calendar date (not toISOString()'s UTC date) — near midnight UTC (e.g.
+// evening in US timezones) the two disagree, which would otherwise misplace
+// today's items by a few hours. Matches app.js's toDateInputValue(todayMidnight()).
+export function todayLocalDateString(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
 export function fmtGoalDate(d: string | null | undefined): string {
   if (!d) return ""
   return new Date(d + "T00:00:00").toLocaleDateString(undefined, {

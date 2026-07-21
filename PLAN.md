@@ -137,11 +137,25 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.3: Home tab ported"
 
 ### 0.4 Workouts + Recovery port
-- [ ] Unified date-ordered list (workouts + recovery sessions interleaved — preserve
+- [x] Unified date-ordered list (workouts + recovery sessions interleaved — preserve
       current behavior), structured-steps rendering with expandable how-to details,
-      status actions, new-workout modal
-- [ ] Verify: screenshot; create/edit/delete round-trip against live API
-- [ ] Commit: "Phase 0.4: Workouts tab ported"
+      status actions, new-workout modal — added shadcn Dialog/Input/Label/Select/
+      Textarea primitives (`@radix-ui/react-dialog`, `-label`, `-select`); TanStack
+      Query mutations (`hooks/useWorkouts.ts`) invalidate the one list that actually
+      changed rather than a full-tab re-render
+- [x] Verify: screenshot; create/edit/delete round-trip against live API — caught and
+      fixed a real bug during verification: `Workout.steps` is genuinely nullable
+      (not just `[]`) for Garmin-suggested workouts with no structured steps, which
+      the initial port typed as non-nullable and crashed `WorkoutCard` on
+      (`Cannot read properties of null (reading 'length')` — legacy app.js's
+      `w.steps && w.steps.length` guard had this right, the port initially didn't);
+      fixed the type + render guard, re-verified clean. Confirmed real Garmin-
+      suggested workouts, badges, multi-line notes, and the interleaved recovery
+      session all render correctly; did a real create (via the actual form) →
+      confirmed via `GET /api/workouts` → delete (via the actual UI) → confirmed
+      gone via `GET /api/workouts` round-trip against the live backend, test data
+      cleaned up after
+- [x] Commit: "Phase 0.4: Workouts tab ported"
 
 ### 0.5 Activities (Runs) port
 - [ ] Run cards (badges, mini-stats, weather, dynamics rows), expand with splits/

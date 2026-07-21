@@ -134,6 +134,72 @@ export interface Goal {
   progress: GoalProgress
 }
 
+export type WorkoutType = "easy" | "tempo" | "interval" | "long" | "rest" | "strength" | "cross_train"
+export type WorkoutStatus = "planned" | "completed" | "skipped" | "modified"
+
+export interface WorkoutStep {
+  exercise: string
+  side: string | null
+  durationSec: number | null
+  reps: number | null
+  notes: string | null
+  howTo: string | null
+}
+
+export interface Workout {
+  id: string
+  scheduledDate: string
+  workoutType: WorkoutType
+  activityType: string
+  targetDistanceMi: number | null
+  targetPaceSecPerMi: number | null
+  targetDurationSec: number | null
+  notes: string | null
+  steps: WorkoutStep[] | null
+  status: WorkoutStatus
+  linkedRunId: string | null
+  critiqueText: string | null
+  createdAt: string
+  source: string
+}
+
+export interface WorkoutInput {
+  scheduledDate: string
+  workoutType: WorkoutType
+  activityType: string | null
+  targetDistanceMi: number | null
+  targetPaceSecPerMi: number | null
+  targetDurationSec: number | null
+  notes: string
+}
+
+export interface RecoveryTool {
+  id: string
+  name: string
+  category: string
+  minLevel: number
+  maxLevel: number
+  minDurationMin: number
+  maxDurationMin: number
+  durationIncrementMin: number
+  supportsZoneBoost: boolean
+  notes: string | null
+}
+
+export type RecoverySessionStatus = "planned" | "completed" | "skipped"
+
+export interface RecoverySession {
+  id: string
+  toolId: string
+  scheduledDate: string
+  level: number
+  durationMin: number
+  zoneBoost: boolean
+  rationale: string | null
+  status: RecoverySessionStatus
+  createdAt: string
+}
+
 class ApiError extends Error {
   status: number
 
@@ -160,4 +226,18 @@ export const api = {
   goals: () => request<Goal[]>("/api/goals"),
   runs: () => request<Run[]>("/api/runs"),
   wellness: (days = 30) => request<WellnessDay[]>(`/api/wellness?days=${days}`),
+
+  workouts: () => request<Workout[]>("/api/workouts"),
+  createWorkout: (body: WorkoutInput) =>
+    request<Workout>("/api/workouts", { method: "POST", body: JSON.stringify(body) }),
+  updateWorkout: (id: string, body: Partial<WorkoutInput & { status: WorkoutStatus }>) =>
+    request<Workout>(`/api/workouts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteWorkout: (id: string) => request<{ deleted: true }>(`/api/workouts/${id}`, { method: "DELETE" }),
+
+  recoveryTools: () => request<RecoveryTool[]>("/api/recovery-tools"),
+  recoverySessions: () => request<RecoverySession[]>("/api/recovery-sessions"),
+  updateRecoverySessionStatus: (id: string, status: RecoverySessionStatus) =>
+    request<RecoverySession>(`/api/recovery-sessions/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  deleteRecoverySession: (id: string) =>
+    request<{ deleted: true }>(`/api/recovery-sessions/${id}`, { method: "DELETE" }),
 }

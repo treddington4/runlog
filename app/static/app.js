@@ -352,14 +352,24 @@ function isRunActivity(r) {
 const ACTIVITY_VERBS = {
   Run: "Ran", TrailRun: "Ran", Ride: "Biked", VirtualRide: "Biked", MountainBikeRide: "Biked",
   Walk: "Walked", Hike: "Hiked", Swim: "Swam", Workout: "Worked out", WeightTraining: "Lifted",
-  Yoga: "Did yoga", Elliptical: "Did elliptical",
+  strength_training: "Lifted", Yoga: "Did yoga", Elliptical: "Did elliptical",
 };
 
-// byType: { [activityType]: { distanceMi, movingTimeSec } }. A non-distance activity
-// (strength training, a generic gym Workout, ...) always has distanceMi === 0 — showing
-// that as "0.0 mi" is technically correct but meaningless, so those types are shown by
-// duration instead (isDistanceActivity(), same run/ride/walk/hike/swim family list the
-// edit modal already uses to decide whether weather/distance fields apply at all).
+// Sum of reps*weightLb across a run's exerciseSets (Garmin-only, strength_training —
+// see models.py's exercise_sets_json). Bodyweight/unknown-exercise sets carry
+// weightLb: null and don't contribute — a session made up entirely of those sums to 0,
+// handled by renderStatBreakdown()'s fallback to duration below.
+function totalWeightLbLifted(run) {
+  if (!run.exerciseSets) return 0;
+  return run.exerciseSets.reduce((sum, s) => sum + (s.weightLb != null && s.reps != null ? s.weightLb * s.reps : 0), 0);
+}
+
+// byType: { [activityType]: { distanceMi, movingTimeSec, weightLb } }. A non-distance
+// activity (strength training, a generic gym Workout, ...) always has distanceMi === 0
+// — showing that as "0.0 mi" is technically correct but meaningless. Strength-family
+// types (activityFamily() === "strength") show total weight lifted instead, since
+// that's the meaningful volume metric for lifting; anything else non-distance (a
+// generic Workout, Yoga, ...) shows duration instead.
 function renderStatBreakdown(byType) {
   const el = document.getElementById("stat-breakdown");
   const entries = Object.entries(byType);
@@ -369,18 +379,25 @@ function renderStatBreakdown(byType) {
     el.textContent = "";
     return;
   }
-  // Distance and duration aren't comparable magnitudes (a 45min workout's raw seconds
-  // would otherwise always outrank a few miles of running) — sort within each group by
-  // its own unit, distance-based entries first since that's this line's primary purpose.
+  // Distance/weight/duration aren't comparable magnitudes (a lifting session's raw lb
+  // total or a workout's raw seconds would otherwise outrank a few miles of running by
+  // sheer coincidence of scale) — sort within each group by its own unit, distance
+  // first since that's this line's primary purpose.
   const distanceParts = entries
     .filter(([t]) => isDistanceActivity(t))
     .sort((a, b) => b[1].distanceMi - a[1].distanceMi)
     .map(([t, v]) => `${ACTIVITY_VERBS[t] || t} ${v.distanceMi.toFixed(1)} mi`);
+  const strengthParts = entries
+    .filter(([t]) => !isDistanceActivity(t) && activityFamily(t) === "strength")
+    .sort((a, b) => b[1].weightLb - a[1].weightLb)
+    .map(([t, v]) => v.weightLb > 0
+      ? `${ACTIVITY_VERBS[t] || t} ${Math.round(v.weightLb).toLocaleString()} lbs`
+      : `${ACTIVITY_VERBS[t] || t} ${timeStr(v.movingTimeSec)}`); // no usable weight data this week — duration instead
   const timeParts = entries
-    .filter(([t]) => !isDistanceActivity(t))
+    .filter(([t]) => !isDistanceActivity(t) && activityFamily(t) !== "strength")
     .sort((a, b) => b[1].movingTimeSec - a[1].movingTimeSec)
     .map(([t, v]) => `${ACTIVITY_VERBS[t] || t} ${timeStr(v.movingTimeSec)}`);
-  el.textContent = [...distanceParts, ...timeParts].join(" · ");
+  el.textContent = [...distanceParts, ...strengthParts, ...timeParts].join(" · ");
 }
 
 // Most recent /api/dashboard/summary response — small and already server-cached (see
@@ -414,9 +431,10 @@ function updateHeaderStats() {
     const byType = {};
     runs.filter((r) => new Date(r.date) >= weekAgo).forEach((r) => {
       const t = r.activityType || "Run";
-      if (!byType[t]) byType[t] = { distanceMi: 0, movingTimeSec: 0 };
+      if (!byType[t]) byType[t] = { distanceMi: 0, movingTimeSec: 0, weightLb: 0 };
       byType[t].distanceMi += r.distanceMi || 0;
       byType[t].movingTimeSec += r.movingTimeSec || 0;
+      byType[t].weightLb += totalWeightLbLifted(r);
     });
     renderStatBreakdown(byType);
   } else if (lastDashboardSummary && lastDashboardSummary.headerStats) {

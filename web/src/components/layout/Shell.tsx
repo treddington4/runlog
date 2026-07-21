@@ -58,9 +58,9 @@ function BottomNavLink({ item }: { item: (typeof NAV_ITEMS)[number] }) {
 export function Shell() {
   useOnboardingGate()
   return (
-    <div className="flex min-h-svh">
-      {/* Desktop sidebar — persistent, >=900px */}
-      <aside className="border-border hidden w-56 shrink-0 flex-col gap-6 border-r p-4 min-[900px]:flex">
+    <div className="flex h-svh overflow-hidden">
+      {/* Desktop sidebar — persistent, >=900px, pinned (doesn't scroll with content) */}
+      <aside className="border-border hidden w-56 shrink-0 flex-col gap-6 overflow-y-auto border-r p-4 min-[900px]:flex">
         <Wordmark />
         <nav className="flex flex-col gap-1">
           {NAV_ITEMS.map((item) => (
@@ -72,14 +72,14 @@ export function Shell() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Mobile header — <900px */}
         <header className="border-border flex items-center justify-between border-b p-4 min-[900px]:hidden">
           <Wordmark />
           <RaceCountdown />
         </header>
 
-        <main className="min-w-0 flex-1 overflow-x-hidden p-4 pb-20 min-[900px]:pb-4">
+        <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 pb-20 min-[900px]:pb-4">
           <Outlet />
         </main>
 

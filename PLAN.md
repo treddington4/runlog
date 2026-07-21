@@ -496,13 +496,36 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 1.2: auth schema (oidc_subject, api_tokens)"
 
 ### 1.3 Auth middleware
-- [ ] `app/auth.py`: `current_user_id()` FastAPI dependency — `AUTH_MODE=disabled`
+- [x] `app/auth.py`: `current_user_id()` FastAPI dependency — `AUTH_MODE=disabled`
       (default) → DEFAULT_USER_ID; else Bearer JWT (PyJWT + cached JWKS fetch;
       env `OIDC_ISSUER/OIDC_AUDIENCE/OIDC_JWKS_URL`; auto-provision User on first
-      valid sub) or `X-Api-Token` (hash lookup, stamp last_used_at); else 401
-- [ ] Verify: disabled mode = zero behavior change (curl suite); enabled mode rejects
-      missing/bad tokens, accepts a hand-built test JWT
-- [ ] Commit: "Phase 1.3: OIDC/JWT + device-token auth middleware"
+      valid sub) or `X-Api-Token` (hash lookup, stamp last_used_at); else 401 — JWKS
+      cache is a module-level dict with a 1hr TTL, force-refetched once if a token's
+      `kid` isn't found in the current cache (covers an IdP key-rotation edge case
+      without needing that hourly wait). Not wired into any endpoint yet — that's
+      Phase 1.4; this module is dormant/unused by itself, exactly why disabled-mode
+      verification below is trivially "zero behavior change"
+- [x] Added `PyJWT`/`cryptography` to `requirements.txt` — had to bump the initial
+      `PyJWT==2.9.0` pin to `2.10.1` after a real dependency-resolution conflict:
+      `claude-agent-sdk`'s `mcp` dependency requires `pyjwt>=2.10.1`
+- [x] Verify: disabled mode = zero behavior change (curl suite); enabled mode rejects
+      missing/bad tokens, accepts a hand-built test JWT — deployed (confirming the
+      new deps installed cleanly and the app starts with zero behavior change, since
+      nothing imports `auth.py` yet) and curl-verified `/api/config` still works.
+      Wrote two isolated test scripts run inside the real app image against a
+      throwaway scratch DB (`DB_PATH` pointed at a `/tmp` file, never the real
+      production data): **disabled mode** — confirmed `current_user_id()` returns
+      `DEFAULT_USER_ID` unconditionally even with garbage `Authorization`/
+      `X-Api-Token` headers. **enabled mode** — generated a real RSA keypair,
+      built a matching JWKS, hand-signed a test JWT, and pre-populated
+      `auth._jwks_cache` (so no real network fetch to a real IdP was needed):
+      confirmed a valid JWT auto-provisions a `User` row with the correct
+      `oidc_subject`, a second call with the same `sub` returns the same
+      `user_id` (no duplicate), a malformed JWT and a missing credential both
+      correctly 401, and the `X-Api-Token` path correctly resolves via SHA-256
+      hash lookup, stamps `last_used_at`, and 401s on an unknown token. All test
+      artifacts (scratch DBs, scripts) cleaned up afterward
+- [x] Commit: "Phase 1.3: OIDC/JWT + device-token auth middleware"
 
 ### 1.4 Endpoint threading
 - [ ] Every endpoint in `main.py`: `user_id = Depends(auth.current_user_id)` replaces

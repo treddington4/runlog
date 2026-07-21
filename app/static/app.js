@@ -2385,15 +2385,42 @@ function workoutCardHTML(w) {
   `;
 }
 
+// Recovery-tool session (compression boots, etc) — coach-recommended only (see
+// coach.py's RecoveryTool docstring on why manual creation isn't built yet), so cards
+// only offer status/delete actions, no edit.
+function recoverySessionCardHTML(s, toolsById) {
+  const tool = toolsById[s.toolId];
+  const toolName = tool ? tool.name : "Recovery tool";
+  return `
+    <div class="settings-section" style="margin-bottom:10px">
+      <div class="settings-row">
+        <span class="settings-label">${s.scheduledDate} · ${escapeHtml(toolName)}</span>
+        <span class="settings-value" style="color:${WORKOUT_STATUS_COLORS[s.status] || "var(--faint)"}">${s.status}</span>
+      </div>
+      <div class="settings-row"><span class="settings-label">Session</span><span class="settings-value">Level ${s.level} · ${s.durationMin} min${s.zoneBoost ? " · Zone boost" : ""}</span></div>
+      ${s.rationale ? `<div class="settings-row"><span class="settings-label">Why</span><span class="settings-value" style="font-weight:400;text-align:right;white-space:pre-line">${escapeHtml(s.rationale)}</span></div>` : ""}
+      <div class="btn-row" style="justify-content:flex-start;margin-top:8px">
+        ${s.status === "planned" ? `<button class="edit-link" data-recovery-complete="${s.id}">Mark Done</button><button class="edit-link" data-recovery-skip="${s.id}">Skip</button>` : ""}
+        <button class="edit-link" data-recovery-delete="${s.id}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
 async function renderWorkoutsTab() {
   const el = document.getElementById("workouts-tab");
   el.innerHTML = `
     <div class="btn-row" style="justify-content:flex-start;margin:16px 0"><button class="btn" id="new-workout-btn">+ New Workout</button></div>
     <div id="workouts-list"><div class="empty-chart">Loading…</div></div>
+    <div id="recovery-list"></div>
   `;
   document.getElementById("new-workout-btn").onclick = () => openWorkoutModal(null);
 
-  const workouts = await fetch("/api/workouts").then((r) => r.json()).catch(() => []);
+  const [workouts, recoverySessions, recoveryTools] = await Promise.all([
+    fetch("/api/workouts").then((r) => r.json()).catch(() => []),
+    fetch("/api/recovery-sessions").then((r) => r.json()).catch(() => []),
+    fetch("/api/recovery-tools").then((r) => r.json()).catch(() => []),
+  ]);
   // Local calendar date, not toISOString()'s UTC date — near midnight UTC (e.g. evening
   // in US timezones) the two disagree, which would otherwise hide/show today's workout
   // a few hours early or late.
@@ -2420,6 +2447,43 @@ async function renderWorkoutsTab() {
       renderWorkoutsTab();
     };
   });
+
+  // Only shown once the user actually has a recovery tool on file — no empty section
+  // for everyone else, same convention as Home's Wellness section.
+  if (recoveryTools.length) {
+    const toolsById = Object.fromEntries(recoveryTools.map((t) => [t.id, t]));
+    const recUpcoming = recoverySessions.filter((s) => s.status === "planned" && s.scheduledDate >= today);
+    const recPast = recoverySessions.filter(
+      (s) => !(s.status === "planned" && s.scheduledDate >= today) && !(s.status === "completed" && s.scheduledDate < today)
+    );
+    document.getElementById("recovery-list").innerHTML = `
+      <div class="chart-title" style="margin-top:20px">Recovery</div>
+      <div style="margin-top:10px">${recUpcoming.length ? recUpcoming.map((s) => recoverySessionCardHTML(s, toolsById)).join("") : `<div class="empty-chart">Nothing scheduled — ask the coach in Chat about a recovery session.</div>`}</div>
+      ${recPast.length ? `<div class="chart-title" style="margin-top:20px">Past</div><div style="margin-top:10px">${recPast.map((s) => recoverySessionCardHTML(s, toolsById)).join("")}</div>` : ""}
+    `;
+    document.querySelectorAll("[data-recovery-complete]").forEach((btn) => {
+      btn.onclick = async () => {
+        await fetch(`/api/recovery-sessions/${btn.dataset.recoveryComplete}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "completed" }),
+        });
+        renderWorkoutsTab();
+      };
+    });
+    document.querySelectorAll("[data-recovery-skip]").forEach((btn) => {
+      btn.onclick = async () => {
+        await fetch(`/api/recovery-sessions/${btn.dataset.recoverySkip}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "skipped" }),
+        });
+        renderWorkoutsTab();
+      };
+    });
+    document.querySelectorAll("[data-recovery-delete]").forEach((btn) => {
+      btn.onclick = async () => {
+        await fetch(`/api/recovery-sessions/${btn.dataset.recoveryDelete}`, { method: "DELETE" });
+        renderWorkoutsTab();
+      };
+    });
+  }
 }
 
 function openWorkoutModal(workout) {

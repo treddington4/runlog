@@ -290,6 +290,50 @@ class Workout(Base):
                                                             # garmin_sync._fetch_adaptive_plan_workouts)
 
 
+class RecoveryTool(Base):
+    """A recovery device the athlete owns that the coach can factor into
+    recommendations — e.g. compression boots. Deliberately concrete/narrow for now
+    (seeded below for this account's actual device); a user-facing way to add new
+    tools via conversation is a known follow-up, not built yet (see STATUS.md) — this
+    table's shape (min/max ranges rather than hardcoded numbers baked into the coach's
+    prompt) is what makes that later step additive instead of a schema rework."""
+    __tablename__ = "recovery_tools"
+
+    id = Column(String, primary_key=True)  # f"recoverytool_{uuid.uuid4().hex[:12]}"
+    user_id = Column(String, nullable=True)  # see owned_by()
+    name = Column(String)  # "Hyperice Normatec Elite"
+    category = Column(String)  # "compression_boots" — controlled vocab, coach.VALID_RECOVERY_CATEGORIES
+    min_level = Column(Integer, default=1)
+    max_level = Column(Integer, default=7)
+    min_duration_min = Column(Integer, default=15)
+    max_duration_min = Column(Integer, default=60)
+    duration_increment_min = Column(Integer, default=15)
+    supports_zone_boost = Column(Boolean, default=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(String)
+
+
+class RecoverySession(Base):
+    """A specific recovery session using a RecoveryTool, coach-recommended (see
+    coach.recommend_recovery_session). Mirrors Workout's planned/completed/skipped
+    lifecycle but kept as its own table rather than folded into Workout: a recovery
+    session isn't a trackable Strava/Garmin activity_type and has no auto-link target,
+    so Workout's activity_type/target_distance_mi/target_pace_sec_per_mi fields don't
+    apply here at all."""
+    __tablename__ = "recovery_sessions"
+
+    id = Column(String, primary_key=True)  # f"recovery_{uuid.uuid4().hex[:12]}"
+    user_id = Column(String, nullable=True)
+    tool_id = Column(String)  # plain ref to RecoveryTool.id — unenforced FK, same pattern as Goal.linked_run_id
+    scheduled_date = Column(String)  # YYYY-MM-DD
+    level = Column(Integer)
+    duration_min = Column(Integer)
+    zone_boost = Column(Boolean, default=False)
+    rationale = Column(Text, nullable=True)  # coach's reasoning for these specific settings that day
+    status = Column(String, default="planned")  # "planned"|"completed"|"skipped"
+    created_at = Column(String)
+
+
 def get_sync_meta(key: str):
     db = SessionLocal()
     try:
@@ -317,6 +361,7 @@ def init_db():
     _backfill_detail_synced_at()
     _seed_default_user_and_credentials()
     _seed_marathon_goal()
+    _seed_default_recovery_tool()
 
 
 # Tables that have grown columns since their first release and need the ALTER TABLE
@@ -427,6 +472,27 @@ def _seed_marathon_goal():
                 id=f"goal_{uuid.uuid4().hex[:12]}", user_id=DEFAULT_USER_ID, goal_type="race",
                 name="Manchester City Marathon", status="active", activity_types_json='["Run"]',
                 target_value=26.2, target_unit="miles", target_date="2026-11-08",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            ))
+            db.commit()
+    finally:
+        db.close()
+
+
+def _seed_default_recovery_tool():
+    """One-time: seeds this account's real Hyperice Normatec Elite compression boots as
+    a RecoveryTool so the coach can recommend sessions on it immediately, without the
+    user having to describe it in chat first. Only runs when the table is completely
+    empty — never touches anything a user (or the coach, once self-service creation
+    ships — see RecoveryTool's docstring) adds later."""
+    db = SessionLocal()
+    try:
+        if db.query(RecoveryTool).count() == 0:
+            db.add(RecoveryTool(
+                id=f"recoverytool_{uuid.uuid4().hex[:12]}", user_id=DEFAULT_USER_ID,
+                name="Hyperice Normatec Elite", category="compression_boots",
+                min_level=1, max_level=7, min_duration_min=15, max_duration_min=60,
+                duration_increment_min=15, supports_zone_boost=True,
                 created_at=datetime.now(timezone.utc).isoformat(),
             ))
             db.commit()

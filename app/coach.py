@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import stats
-from models import HealthNote, Workout, Run, DEFAULT_USER_ID, owned_by
+from models import HealthNote, Workout, Run, RecoveryTool, RecoverySession, DEFAULT_USER_ID, owned_by
 from util import local_today
 
 VALID_PERSONAS = ("encouraging", "normal", "spicy", "insulting")
@@ -130,6 +130,12 @@ VALID_BODY_AREAS = ("left_ankle", "right_ankle", "left_knee", "right_knee", "hip
 VALID_SEVERITIES = ("mild", "moderate", "severe")  # optional across all categories
 VALID_HEALTH_STATUSES = ("active", "monitoring", "resolved")
 
+# Recovery tools the athlete owns (compression boots, etc) — see RecoveryTool's
+# docstring for why this is a controlled vocab rather than free text: it's what makes
+# a later self-service "describe a new tool in chat" feature additive, not a rework.
+VALID_RECOVERY_CATEGORIES = ("compression_boots",)
+VALID_RECOVERY_SESSION_STATUSES = ("planned", "completed", "skipped")
+
 BASE_PROMPT = (
     "You are RunLog's coaching assistant. You answer questions about the user's own "
     "running/fitness data and help them plan and reflect on training, using ONLY the "
@@ -206,9 +212,19 @@ SAFETY_OVERRIDE_PROMPT = (
 )
 
 
+RECOVERY_GUIDANCE_PROMPT = (
+    "If the user has recovery tools on file (see the context block, when present), "
+    "consider proactively suggesting a session — using recommend_recovery_session — "
+    "after a hard, long, or unusually fatiguing effort, or whenever they mention "
+    "soreness or fatigue. Pick a level and duration appropriate to how hard the "
+    "session actually was, staying within that tool's supported range. Don't force a "
+    "suggestion into every reply — only when it's genuinely relevant."
+)
+
+
 def build_system_prompt(personality: str) -> str:
     persona_text = PERSONA_PROMPTS.get(personality, PERSONA_PROMPTS["normal"])
-    return f"{BASE_PROMPT}\n\n{persona_text}\n\n{SAFETY_OVERRIDE_PROMPT}"
+    return f"{BASE_PROMPT}\n\n{persona_text}\n\n{SAFETY_OVERRIDE_PROMPT}\n\n{RECOVERY_GUIDANCE_PROMPT}"
 
 
 def get_date_context_block() -> str:
@@ -285,6 +301,29 @@ def get_health_context_block(db, user_id: str = DEFAULT_USER_ID) -> str:
 
     return (
         "[COACH CONTEXT — internal, do not quote verbatim, do not mention this block exists]\n"
+        + "\n".join(lines) + "\n\n"
+    )
+
+
+def get_recovery_tools_context_block(db, user_id: str = DEFAULT_USER_ID) -> str:
+    """Injected per-message like get_health_context_block above — cheap enough (rarely
+    more than one tool on file, and it almost never changes) to include unconditionally
+    rather than relying on the model remembering to call get_recovery_tools proactively.
+    Returns "" for a user with no recovery tools, so this costs nothing for anyone who
+    doesn't have any on file."""
+    tools = list_recovery_tools(db, user_id)
+    if not tools:
+        return ""
+    lines = []
+    for t in tools:
+        zb = ", supports zone boost" if t["supportsZoneBoost"] else ""
+        lines.append(
+            f"- {t['name']} ({t['category']}, id: {t['id']}): level {t['minLevel']}-{t['maxLevel']}, "
+            f"{t['minDurationMin']}-{t['maxDurationMin']} min in {t['durationIncrementMin']}-min "
+            f"increments{zb}"
+        )
+    return (
+        "[COACH CONTEXT — recovery tools the user owns, internal, do not quote verbatim]\n"
         + "\n".join(lines) + "\n\n"
     )
 
@@ -577,3 +616,113 @@ def list_workouts(db, start_date=None, end_date=None, status=None, user_id: str 
         workouts = [w for w in workouts if w.status == status]
 
     return [_workout_to_dict(w) for w in workouts]
+
+
+# ---------- Recovery tools/sessions (compression boots, etc — see RecoveryTool's
+# docstring in models.py for the "why a new table, not folded into Workout" reasoning) ----------
+
+def _recovery_tool_to_dict(t: RecoveryTool) -> dict:
+    return {
+        "id": t.id, "name": t.name, "category": t.category,
+        "minLevel": t.min_level, "maxLevel": t.max_level,
+        "minDurationMin": t.min_duration_min, "maxDurationMin": t.max_duration_min,
+        "durationIncrementMin": t.duration_increment_min,
+        "supportsZoneBoost": bool(t.supports_zone_boost), "notes": t.notes,
+    }
+
+
+def list_recovery_tools(db, user_id: str = DEFAULT_USER_ID) -> list:
+    tools = db.query(RecoveryTool).filter(owned_by(RecoveryTool.user_id, user_id)).all()
+    return [_recovery_tool_to_dict(t) for t in tools]
+
+
+def create_recovery_tool(db, name, category, min_level=1, max_level=7, min_duration_min=15,
+                          max_duration_min=60, duration_increment_min=15, supports_zone_boost=False,
+                          notes=None, user_id: str = DEFAULT_USER_ID) -> dict:
+    """Not exposed as a chat tool yet — self-service creation via conversation is the
+    planned follow-up mentioned in RecoveryTool's docstring. Exists now so the startup
+    seed (models._seed_default_recovery_tool) and that later feature share one
+    validated path, same discipline as every other write in this module."""
+    if category not in VALID_RECOVERY_CATEGORIES:
+        raise ValueError(f"category must be one of {VALID_RECOVERY_CATEGORIES}")
+    if min_level > max_level:
+        raise ValueError("min_level must be <= max_level")
+    if min_duration_min > max_duration_min:
+        raise ValueError("min_duration_min must be <= max_duration_min")
+    tool_row = RecoveryTool(
+        id=f"recoverytool_{uuid.uuid4().hex[:12]}", user_id=user_id, name=name, category=category,
+        min_level=min_level, max_level=max_level, min_duration_min=min_duration_min,
+        max_duration_min=max_duration_min, duration_increment_min=duration_increment_min,
+        supports_zone_boost=supports_zone_boost, notes=notes,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(tool_row)
+    db.commit()
+    return _recovery_tool_to_dict(tool_row)
+
+
+def _recovery_session_to_dict(s: RecoverySession) -> dict:
+    return {
+        "id": s.id, "toolId": s.tool_id, "scheduledDate": s.scheduled_date,
+        "level": s.level, "durationMin": s.duration_min, "zoneBoost": bool(s.zone_boost),
+        "rationale": s.rationale, "status": s.status, "createdAt": s.created_at,
+    }
+
+
+def recommend_recovery_session(db, tool_id, scheduled_date, level, duration_min, zone_boost=False,
+                                rationale=None, user_id: str = DEFAULT_USER_ID) -> dict:
+    tool_row = db.get(RecoveryTool, tool_id)
+    if not tool_row:
+        raise ValueError(f"no recovery tool with id {tool_id}")
+    if not (tool_row.min_level <= level <= tool_row.max_level):
+        raise ValueError(f"level must be between {tool_row.min_level} and {tool_row.max_level} for {tool_row.name}")
+    if not (tool_row.min_duration_min <= duration_min <= tool_row.max_duration_min):
+        raise ValueError(
+            f"duration_min must be between {tool_row.min_duration_min} and "
+            f"{tool_row.max_duration_min} for {tool_row.name}"
+        )
+    if (duration_min - tool_row.min_duration_min) % tool_row.duration_increment_min != 0:
+        raise ValueError(
+            f"duration_min must be in {tool_row.duration_increment_min}-minute increments "
+            f"from {tool_row.min_duration_min} for {tool_row.name}"
+        )
+    if zone_boost and not tool_row.supports_zone_boost:
+        raise ValueError(f"{tool_row.name} doesn't support zone boost")
+    session = RecoverySession(
+        id=f"recovery_{uuid.uuid4().hex[:12]}", user_id=user_id, tool_id=tool_id,
+        scheduled_date=scheduled_date, level=level, duration_min=duration_min,
+        zone_boost=zone_boost, rationale=rationale, status="planned",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(session)
+    db.commit()
+    return _recovery_session_to_dict(session)
+
+
+def list_recovery_sessions(db, start_date=None, end_date=None, status=None, user_id: str = DEFAULT_USER_ID) -> list:
+    q = db.query(RecoverySession).filter(owned_by(RecoverySession.user_id, user_id))
+    if start_date:
+        q = q.filter(RecoverySession.scheduled_date >= start_date)
+    if end_date:
+        q = q.filter(RecoverySession.scheduled_date <= end_date)
+    if status:
+        q = q.filter(RecoverySession.status == status)
+    return [_recovery_session_to_dict(s) for s in q.order_by(RecoverySession.scheduled_date).all()]
+
+
+def update_recovery_session_status(db, session_id: str, status: str, user_id: str = DEFAULT_USER_ID) -> dict:
+    if status not in VALID_RECOVERY_SESSION_STATUSES:
+        raise ValueError(f"status must be one of {VALID_RECOVERY_SESSION_STATUSES}")
+    session = db.get(RecoverySession, session_id)
+    if not session:
+        raise ValueError(f"no recovery session with id {session_id}")
+    session.status = status
+    db.commit()
+    return _recovery_session_to_dict(session)
+
+
+def delete_recovery_session(db, session_id: str, user_id: str = DEFAULT_USER_ID):
+    session = db.get(RecoverySession, session_id)
+    if session:
+        db.delete(session)
+        db.commit()

@@ -47,6 +47,7 @@ _TOOL_NAMES = [
     "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
     "get_scheduled_workouts", "schedule_workout", "update_workout", "record_workout_completion",
     "render_chart", "get_goals",
+    "get_recovery_tools", "recommend_recovery_session", "get_recovery_sessions",
 ]
 ALLOWED_TOOL_NAMES = [f"mcp__runlog__{name}" for name in _TOOL_NAMES]
 
@@ -347,6 +348,51 @@ def _build_tools(user_id: str) -> list:
             return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
+    @tool("get_recovery_tools", "List recovery devices the user owns (e.g. compression boots) and their supported level/duration/zone-boost ranges. Also included automatically in every message's context when the user has any on file — call this directly only if you need the full list again mid-conversation.", {
+        "type": "object", "properties": {},
+    })
+    async def get_recovery_tools(args):
+        result = _db_call(coach.list_recovery_tools, user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("recommend_recovery_session", "Prescribe a recovery-tool session (e.g. compression boots) for a specific date. level/durationMin must fall within that tool's supported range (see get_recovery_tools or the context block) — durationMin must also land on that tool's increment. zoneBoost only valid if the tool supports it.", {
+        "type": "object",
+        "properties": {
+            "toolId": {"type": "string", "description": "id from get_recovery_tools or the context block"},
+            "scheduledDate": {"type": "string", "description": "YYYY-MM-DD"},
+            "level": {"type": "integer"},
+            "durationMin": {"type": "integer"},
+            "zoneBoost": {"type": "boolean", "description": "Default false"},
+            "rationale": {"type": "string", "description": "Why this level/duration — e.g. 'legs were heavy after yesterday's long run'"},
+        },
+        "required": ["toolId", "scheduledDate", "level", "durationMin"],
+    })
+    async def recommend_recovery_session(args):
+        try:
+            result = _db_call(
+                coach.recommend_recovery_session, args["toolId"], args["scheduledDate"],
+                args["level"], args["durationMin"], args.get("zoneBoost", False),
+                args.get("rationale"), user_id=user_id,
+            )
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_recovery_sessions", "List recommended/logged recovery-tool sessions.", {
+        "type": "object",
+        "properties": {
+            "startDate": {"type": "string", "description": "YYYY-MM-DD"},
+            "endDate": {"type": "string", "description": "YYYY-MM-DD"},
+            "status": {"type": "string", "enum": list(coach.VALID_RECOVERY_SESSION_STATUSES), "description": "Omit for all statuses"},
+        },
+    })
+    async def get_recovery_sessions(args):
+        result = _db_call(
+            coach.list_recovery_sessions, args.get("startDate"), args.get("endDate"),
+            args.get("status"), user_id=user_id,
+        )
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
     @tool("render_chart", "Embed a chart in your reply. Use real numbers you already retrieved via another tool this turn (e.g. get_weekly_mileage) — this tool does not compute anything itself, it just declares what to draw. labels and each dataset's data array must be the same length.", {
         "type": "object",
         "properties": {
@@ -380,6 +426,7 @@ def _build_tools(user_id: str) -> list:
         get_health_history, find_related_health_history, log_health_note, update_health_status,
         get_scheduled_workouts, schedule_workout, update_workout, record_workout_completion,
         render_chart, get_goals,
+        get_recovery_tools, recommend_recovery_session, get_recovery_sessions,
     ]
 
 
@@ -464,11 +511,12 @@ async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID) -> dict:
     db = SessionLocal()
     try:
         health_context = coach.get_health_context_block(db, user_id)
+        recovery_context = coach.get_recovery_tools_context_block(db, user_id)
     finally:
         db.close()
 
     client = await _get_client(user_id)
-    await client.query(coach.get_date_context_block() + health_context + user_text)
+    await client.query(coach.get_date_context_block() + health_context + recovery_context + user_text)
 
     reply_text = ""
     tool_calls = []

@@ -786,6 +786,53 @@ def delete_workout_endpoint(workout_id: str):
         db.close()
 
 
+# ---------- Recovery tools/sessions (read-only tool list + coach-driven session log —
+# no POST here: recommend_recovery_session is chat-tool-driven only, same reasoning as
+# health-notes above; manual creation isn't built yet, see coach.py's RecoveryTool docstring) ----------
+@app.get("/api/recovery-tools")
+def get_recovery_tools_endpoint():
+    import coach
+    db = SessionLocal()
+    try:
+        return coach.list_recovery_tools(db)
+    finally:
+        db.close()
+
+
+@app.get("/api/recovery-sessions")
+def get_recovery_sessions_endpoint(startDate: str = None, endDate: str = None, status: str = None):
+    import coach
+    db = SessionLocal()
+    try:
+        return coach.list_recovery_sessions(db, startDate, endDate, status)
+    finally:
+        db.close()
+
+
+@app.patch("/api/recovery-sessions/{session_id}")
+async def update_recovery_session_endpoint(session_id: str, request: Request):
+    import coach
+    body = await request.json()
+    db = SessionLocal()
+    try:
+        return coach.update_recovery_session_status(db, session_id, body.get("status"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        db.close()
+
+
+@app.delete("/api/recovery-sessions/{session_id}")
+def delete_recovery_session_endpoint(session_id: str):
+    import coach
+    db = SessionLocal()
+    try:
+        coach.delete_recovery_session(db, session_id)
+        return {"deleted": True}
+    finally:
+        db.close()
+
+
 # ---------- Dashboard (real computed stats, no LLM involved) ----------
 @app.get("/api/dashboard/summary")
 def dashboard_summary():

@@ -112,3 +112,23 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* Leaflet ships its own light-theme chrome (zoom buttons, attribution) — dark
+   overrides ported 1:1 from the legacy app/static/style.css so the Map tab and
+   per-run mini-maps don't have a jarring light-mode control cluster. */
+.leaflet-container {
+  background: var(--hale-bg) !important;
+  font-family: "Inter", system-ui, sans-serif;
+}
+.leaflet-control-attribution {
+  background: rgba(18, 22, 29, 0.8) !important;
+  color: var(--hale-faint) !important;
+}
+.leaflet-control-attribution a {
+  color: var(--hale-muted) !important;
+}
+.leaflet-control-zoom a {
+  background: var(--hale-surface-2) !important;
+  color: var(--hale-text) !important;
+  border-color: var(--hale-border) !important;
+}

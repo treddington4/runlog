@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query"
 import { BrowserRouter, Routes, Route } from "react-router-dom"
-import { Target, Map, MessageCircle, Settings } from "lucide-react"
+import { Target, MessageCircle, Settings } from "lucide-react"
 import { queryClient } from "@/lib/queryClient"
 import { Shell } from "@/components/layout/Shell"
 import { PlaceholderPage } from "@/pages/PlaceholderPage"
@@ -8,6 +8,7 @@ import { HomePage } from "@/pages/HomePage"
 import { WorkoutsPage } from "@/pages/WorkoutsPage"
 import { ActivitiesPage } from "@/pages/ActivitiesPage"
 import { InsightsPage } from "@/pages/InsightsPage"
+import { MapPage } from "@/pages/MapPage"
 
 export default function App() {
   return (
@@ -19,7 +20,7 @@ export default function App() {
             <Route path="/goals" element={<PlaceholderPage icon={Target} title="Goals" phase="Phase 0.9" />} />
             <Route path="/activities" element={<ActivitiesPage />} />
             <Route path="/insights" element={<InsightsPage />} />
-            <Route path="/map" element={<PlaceholderPage icon={Map} title="Map" phase="Phase 0.7" />} />
+            <Route path="/map" element={<MapPage />} />
             <Route
               path="/chat"
               element={<PlaceholderPage icon={MessageCircle} title="Chat" phase="Phase 0.8" />}

@@ -2,7 +2,10 @@
 // leaves a real geographic gap in the point sequence; connecting it draws a
 // straight "teleport" line across the map that isn't a real path.
 
-function haversineKm(a: [number, number], b: [number, number]): number {
+// Exported for the Map tab's metric-mode segment builder (lib/mapHeat.ts), which
+// needs the gap threshold directly rather than the pre-split segments this
+// module builds for the density-mode/mini-map polylines.
+export function haversineKm(a: [number, number], b: [number, number]): number {
   const R = 6371
   const dLat = ((b[0] - a[0]) * Math.PI) / 180
   const dLon = ((b[1] - a[1]) * Math.PI) / 180
@@ -15,7 +18,7 @@ function haversineKm(a: [number, number], b: [number, number]): number {
 // Threshold adapts to each route's own typical point spacing (coarser decimation
 // on long runs naturally has wider gaps) rather than a single fixed distance,
 // floored so short/dense routes don't flag normal spacing.
-function computeGapThresholdKm(points: [number, number][]): number {
+export function computeGapThresholdKm(points: [number, number][]): number {
   if (points.length < 2) return Infinity
   const dists: number[] = []
   for (let i = 0; i < points.length - 1; i++) dists.push(haversineKm(points[i], points[i + 1]))

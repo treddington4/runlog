@@ -94,6 +94,11 @@ export interface DailyStepsPoint {
   steps: number | null
 }
 
+export interface GeocodeResult {
+  label: string
+  cached: boolean
+}
+
 export interface SleepStageSegment {
   stage: string
   start: string
@@ -274,6 +279,7 @@ export const api = {
   },
   wellness: (days = 30) => request<WellnessDay[]>(`/api/wellness?days=${days}`),
   steps: (days = 30) => request<DailyStepsPoint[]>(`/api/steps?days=${days}`),
+  geocode: (lat: number, lon: number) => request<GeocodeResult>(`/api/geocode?lat=${lat}&lon=${lon}`),
   sleepStages: (date?: string) =>
     request<SleepStagesResponse>(`/api/wellness/sleep-stages${date ? `?date=${date}` : ""}`),
   updateRun: (id: string, body: RunUpdate) =>

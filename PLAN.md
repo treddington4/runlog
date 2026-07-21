@@ -237,10 +237,55 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.6: Insights tab ported"
 
 ### 0.7 Map port
-- [ ] Leaflet map, location select, metric modes (density/pace/HR/cadence/grade),
-      per-run mini-maps in Activities expand
-- [ ] Verify: screenshot each metric mode
-- [ ] Commit: "Phase 0.7: Map tab ported"
+- [x] Leaflet map, location select, metric modes (density/pace/HR/cadence/grade) —
+      per-run mini-maps were already ported in 0.5 (`MiniMap.tsx`). New:
+      `lib/mapClusters.ts` (greedy proximity clustering + centroid, ported from
+      `clusterRuns`/`clusterCentroid`), `lib/mapHeat.ts` (gradients, `METRIC_CONFIG`,
+      `heatColor`, `buildMetricSegments`), `api.geocode()` (wraps the existing
+      `/api/geocode` reverse-geocoding endpoint — server-cached, rate-limited,
+      unchanged), `MapPage.tsx`. Exported `haversineKm`/`computeGapThresholdKm`
+      from `lib/route.ts` (previously internal) since the metric-segment builder
+      needs the gap threshold directly, not just the pre-split polyline segments
+      `splitRouteAtGaps` produces. Ported the dark-theme Leaflet chrome overrides
+      (`.leaflet-control-zoom`/`.leaflet-control-attribution`/`.leaflet-container`)
+      into `index.css`, which had been missed in 0.5 (MiniMap's `zoomControl:false`
+      meant the gap was invisible until Map's full page showed a visible zoom
+      control). One deliberate behavior change from legacy: the Leaflet map
+      instance is created on mount / destroyed on unmount (a real `useEffect`
+      lifecycle) rather than ported as legacy's module-level `if (!map)` singleton
+      that persists across tab switches — legacy's approach only worked because
+      the vanilla app never unmounts tab content (just toggles `display:none`);
+      this component genuinely mounts/unmounts with route navigation, so
+      create-on-mount/destroy-on-unmount is the correct mapping, not a shortcut
+- [x] While here: found and fixed a real regression from Phase 0.5's backend
+      change — `GET /api/runs` now defaults to a 90-day window, but the
+      still-in-production legacy `app.js` was never updated to pass `all=true`,
+      so the live app had silently lost access to run history older than 90 days
+      (Map's clustering, Insights' all-time rolling-pace lookback, etc.). Fixed
+      and deployed independently (commit `e6e8f60`), verified live via curl
+      (148 windowed vs 524 all-time) and by confirming the deployed `app.js`
+      actually contains the fix
+- [x] Verify: screenshot each metric mode — `tsc -b --noEmit` and `oxlint` clean
+      (same one expected `button.tsx` warning). Caught and fixed a real bug during
+      first-pass verification: the map canvas rendered completely blank because
+      the component's loading-state `Skeleton` early-return meant the map
+      container `<div>` didn't exist in the DOM on first mount (when
+      `useAllRuns()` data was still loading) — since the map-creation effect has
+      an empty dependency array, it only runs once, found `containerRef.current`
+      null, and never created the Leaflet map at all, even after data arrived and
+      the component re-rendered with the container present. Fixed by removing the
+      early return (the container now always renders; the "no items yet" empty
+      state already degrades correctly during the brief loading window). After
+      the fix, screenshotted all 5 modes (Density/Pace/Heart Rate/Cadence/Grade)
+      against live data — correct tiles, dark zoom-control styling, geocoded
+      location label ("Manchester, New Hampshire"), correct per-mode gradient
+      colors and legend text (e.g. "Pace · 160 runs · blue 23:04/mi → red
+      2:16/mi"), and "All locations" correctly zooming out to include a real
+      travel run near the Dominican Republic. Confirmed the map's create/destroy
+      lifecycle is clean by navigating Map → Insights → Map and re-checking for
+      console errors (none) — the map correctly re-initializes and re-auto-selects
+      the most-recent-activity cluster on remount
+- [x] Commit: "Phase 0.7: Map tab ported"
 
 ### 0.8 Chat port
 - [ ] Thread UI, tool-call transparency chips, inline charts (`charts` payload),

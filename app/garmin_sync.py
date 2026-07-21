@@ -63,21 +63,26 @@ GARMIN_STEPS_VOLATILE_DAYS = int(os.environ.get("GARMIN_STEPS_VOLATILE_DAYS", "2
 # capped at GARMIN_WELLNESS_BACKFILL_DAYS rather than the full account history, since
 # each day needs 3 separate live API calls (get_stats/get_max_metrics/get_sleep_data),
 # not the single cheap list call activities get.
-GARMIN_WELLNESS_VOLATILE_DAYS = int(os.environ.get("GARMIN_WELLNESS_VOLATILE_DAYS", "3"))
+#
+# Trimmed from 3 to 2: resting HR/VO2max genuinely only matter for today, but sleep is
+# the exception — "today's" sleep is actually last night's, and Garmin can still finish
+# processing it the morning after (see day_needs_wellness_sync's docstring: once a day
+# is marked synced even once, it's never re-checked again outside this window), so
+# yesterday needs to stay in the volatile window too. 1 day would drop that safety net
+# entirely; 3 was more margin than the actual data ever needed.
+GARMIN_WELLNESS_VOLATILE_DAYS = int(os.environ.get("GARMIN_WELLNESS_VOLATILE_DAYS", "2"))
 GARMIN_WELLNESS_BACKFILL_DAYS = int(os.environ.get("GARMIN_WELLNESS_BACKFILL_DAYS", "90"))
-# The volatile window used to be re-fetched in full (9 calls: 3 days x 3 metrics) on
-# *every* sync invocation with no throttle at all — two manual syncs a minute apart
-# cost the same 9 calls twice for data that couldn't plausibly have changed. Skipping
-# a re-check within this many seconds of the last one keeps the "today's data can still
-# change" guarantee (still re-checked at least this often) while cutting the fixed tax
-# on repeated syncs close together.
+# The volatile window used to be re-fetched in full on *every* sync invocation with no
+# throttle at all — two manual syncs a minute apart cost the same calls twice for data
+# that couldn't plausibly have changed. Skipping a re-check within this many seconds of
+# the last one keeps the "recent data can still change" guarantee (still re-checked at
+# least this often) while cutting the fixed tax on repeated syncs close together.
 GARMIN_WELLNESS_RECHECK_MIN_SEC = int(os.environ.get("GARMIN_WELLNESS_RECHECK_MIN_SEC", "1800"))
-# Shorter than the wellness throttle above on purpose — the whole point of syncing the
-# adaptive plan at all is catching Garmin revising a suggested workout shortly before
-# you start it (see coach.sync_garmin_suggested_workouts), so this stays fresher, but
-# still throttled: repeated manual syncs a minute apart shouldn't each cost 2 calls for
-# a plan that hasn't had time to change.
-GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC = int(os.environ.get("GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC", "900"))
+# Originally 15 minutes to catch Garmin revising a suggested workout right before you
+# start it, but under real rate-limit pressure that freshness isn't worth 2 calls every
+# sync — once/day (86400s) still catches same-day revisions on any sync after the day's
+# first one, just not ones made in the last few minutes before a workout specifically.
+GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC = int(os.environ.get("GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC", "86400"))
 GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY = "garmin_adaptive_plan_last_checked_at"
 # Cross-invocation cooldown: separate from every per-call retry/pause above, which all
 # operate *within* one sync attempt. This instead gates *starting a new attempt at all*
@@ -160,17 +165,44 @@ def _get_garmin_credential(user_id: str):
         db.close()
 
 
+_cached_client = None
+_cached_client_user_id = None
+_cached_client_logged_in_at = None
+# Even with a valid tokenstore session, garminconnect's own login() unconditionally
+# makes 2+ more calls every time ("ensure profile is loaded": socialProfile + user
+# settings, each internally retried up to 3x on failure) — that cost was invisible
+# from the outside since it happens *inside* a call this app always treated as "did
+# login succeed", not "how many requests did that take". Caching the already-
+# authenticated client object in this process's memory means repeat syncs within this
+# window skip calling client.login() at all, not just skip the credential fallback.
+GARMIN_CLIENT_CACHE_MAX_AGE_SEC = int(os.environ.get("GARMIN_CLIENT_CACHE_MAX_AGE_SEC", "1800"))
+
+
 def _login(user_id: str):
-    """Tries a saved session first (client.login(tokenstore=...) — garth loads OAuth1/
-    OAuth2 tokens from disk and refreshes the short-lived OAuth2 token from the
-    long-lived OAuth1 one internally, without hitting the login endpoint at all), and
-    only falls back to a real credential login if no valid saved session exists (first
-    run, expired/corrupted tokens). Always persists whatever session results, so once a
-    real login succeeds once, future syncs shouldn't need one again for a long while.
+    """Three layers, cheapest first:
+    1. In-process cached client, if within GARMIN_CLIENT_CACHE_MAX_AGE_SEC — zero calls,
+       memory-only, resets on container restart.
+    2. _lightweight_session_check — loads the on-disk tokenstore and validates/refreshes
+       it via garminconnect's internal client directly, bypassing garminconnect.Garmin.
+       login()'s wrapper (which unconditionally makes 2+ more calls even when nothing
+       needs refreshing). Zero calls unless a token is genuinely about to expire.
+    3. client.login(tokenstore=...) then client.login() (fresh credentials) — the
+       original, fully-supported-API fallback, used if either private-internals shortcut
+       above fails for any reason (a garminconnect update, corrupted tokenstore, etc).
     The token store is per-user (/data/.garmin_tokens_{user_id}) — /data is the same
     persistent volume runlog.db already lives on, so this survives container recreates.
     Credentials come from ProviderCredential (populated either by the startup migration
     from GARMIN_EMAIL/GARMIN_PASSWORD, or entered later through the Connections UI)."""
+    global _cached_client, _cached_client_user_id, _cached_client_logged_in_at
+    if (
+        _cached_client is not None
+        and _cached_client_user_id == user_id
+        and _cached_client_logged_in_at is not None
+        and _seconds_since(_cached_client_logged_in_at) < GARMIN_CLIENT_CACHE_MAX_AGE_SEC
+    ):
+        log.debug("garmin login: reusing in-process cached client, no network call")
+        return _cached_client
+
     cred = _get_garmin_credential(user_id)
     if not cred or not cred.username or not cred.password:
         raise RuntimeError(
@@ -183,29 +215,74 @@ def _login(user_id: str):
 
     token_store = f"{GARMIN_TOKEN_STORE_DIR}/.garmin_tokens_{user_id}"
     client = garminconnect.Garmin(cred.username, cred.password)
-    try:
-        client.login(tokenstore=token_store)
-        log.debug(f"garmin login: used cached session from {token_store}")
-    except Exception as e:
-        log.debug(f"garmin login: cached session failed ({e}), falling back to fresh credential login")
+
+    if _lightweight_session_check(client, token_store):
+        log.debug("garmin login: lightweight session check succeeded — skipped garminconnect's forced profile/settings calls")
+    else:
         try:
-            client.login()
-            log.debug("garmin login: fresh credential login succeeded")
+            client.login(tokenstore=token_store)
+            log.debug(f"garmin login: used cached session (full login()) from {token_store}")
         except Exception as e:
-            if _is_rate_limit_error(e):
-                log.debug(f"garmin login: rate-limited ({e})")
-                raise GarminLoginRateLimitError(
-                    "Garmin is rate-limiting login attempts from this network right now "
-                    "(this is common with the unofficial API). Wait a while before retrying."
-                ) from e
-            raise
+            log.debug(f"garmin login: cached session failed ({e}), falling back to fresh credential login")
+            try:
+                client.login()
+                log.debug("garmin login: fresh credential login succeeded")
+            except Exception as e:
+                if _is_rate_limit_error(e):
+                    log.debug(f"garmin login: rate-limited ({e})")
+                    raise GarminLoginRateLimitError(
+                        "Garmin is rate-limiting login attempts from this network right now "
+                        "(this is common with the unofficial API). Wait a while before retrying."
+                    ) from e
+                raise
 
     try:
-        client.garth.dump(token_store)
-    except Exception:
-        pass
+        # BUG FIX: this was `client.garth.dump(...)` — garminconnect.Garmin has no
+        # `garth` attribute at all (confirmed: hasattr() is False), so this has been
+        # silently failing every single call, swallowed by the bare except below.
+        # `client.client` (garminconnect's own internal Client) is the real object with
+        # a working dump(). Persisting here matters most after _refresh_session() inside
+        # _lightweight_session_check, whose own internals don't necessarily write back
+        # to disk — without this, a refreshed-but-unpersisted token would force a real
+        # network round-trip again on every subsequent process restart.
+        client.client.dump(token_store)
+    except Exception as e:
+        log.debug(f"garmin login: token persist failed (non-fatal): {e}")
 
+    _cached_client = client
+    _cached_client_user_id = user_id
+    _cached_client_logged_in_at = datetime.now(timezone.utc).isoformat()
     return client
+
+
+def _lightweight_session_check(client, token_store: str) -> bool:
+    """Attempts to validate/refresh the saved session using garminconnect's internal
+    client directly (client.client, a garminconnect.client.Client instance) instead of
+    going through garminconnect.Garmin.login()'s wrapper, which unconditionally makes
+    2+ more calls every time (GET /userprofile-service/socialProfile and user-settings,
+    "to ensure profile is loaded" — each internally retried up to 3x on failure) even
+    when the saved session needs zero network at all. is_authenticated is a pure local
+    property (bool(di_token or jwt_web)); _token_expires_soon() just decodes the JWT's
+    own exp claim locally — neither makes a network call. Only _refresh_session(), and
+    only when a token is genuinely about to expire, does.
+
+    _token_expires_soon/_refresh_session are private (underscore-prefixed) methods, not
+    part of garminconnect's stable public API — deliberately wrapped in a broad except
+    and used only as a fast path, with the existing client.login(tokenstore=...) chain
+    as the unconditional fallback on any failure, so a future garminconnect version
+    changing these internals degrades to today's already-correct (if less efficient)
+    behavior instead of breaking sync."""
+    try:
+        client.client.load(token_store)
+        if not client.client.is_authenticated:
+            return False
+        if client.client.di_refresh_token and client.client._token_expires_soon():
+            log.debug("garmin login: token expiring soon, refreshing (1 call instead of 2+)")
+            client.client._refresh_session()
+        return True
+    except Exception as e:
+        log.debug(f"garmin login: lightweight session check unavailable ({e})")
+        return False
 
 
 def _sync_daily_steps(client, user_id: str, days: int = 30) -> int:

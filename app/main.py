@@ -14,10 +14,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import uuid
+from fastapi import Depends
 from models import (
     init_db, SessionLocal, Run, DailySteps, ChatMessage, User, ProviderCredential, Goal,
-    DEFAULT_USER_ID, owned_by, get_sync_meta, set_sync_meta,
+    DEFAULT_USER_ID, owned_by, get_sync_meta, set_sync_meta, user_key,
 )
+import auth
 import strava
 import stats
 from util import local_today
@@ -52,8 +54,11 @@ def _next_auto_sync_time():
     recently — e.g. a burst of redeploys during active development previously fired a
     real auto-sync on every single one of them, since next_run_time=datetime.now() was
     unconditional. Only delays the *first* scheduled run; the recurring interval after
-    that is unaffected."""
-    last = get_sync_meta("strava_last_synced_at")
+    that is unaffected. Checks DEFAULT_USER_ID's own last-synced-at specifically (a
+    deliberate simplification, Phase 1.4) — this is a one-time scheduler-startup
+    heuristic to avoid hammering Strava right after a redeploy, not per-user data, and
+    _auto_sync() below already re-syncs every credentialed user on every tick regardless."""
+    last = get_sync_meta(user_key(DEFAULT_USER_ID, "strava_last_synced_at"))
     if last:
         try:
             last_dt = datetime.fromisoformat(last)
@@ -78,7 +83,7 @@ DASHBOARD_CACHE_KEY = "dashboard_summary_cache"
 DASHBOARD_CACHE_UPDATED_AT_KEY = "dashboard_summary_cache_updated_at"
 
 
-def _refresh_dashboard_cache():
+def _refresh_dashboard_cache(user_id: str):
     """Recomputes the Home tab's stat-card data and caches it in sync_meta (reusing the
     existing generic key-value store rather than a new single-purpose table — same
     pattern already used for the geocode cache) so /api/dashboard/summary is a plain
@@ -89,27 +94,28 @@ def _refresh_dashboard_cache():
     stats like "days since longest run" still need to advance without new data."""
     db = SessionLocal()
     try:
-        summary = stats.dashboard_summary(db, user_id=DEFAULT_USER_ID)
-        set_sync_meta(DASHBOARD_CACHE_KEY, json.dumps(summary))
-        set_sync_meta(DASHBOARD_CACHE_UPDATED_AT_KEY, datetime.now(timezone.utc).isoformat())
+        summary = stats.dashboard_summary(db, user_id=user_id)
+        set_sync_meta(user_key(user_id, DASHBOARD_CACHE_KEY), json.dumps(summary))
+        set_sync_meta(user_key(user_id, DASHBOARD_CACHE_UPDATED_AT_KEY), datetime.now(timezone.utc).isoformat())
     except Exception as e:
         log.warning(f"Dashboard cache refresh failed (stale cache will keep serving): {e}")
     finally:
         db.close()
 
 
-def _record_sync(source: str, count: int = None, error: str = None):
+def _record_sync(source: str, user_id: str, count: int = None, error: str = None):
     """Persist last-sync info to sync_meta so the UI can show real history
     across page loads instead of only reflecting the current browser session.
     A sync can partially succeed and then error (e.g. Garmin rate-limits mid-backlog
     after committing several real activities) — count and error aren't mutually
     exclusive, so both are recorded when both are given, instead of a real partial
-    success being silently lost behind "Never synced"."""
+    success being silently lost behind "Never synced". Namespaced per-user (Phase 1.4)
+    so two real users' sync history never overwrites each other's."""
     if count is not None:
-        set_sync_meta(f"{source}_last_synced_at", datetime.now(timezone.utc).isoformat())
-        set_sync_meta(f"{source}_last_count", str(count))
-    set_sync_meta(f"{source}_last_error", error or "")
-    _refresh_dashboard_cache()
+        set_sync_meta(user_key(user_id, f"{source}_last_synced_at"), datetime.now(timezone.utc).isoformat())
+        set_sync_meta(user_key(user_id, f"{source}_last_count"), str(count))
+    set_sync_meta(user_key(user_id, f"{source}_last_error"), error or "")
+    _refresh_dashboard_cache(user_id)
 
 
 def _users_with_credential(provider: str):
@@ -125,13 +131,13 @@ def _auto_sync():
     account — today that's still just DEFAULT_USER_ID in practice (no real login exists
     yet), but the loop itself is already correct for whenever there's more than one."""
     for user_id in _users_with_credential("strava"):
-        set_sync_meta("strava_last_error", "")
+        set_sync_meta(user_key(user_id, "strava_last_error"), "")
         try:
             n = strava.sync_activities(user_id, limit=SYNC_LIMIT)
-            _record_sync("strava", count=n)
+            _record_sync("strava", user_id, count=n)
             log.info(f"Auto-sync: upserted {n} runs from Strava for {user_id}")
         except Exception as e:
-            _record_sync("strava", error=str(e))
+            _record_sync("strava", user_id, error=str(e))
             log.warning(f"Auto-sync skipped for {user_id}: {e}")
 
 
@@ -142,21 +148,23 @@ def strava_login():
 
 
 @app.get("/auth/strava/callback")
-def strava_callback(code: str = None, error: str = None):
+def strava_callback(code: str = None, error: str = None, user_id: str = Depends(auth.current_user_id)):
     if error:
         raise HTTPException(400, f"Strava auth error: {error}")
     if not code:
         raise HTTPException(400, "Missing code")
-    # Hardcoded to DEFAULT_USER_ID until real login exists — the natural next step then
-    # is threading a `state` param through get_authorize_url()/this callback so the OAuth
-    # flow knows which logged-in user initiated it.
-    strava.exchange_code_for_token(DEFAULT_USER_ID, code)
+    # AUTH_MODE=disabled means user_id is always DEFAULT_USER_ID here — the natural next
+    # step for real multi-user OAuth is threading a `state` param through
+    # get_authorize_url()/this callback so the flow survives a redirect while still
+    # knowing which logged-in user initiated it (a bare Depends() here can't, since the
+    # browser leaves and comes back with no auth header of its own on this GET).
+    strava.exchange_code_for_token(user_id, code)
     return RedirectResponse("/?connected=strava")
 
 
 @app.get("/api/strava/status")
-def strava_status():
-    token = strava.get_valid_access_token(DEFAULT_USER_ID)
+def strava_status(user_id: str = Depends(auth.current_user_id)):
+    token = strava.get_valid_access_token(user_id)
     return {"connected": token is not None}
 
 
@@ -166,81 +174,89 @@ def strava_status():
 # request with a static "Syncing…" label isn't good enough feedback) ----------
 _QUICK_SYNC_LOG_LIMIT = 50
 _quick_sync_lock = threading.Lock()
-_quick_sync_jobs = {
-    "strava": {"status": "idle", "count": 0, "log": [], "startedAt": None, "finishedAt": None, "error": None},
-    "garmin": {"status": "idle", "count": 0, "log": [], "startedAt": None, "finishedAt": None, "error": None},
-}
+# Keyed by (user_id, source) rather than a source-only dict (Phase 1.4) — lazily
+# created on first use via _get_quick_sync_job, since the set of real users isn't
+# known ahead of time the way the 2 fixed sources were.
+_quick_sync_jobs: dict = {}
 
 
-def _quick_sync_progress(source: str, msg: str, count: int = None):
+def _new_job_state() -> dict:
+    return {"status": "idle", "count": 0, "log": [], "startedAt": None, "finishedAt": None, "error": None}
+
+
+def _get_quick_sync_job(user_id: str, source: str) -> dict:
+    return _quick_sync_jobs.setdefault((user_id, source), _new_job_state())
+
+
+def _quick_sync_progress(user_id: str, source: str, msg: str, count: int = None):
     with _quick_sync_lock:
-        job = _quick_sync_jobs[source]
+        job = _get_quick_sync_job(user_id, source)
         job["log"].append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
         job["log"] = job["log"][-_QUICK_SYNC_LOG_LIMIT:]
         if count is not None:
             job["count"] = count
 
 
-def _run_quick_sync(source: str):
+def _run_quick_sync(user_id: str, source: str):
     try:
-        cb = lambda msg, count=None: _quick_sync_progress(source, msg, count)
+        cb = lambda msg, count=None: _quick_sync_progress(user_id, source, msg, count)
         if source == "strava":
-            n = strava.sync_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT, progress_cb=cb)
+            n = strava.sync_activities(user_id, limit=SYNC_LIMIT, progress_cb=cb)
         else:
             import garmin_sync
-            n = garmin_sync.sync_garmin_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT, progress_cb=cb)
+            n = garmin_sync.sync_garmin_activities(user_id, limit=SYNC_LIMIT, progress_cb=cb)
         with _quick_sync_lock:
-            job = _quick_sync_jobs[source]
+            job = _get_quick_sync_job(user_id, source)
             job["status"] = "done"
             job["count"] = n
             job["finishedAt"] = datetime.now(timezone.utc).isoformat()
-        _record_sync(source, count=n)
-        _quick_sync_progress(source, f"Done — {n} runs upserted")
+        _record_sync(source, user_id, count=n)
+        _quick_sync_progress(user_id, source, f"Done — {n} runs upserted")
     except Exception as e:
         msg = str(e)
         with _quick_sync_lock:
-            job = _quick_sync_jobs[source]
+            job = _get_quick_sync_job(user_id, source)
             job["status"] = "error"
             job["error"] = msg
             job["finishedAt"] = datetime.now(timezone.utc).isoformat()
         # A rate-limit error mid-sync still carries real progress (see
         # GarminMidSyncRateLimitError.synced_count) — record it as a partial success,
         # not just an error, so "Last synced" doesn't misleadingly say "Never".
-        _record_sync(source, count=getattr(e, "synced_count", None), error=msg)
-        _quick_sync_progress(source, f"Error: {msg}")
+        _record_sync(source, user_id, count=getattr(e, "synced_count", None), error=msg)
+        _quick_sync_progress(user_id, source, f"Error: {msg}")
 
 
 @app.post("/api/sync/{source}")
-def manual_sync(source: str):
+def manual_sync(source: str, user_id: str = Depends(auth.current_user_id)):
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
-    if source == "strava" and not strava.get_valid_access_token(DEFAULT_USER_ID):
+    if source == "strava" and not strava.get_valid_access_token(user_id):
         raise HTTPException(400, "Not authenticated with Strava — visit /auth/strava/login first")
-    if source == "garmin" and not _has_credential(DEFAULT_USER_ID, "garmin"):
+    if source == "garmin" and not _has_credential(user_id, "garmin"):
         raise HTTPException(400, "Add your Garmin credentials in Settings → Connections to use this")
 
     with _quick_sync_lock:
-        job = _quick_sync_jobs[source]
+        job = _get_quick_sync_job(user_id, source)
         if job["status"] == "running":
             raise HTTPException(409, "Sync already running")
         job.update({"status": "running", "count": 0, "log": [], "startedAt": datetime.now(timezone.utc).isoformat(),
                     "finishedAt": None, "error": None})
 
-    set_sync_meta(f"{source}_last_error", "")  # clear any stale error the moment a new attempt starts, not just on success
-    threading.Thread(target=_run_quick_sync, args=(source,), daemon=True).start()
+    set_sync_meta(user_key(user_id, f"{source}_last_error"), "")  # clear any stale error the moment a new attempt starts, not just on success
+    threading.Thread(target=_run_quick_sync, args=(user_id, source), daemon=True).start()
     return {"status": "started"}
 
 
 @app.get("/api/sync/{source}/status")
-def quick_sync_status(source: str):
+def quick_sync_status(source: str, user_id: str = Depends(auth.current_user_id)):
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
     with _quick_sync_lock:
-        return dict(_quick_sync_jobs[source])
+        return dict(_get_quick_sync_job(user_id, source))
 
 
 @app.post("/api/garmin/import")
-async def import_garmin_export(file: UploadFile = File(...)):
+async def import_garmin_export(file: UploadFile = File(...), user_id: str = Depends(auth.current_user_id)):
     """One-time bulk import from Garmin Connect's official data-export ZIP (requested via
     account.garmin.com, separate from the live unofficial-API sync above). Lets historical
     activities/steps come from a file instead of the rate-limited live API — the live
@@ -250,18 +266,18 @@ async def import_garmin_export(file: UploadFile = File(...)):
     import garmin_import
     data = await file.read()
     log.info(f"garmin import: received {file.filename} ({len(data)} bytes)")
-    summary = garmin_import.import_garmin_export(data, DEFAULT_USER_ID)
+    summary = garmin_import.import_garmin_export(data, user_id)
     return summary
 
 
 @app.get("/api/sync/meta")
-def sync_meta():
+def sync_meta(user_id: str = Depends(auth.current_user_id)):
     def info(source: str):
-        count = get_sync_meta(f"{source}_last_count")
+        count = get_sync_meta(user_key(user_id, f"{source}_last_count"))
         return {
-            "lastSyncedAt": get_sync_meta(f"{source}_last_synced_at"),
+            "lastSyncedAt": get_sync_meta(user_key(user_id, f"{source}_last_synced_at")),
             "lastCount": int(count) if count is not None else None,
-            "lastError": get_sync_meta(f"{source}_last_error") or None,
+            "lastError": get_sync_meta(user_key(user_id, f"{source}_last_error")) or None,
         }
     return {"strava": info("strava"), "garmin": info("garmin")}
 
@@ -269,25 +285,27 @@ def sync_meta():
 # ---------- Backlog sync (full history, runs as a background job) ----------
 _BACKLOG_LOG_LIMIT = 200
 _backlog_lock = threading.Lock()
-_backlog_jobs = {
-    "strava": {"status": "idle", "count": 0, "log": [], "startedAt": None, "finishedAt": None, "error": None},
-    "garmin": {"status": "idle", "count": 0, "log": [], "startedAt": None, "finishedAt": None, "error": None},
-}
+# Keyed by (user_id, source) — see the quick-sync job dict above for why.
+_backlog_jobs: dict = {}
 
 
-def _backlog_progress(source: str, msg: str, count: int = None):
+def _get_backlog_job(user_id: str, source: str) -> dict:
+    return _backlog_jobs.setdefault((user_id, source), _new_job_state())
+
+
+def _backlog_progress(user_id: str, source: str, msg: str, count: int = None):
     with _backlog_lock:
-        job = _backlog_jobs[source]
+        job = _get_backlog_job(user_id, source)
         job["log"].append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
         job["log"] = job["log"][-_BACKLOG_LOG_LIMIT:]
         if count is not None:
             job["count"] = count
 
 
-def _run_backlog_sync(source: str):
+def _run_backlog_sync(user_id: str, source: str):
     try:
         if source == "strava":
-            n = strava.sync_all_activities(DEFAULT_USER_ID, progress_cb=lambda msg, count=None: _backlog_progress(source, msg, count))
+            n = strava.sync_all_activities(user_id, progress_cb=lambda msg, count=None: _backlog_progress(user_id, source, msg, count))
         else:
             import garmin_sync
             # Auto-continue through rate limits instead of stopping and requiring a
@@ -301,32 +319,32 @@ def _run_backlog_sync(source: str):
                 base = total
 
                 def _progress(msg, count=None, base=base):
-                    _backlog_progress(source, msg, (base + count) if count is not None else None)
+                    _backlog_progress(user_id, source, msg, (base + count) if count is not None else None)
 
                 try:
-                    total += garmin_sync.sync_all_garmin_activities(DEFAULT_USER_ID, progress_cb=_progress)
+                    total += garmin_sync.sync_all_garmin_activities(user_id, progress_cb=_progress)
                     break
                 except Exception as e:
                     if not garmin_sync.is_rate_limit_related(e):
                         raise
-                    wait = garmin_sync._garmin_cooldown_remaining_sec() + 5
+                    wait = garmin_sync._garmin_cooldown_remaining_sec(user_id) + 5
                     _backlog_progress(
-                        source,
+                        user_id, source,
                         f"Rate-limited — auto-retrying in {wait / 60:.1f} min, no need to click again…",
                     )
                     time.sleep(wait)
             n = total
         with _backlog_lock:
-            job = _backlog_jobs[source]
+            job = _get_backlog_job(user_id, source)
             job["status"] = "done"
             job["count"] = n
             job["finishedAt"] = datetime.now(timezone.utc).isoformat()
-        _record_sync(f"{source}_backlog", count=n)
-        _backlog_progress(source, f"Done — {n} runs upserted")
+        _record_sync(f"{source}_backlog", user_id, count=n)
+        _backlog_progress(user_id, source, f"Done — {n} runs upserted")
     except Exception as e:
         msg = str(e)
         with _backlog_lock:
-            job = _backlog_jobs[source]
+            job = _get_backlog_job(user_id, source)
             job["status"] = "error"
             job["error"] = msg
             job["finishedAt"] = datetime.now(timezone.utc).isoformat()
@@ -334,8 +352,8 @@ def _run_backlog_sync(source: str):
         # GarminMidSyncRateLimitError.synced_count) — record it as a partial success,
         # not just an error, so "Last synced" doesn't misleadingly say "Never" even
         # though real activities were committed before the failure.
-        _record_sync(f"{source}_backlog", count=getattr(e, "synced_count", None), error=msg)
-        _backlog_progress(source, f"Error: {msg}")
+        _record_sync(f"{source}_backlog", user_id, count=getattr(e, "synced_count", None), error=msg)
+        _backlog_progress(user_id, source, f"Error: {msg}")
 
 
 def _has_credential(user_id: str, provider: str) -> bool:
@@ -350,16 +368,16 @@ def _has_credential(user_id: str, provider: str) -> bool:
 
 
 @app.post("/api/sync/{source}/backlog")
-def start_backlog_sync(source: str):
+def start_backlog_sync(source: str, user_id: str = Depends(auth.current_user_id)):
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
-    if source == "strava" and not strava.get_valid_access_token(DEFAULT_USER_ID):
+    if source == "strava" and not strava.get_valid_access_token(user_id):
         raise HTTPException(400, "Not authenticated with Strava — visit /auth/strava/login first")
-    if source == "garmin" and not _has_credential(DEFAULT_USER_ID, "garmin"):
+    if source == "garmin" and not _has_credential(user_id, "garmin"):
         raise HTTPException(400, "Add your Garmin credentials in Settings → Connections to use this")
 
     with _backlog_lock:
-        job = _backlog_jobs[source]
+        job = _get_backlog_job(user_id, source)
         if job["status"] == "running":
             raise HTTPException(409, "Backlog sync already running")
         job.update({"status": "running", "count": 0, "log": [], "startedAt": datetime.now(timezone.utc).isoformat(),
@@ -369,50 +387,50 @@ def start_backlog_sync(source: str):
     # otherwise the old error stays visible in "last completed" for the whole duration
     # of this new run, since sync_meta only gets overwritten when _run_backlog_sync
     # finishes.
-    set_sync_meta(f"{source}_backlog_last_error", "")
+    set_sync_meta(user_key(user_id, f"{source}_backlog_last_error"), "")
 
-    threading.Thread(target=_run_backlog_sync, args=(source,), daemon=True).start()
+    threading.Thread(target=_run_backlog_sync, args=(user_id, source), daemon=True).start()
     return {"status": "started"}
 
 
 @app.get("/api/sync/{source}/backlog/status")
-def backlog_status(source: str):
+def backlog_status(source: str, user_id: str = Depends(auth.current_user_id)):
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
     with _backlog_lock:
-        job = dict(_backlog_jobs[source])
+        job = dict(_get_backlog_job(user_id, source))
 
-    last_count = get_sync_meta(f"{source}_backlog_last_count")
+    last_count = get_sync_meta(user_key(user_id, f"{source}_backlog_last_count"))
     job["lastCompleted"] = {
-        "syncedAt": get_sync_meta(f"{source}_backlog_last_synced_at"),
+        "syncedAt": get_sync_meta(user_key(user_id, f"{source}_backlog_last_synced_at")),
         "count": int(last_count) if last_count is not None else None,
-        "error": get_sync_meta(f"{source}_backlog_last_error") or None,
+        "error": get_sync_meta(user_key(user_id, f"{source}_backlog_last_error")) or None,
     }
     return job
 
 
 # ---------- Connections (per-user provider credentials — Settings tab) ----------
 @app.get("/api/connections")
-def get_connections():
+def get_connections(user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        creds = db.query(ProviderCredential).filter_by(user_id=DEFAULT_USER_ID).all()
+        creds = db.query(ProviderCredential).filter_by(user_id=user_id).all()
         return [{"provider": c.provider, "username": c.username} for c in creds]
     finally:
         db.close()
 
 
 @app.post("/api/connections/garmin")
-async def set_garmin_connection(request: Request):
+async def set_garmin_connection(request: Request, user_id: str = Depends(auth.current_user_id)):
     body = await request.json()
     username, password = body.get("username"), body.get("password")
     if not username or not password:
         raise HTTPException(400, "username and password are required")
     db = SessionLocal()
     try:
-        cred = db.query(ProviderCredential).filter_by(user_id=DEFAULT_USER_ID, provider="garmin").first()
+        cred = db.query(ProviderCredential).filter_by(user_id=user_id, provider="garmin").first()
         if not cred:
-            cred = ProviderCredential(user_id=DEFAULT_USER_ID, provider="garmin",
+            cred = ProviderCredential(user_id=user_id, provider="garmin",
                                        created_at=datetime.now(timezone.utc).isoformat())
             db.add(cred)
         cred.username = username
@@ -424,10 +442,10 @@ async def set_garmin_connection(request: Request):
 
 
 @app.delete("/api/connections/{provider}")
-def delete_connection(provider: str):
+def delete_connection(provider: str, user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        cred = db.query(ProviderCredential).filter_by(user_id=DEFAULT_USER_ID, provider=provider).first()
+        cred = db.query(ProviderCredential).filter_by(user_id=user_id, provider=provider).first()
         if cred:
             db.delete(cred)
             db.commit()
@@ -438,19 +456,19 @@ def delete_connection(provider: str):
 
 # ---------- Settings ----------
 @app.get("/api/garmin/status")
-def garmin_status():
-    return {"configured": _has_credential(DEFAULT_USER_ID, "garmin")}
+def garmin_status(user_id: str = Depends(auth.current_user_id)):
+    return {"configured": _has_credential(user_id, "garmin")}
 
 
 @app.get("/api/garmin/route-diagnostics")
-def garmin_route_diagnostics():
+def garmin_route_diagnostics(user_id: str = Depends(auth.current_user_id)):
     """How Garmin runs' routes were actually sourced — surfaces whether the FIT-derived
     unmasked path is really firing (vs. falling back to Garmin Connect's summary API,
     which independent testing found clips ~500m near a privacy-zone-protected location)
     without digging through container logs."""
     db = SessionLocal()
     try:
-        rows = db.query(Run.route_source).filter(Run.source == "garmin").all()
+        rows = db.query(Run.route_source).filter(Run.source == "garmin", owned_by(Run.user_id, user_id)).all()
         counts = {"fit_record_stream": 0, "geopolyline_summary": 0, "none": 0, "unknown": 0}
         for (source,) in rows:
             counts[source if source in counts else "unknown"] += 1
@@ -460,10 +478,10 @@ def garmin_route_diagnostics():
 
 
 @app.get("/api/config")
-def get_config():
+def get_config(user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        resting_hr = stats.latest_resting_hr_bpm(db, DEFAULT_USER_ID)
+        resting_hr = stats.latest_resting_hr_bpm(db, user_id)
     finally:
         db.close()
     return {
@@ -514,12 +532,12 @@ def geocode(lat: float, lon: float):
 
 # ---------- Daily steps (Garmin-only) ----------
 @app.get("/api/steps")
-def get_steps(days: int = 30):
+def get_steps(days: int = 30, user_id: str = Depends(auth.current_user_id)):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     db = SessionLocal()
     try:
         rows = (db.query(DailySteps).filter(DailySteps.date >= cutoff)
-                .filter(owned_by(DailySteps.user_id, DEFAULT_USER_ID)).order_by(DailySteps.date).all())
+                .filter(owned_by(DailySteps.user_id, user_id)).order_by(DailySteps.date).all())
         return [{"date": r.date, "steps": r.steps} for r in rows]
     finally:
         db.close()
@@ -527,12 +545,12 @@ def get_steps(days: int = 30):
 
 # ---------- Wellness: resting HR / VO2max / sleep (Garmin-only) ----------
 @app.get("/api/wellness")
-def get_wellness(days: int = 90):
+def get_wellness(days: int = 90, user_id: str = Depends(auth.current_user_id)):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     db = SessionLocal()
     try:
         rows = (db.query(DailySteps).filter(DailySteps.date >= cutoff)
-                .filter(owned_by(DailySteps.user_id, DEFAULT_USER_ID)).order_by(DailySteps.date).all())
+                .filter(owned_by(DailySteps.user_id, user_id)).order_by(DailySteps.date).all())
         return [{
             "date": r.date,
             "restingHrBpm": r.resting_hr_bpm,
@@ -549,7 +567,7 @@ def get_wellness(days: int = 90):
 
 
 @app.get("/api/wellness/sleep-stages")
-def get_sleep_stages(date: str = None):
+def get_sleep_stages(date: str = None, user_id: str = Depends(auth.current_user_id)):
     """Per-night sleep stage timeline (deep/light/rem/awake segments), for a real
     hypnogram rather than just daily totals — see garmin_sync._extract_sleep_stages().
     Returns every date that has stage data (for a night-picker) plus the requested
@@ -559,7 +577,7 @@ def get_sleep_stages(date: str = None):
         rows = (db.query(DailySteps)
                 .filter(DailySteps.sleep_stages_json.isnot(None))
                 .filter(DailySteps.sleep_stages_json != "[]")
-                .filter(owned_by(DailySteps.user_id, DEFAULT_USER_ID))
+                .filter(owned_by(DailySteps.user_id, user_id))
                 .order_by(DailySteps.date).all())
         available_dates = [r.date for r in rows]
         if not available_dates:
@@ -600,7 +618,8 @@ DEFAULT_RUNS_WINDOW_DAYS = 90
 
 
 @app.get("/api/runs")
-def get_runs(start: str | None = None, end: str | None = None, all_time: bool = Query(False, alias="all")):
+def get_runs(start: str | None = None, end: str | None = None, all_time: bool = Query(False, alias="all"),
+             user_id: str = Depends(auth.current_user_id)):
     """Windowed by default (Phase 0.5 — this used to return every activity ever
     synced unconditionally, a multi-MB payload on every page load). `all=true`
     bypasses the window entirely — used by callers that need true all-time totals
@@ -608,7 +627,7 @@ def get_runs(start: str | None = None, end: str | None = None, all_time: bool = 
     rather than trying to guess a "big enough" default range for every caller."""
     db = SessionLocal()
     try:
-        q = db.query(Run).filter(owned_by(Run.user_id, DEFAULT_USER_ID))
+        q = db.query(Run).filter(owned_by(Run.user_id, user_id))
         if not all_time:
             if not start and not end:
                 start = (local_today() - timedelta(days=DEFAULT_RUNS_WINDOW_DAYS - 1)).isoformat()
@@ -623,11 +642,11 @@ def get_runs(start: str | None = None, end: str | None = None, all_time: bool = 
 
 
 @app.patch("/api/runs/{run_id}")
-async def update_run(run_id: str, request: Request):
+async def update_run(run_id: str, request: Request, user_id: str = Depends(auth.current_user_id)):
     body = await request.json()
     db = SessionLocal()
     try:
-        run = db.get(Run, run_id)
+        run = db.query(Run).filter(Run.id == run_id, owned_by(Run.user_id, user_id)).first()
         if not run:
             raise HTTPException(404, "Run not found")
         if "type" in body:
@@ -656,10 +675,10 @@ def chat_status():
 
 
 @app.get("/api/chat/history")
-def chat_history():
+def chat_history(user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        rows = (db.query(ChatMessage).filter(owned_by(ChatMessage.user_id, DEFAULT_USER_ID))
+        rows = (db.query(ChatMessage).filter(owned_by(ChatMessage.user_id, user_id))
                 .order_by(ChatMessage.id).all())
         return [{
             "role": r.role, "content": r.content,
@@ -672,7 +691,7 @@ def chat_history():
 
 
 @app.post("/api/chat/message")
-async def chat_message(request: Request):
+async def chat_message(request: Request, user_id: str = Depends(auth.current_user_id)):
     import assistant
     if not assistant.is_configured():
         raise HTTPException(400, "AI assistant not configured — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
@@ -681,36 +700,36 @@ async def chat_message(request: Request):
     if not message:
         raise HTTPException(400, "message is required")
     try:
-        return await assistant.send_message(message, DEFAULT_USER_ID)
+        return await assistant.send_message(message, user_id)
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.post("/api/chat/reset")
-async def chat_reset():
+async def chat_reset(user_id: str = Depends(auth.current_user_id)):
     import assistant
     db = SessionLocal()
     try:
-        db.query(ChatMessage).filter(owned_by(ChatMessage.user_id, DEFAULT_USER_ID)).delete(synchronize_session=False)
+        db.query(ChatMessage).filter(owned_by(ChatMessage.user_id, user_id)).delete(synchronize_session=False)
         db.commit()
     finally:
         db.close()
-    await assistant.reset_client(DEFAULT_USER_ID)
+    await assistant.reset_client(user_id)
     return {"status": "reset"}
 
 
 @app.get("/api/coach/personality")
-def get_coach_personality():
+def get_coach_personality(user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        user = db.get(User, DEFAULT_USER_ID)
+        user = db.get(User, user_id)
         return {"personality": (user.coach_personality if user else None) or "normal"}
     finally:
         db.close()
 
 
 @app.post("/api/coach/personality")
-async def set_coach_personality(request: Request):
+async def set_coach_personality(request: Request, user_id: str = Depends(auth.current_user_id)):
     import assistant
     import coach
     body = await request.json()
@@ -719,7 +738,7 @@ async def set_coach_personality(request: Request):
         raise HTTPException(400, f"personality must be one of {coach.VALID_PERSONAS}")
     db = SessionLocal()
     try:
-        user = db.get(User, DEFAULT_USER_ID)
+        user = db.get(User, user_id)
         if user:
             user.coach_personality = personality
             db.commit()
@@ -727,18 +746,18 @@ async def set_coach_personality(request: Request):
         db.close()
     # Persona is baked into the SDK's system prompt at client-construction time, not
     # re-read per message — reset so the next chat message rebuilds it with the new tone.
-    await assistant.reset_client(DEFAULT_USER_ID)
+    await assistant.reset_client(user_id)
     return {"personality": personality}
 
 
 @app.get("/api/health-notes")
-def get_health_notes(status: str = None, category: str = None):
+def get_health_notes(status: str = None, category: str = None, user_id: str = Depends(auth.current_user_id)):
     """Read-only — no POST/PATCH/DELETE. Health-note lifecycle is chat-tool-driven
     only (see coach.py's log_health_note/update_health_status), not a manual form."""
     import coach
     db = SessionLocal()
     try:
-        return coach.list_health_notes(db, status, category)
+        return coach.list_health_notes(db, status, category, user_id)
     finally:
         db.close()
 
@@ -746,17 +765,18 @@ def get_health_notes(status: str = None, category: str = None):
 # ---------- Workouts (manual-UI path — mirrors the schedule_workout/update_workout
 # chat tools exactly, both call into coach.py so validation can't drift between them) ----------
 @app.get("/api/workouts")
-def get_workouts(startDate: str = None, endDate: str = None, status: str = None):
+def get_workouts(startDate: str = None, endDate: str = None, status: str = None,
+                  user_id: str = Depends(auth.current_user_id)):
     import coach
     db = SessionLocal()
     try:
-        return coach.list_workouts(db, startDate, endDate, status)
+        return coach.list_workouts(db, startDate, endDate, status, user_id)
     finally:
         db.close()
 
 
 @app.post("/api/workouts")
-async def create_workout_endpoint(request: Request):
+async def create_workout_endpoint(request: Request, user_id: str = Depends(auth.current_user_id)):
     import coach
     body = await request.json()
     db = SessionLocal()
@@ -764,7 +784,7 @@ async def create_workout_endpoint(request: Request):
         return coach.create_workout(
             db, body.get("scheduledDate"), body.get("workoutType"), body.get("activityType"),
             body.get("targetDistanceMi"), body.get("targetPaceSecPerMi"), body.get("targetDurationSec"),
-            body.get("notes"), body.get("steps"),
+            body.get("notes"), body.get("steps"), user_id=user_id,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -773,7 +793,7 @@ async def create_workout_endpoint(request: Request):
 
 
 @app.patch("/api/workouts/{workout_id}")
-async def update_workout_endpoint(workout_id: str, request: Request):
+async def update_workout_endpoint(workout_id: str, request: Request, user_id: str = Depends(auth.current_user_id)):
     import coach
     body = await request.json()
     field_map = {
@@ -784,7 +804,7 @@ async def update_workout_endpoint(workout_id: str, request: Request):
     fields = {py_key: body[api_key] for api_key, py_key in field_map.items() if api_key in body}
     db = SessionLocal()
     try:
-        return coach.update_workout(db, workout_id, **fields)
+        return coach.update_workout(db, workout_id, user_id=user_id, **fields)
     except ValueError as e:
         raise HTTPException(400, str(e))
     finally:
@@ -792,11 +812,11 @@ async def update_workout_endpoint(workout_id: str, request: Request):
 
 
 @app.delete("/api/workouts/{workout_id}")
-def delete_workout_endpoint(workout_id: str):
+def delete_workout_endpoint(workout_id: str, user_id: str = Depends(auth.current_user_id)):
     import coach
     db = SessionLocal()
     try:
-        coach.delete_workout(db, workout_id)
+        coach.delete_workout(db, workout_id, user_id)
         return {"deleted": True}
     finally:
         db.close()
@@ -806,32 +826,33 @@ def delete_workout_endpoint(workout_id: str):
 # no POST here: recommend_recovery_session is chat-tool-driven only, same reasoning as
 # health-notes above; manual creation isn't built yet, see coach.py's RecoveryTool docstring) ----------
 @app.get("/api/recovery-tools")
-def get_recovery_tools_endpoint():
+def get_recovery_tools_endpoint(user_id: str = Depends(auth.current_user_id)):
     import coach
     db = SessionLocal()
     try:
-        return coach.list_recovery_tools(db)
+        return coach.list_recovery_tools(db, user_id)
     finally:
         db.close()
 
 
 @app.get("/api/recovery-sessions")
-def get_recovery_sessions_endpoint(startDate: str = None, endDate: str = None, status: str = None):
+def get_recovery_sessions_endpoint(startDate: str = None, endDate: str = None, status: str = None,
+                                    user_id: str = Depends(auth.current_user_id)):
     import coach
     db = SessionLocal()
     try:
-        return coach.list_recovery_sessions(db, startDate, endDate, status)
+        return coach.list_recovery_sessions(db, startDate, endDate, status, user_id)
     finally:
         db.close()
 
 
 @app.patch("/api/recovery-sessions/{session_id}")
-async def update_recovery_session_endpoint(session_id: str, request: Request):
+async def update_recovery_session_endpoint(session_id: str, request: Request, user_id: str = Depends(auth.current_user_id)):
     import coach
     body = await request.json()
     db = SessionLocal()
     try:
-        return coach.update_recovery_session_status(db, session_id, body.get("status"))
+        return coach.update_recovery_session_status(db, session_id, body.get("status"), user_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
     finally:
@@ -839,11 +860,11 @@ async def update_recovery_session_endpoint(session_id: str, request: Request):
 
 
 @app.delete("/api/recovery-sessions/{session_id}")
-def delete_recovery_session_endpoint(session_id: str):
+def delete_recovery_session_endpoint(session_id: str, user_id: str = Depends(auth.current_user_id)):
     import coach
     db = SessionLocal()
     try:
-        coach.delete_recovery_session(db, session_id)
+        coach.delete_recovery_session(db, session_id, user_id)
         return {"deleted": True}
     finally:
         db.close()
@@ -851,8 +872,8 @@ def delete_recovery_session_endpoint(session_id: str):
 
 # ---------- Dashboard (real computed stats, no LLM involved) ----------
 @app.get("/api/dashboard/summary")
-def dashboard_summary():
-    cached = get_sync_meta(DASHBOARD_CACHE_KEY)
+def dashboard_summary(user_id: str = Depends(auth.current_user_id)):
+    cached = get_sync_meta(user_key(user_id, DASHBOARD_CACHE_KEY))
     if cached:
         try:
             return json.loads(cached)
@@ -862,11 +883,11 @@ def dashboard_summary():
     # and populate the cache so every subsequent load is a plain lookup.
     db = SessionLocal()
     try:
-        summary = stats.dashboard_summary(db, user_id=DEFAULT_USER_ID)
+        summary = stats.dashboard_summary(db, user_id=user_id)
     finally:
         db.close()
-    set_sync_meta(DASHBOARD_CACHE_KEY, json.dumps(summary))
-    set_sync_meta(DASHBOARD_CACHE_UPDATED_AT_KEY, datetime.now(timezone.utc).isoformat())
+    set_sync_meta(user_key(user_id, DASHBOARD_CACHE_KEY), json.dumps(summary))
+    set_sync_meta(user_key(user_id, DASHBOARD_CACHE_UPDATED_AT_KEY), datetime.now(timezone.utc).isoformat())
     return summary
 
 
@@ -891,10 +912,10 @@ def _goal_to_dict(g: Goal, db):
 
 
 @app.get("/api/goals")
-def get_goals():
+def get_goals(user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        goals = (db.query(Goal).filter(owned_by(Goal.user_id, DEFAULT_USER_ID))
+        goals = (db.query(Goal).filter(owned_by(Goal.user_id, user_id))
                  .order_by(Goal.status, func.coalesce(Goal.priority, 0), Goal.target_date).all())
         return [_goal_to_dict(g, db) for g in goals]
     finally:
@@ -902,14 +923,14 @@ def get_goals():
 
 
 @app.post("/api/goals")
-async def create_goal(request: Request):
+async def create_goal(request: Request, user_id: str = Depends(auth.current_user_id)):
     body = await request.json()
     if body.get("goalType") not in _VALID_GOAL_TYPES:
         raise HTTPException(400, f"goalType must be one of {_VALID_GOAL_TYPES}")
     db = SessionLocal()
     try:
         g = Goal(
-            id=f"goal_{uuid.uuid4().hex[:12]}", user_id=DEFAULT_USER_ID,
+            id=f"goal_{uuid.uuid4().hex[:12]}", user_id=user_id,
             goal_type=body["goalType"], name=body.get("name") or "Untitled goal", status="active",
             activity_types_json=json.dumps(body.get("activityTypes") or ["Run"]),
             target_value=body.get("targetValue"), target_unit=body.get("targetUnit"),
@@ -925,11 +946,11 @@ async def create_goal(request: Request):
 
 
 @app.patch("/api/goals/{goal_id}")
-async def update_goal(goal_id: str, request: Request):
+async def update_goal(goal_id: str, request: Request, user_id: str = Depends(auth.current_user_id)):
     body = await request.json()
     db = SessionLocal()
     try:
-        g = db.query(Goal).filter(Goal.id == goal_id, owned_by(Goal.user_id, DEFAULT_USER_ID)).first()
+        g = db.query(Goal).filter(Goal.id == goal_id, owned_by(Goal.user_id, user_id)).first()
         if not g:
             raise HTTPException(404, "Goal not found")
         if "name" in body:
@@ -958,10 +979,10 @@ async def update_goal(goal_id: str, request: Request):
 
 
 @app.delete("/api/goals/{goal_id}")
-def delete_goal(goal_id: str):
+def delete_goal(goal_id: str, user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        g = db.query(Goal).filter(Goal.id == goal_id, owned_by(Goal.user_id, DEFAULT_USER_ID)).first()
+        g = db.query(Goal).filter(Goal.id == goal_id, owned_by(Goal.user_id, user_id)).first()
         if not g:
             raise HTTPException(404, "Goal not found")
         db.delete(g)

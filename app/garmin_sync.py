@@ -25,6 +25,8 @@ from models import (
     set_sync_meta,
     run_needs_detail_sync,
     day_needs_wellness_sync,
+    resolve_run_id,
+    user_key,
 )
 from weather import get_historical_weather
 from util import classify_run_type, detect_intervals, local_today
@@ -855,7 +857,7 @@ def _process_activity(act: dict, client, db, user_id: str) -> bool:
     activity_type = act.get("activityType", {}).get("typeKey") or "unknown"
     is_run = "running" in activity_type
 
-    run_id = f"garmin_{act['activityId']}"
+    run_id = resolve_run_id(db, "garmin", act['activityId'], user_id)
     distance_mi = (act.get("distance") or 0) / METERS_PER_MILE
     # movingDuration is accelerometer-detected active movement — meaningful for a run
     # (distinguishes real pauses from actual pace) but wrong for strength training,
@@ -1073,9 +1075,13 @@ def _maybe_batch_pause(detail_fetch_count: int, progress_cb=None):
         time.sleep(GARMIN_BATCH_PAUSE_SEC)
 
 
-def _garmin_cooldown_remaining_sec() -> float:
-    """Seconds left in an active cross-invocation rate-limit cooldown, or 0 if none/expired."""
-    until = get_sync_meta(GARMIN_RATE_LIMIT_COOLDOWN_UNTIL_KEY)
+def _garmin_cooldown_remaining_sec(user_id: str) -> float:
+    """Seconds left in an active cross-invocation rate-limit cooldown, or 0 if none/expired.
+    Namespaced per-user (Phase 1.4) — each user's Garmin credential gets independent
+    cooldown tracking, even though Garmin's actual rate limit is arguably account-level
+    (a fine tradeoff vs. a cross-user leak; two RunLog users sharing one real Garmin
+    account would just get slightly redundant cooldowns, never a wrong one)."""
+    until = get_sync_meta(user_key(user_id, GARMIN_RATE_LIMIT_COOLDOWN_UNTIL_KEY))
     if not until:
         return 0.0
     try:
@@ -1085,8 +1091,8 @@ def _garmin_cooldown_remaining_sec() -> float:
     return max(0.0, (until_dt - datetime.now(timezone.utc)).total_seconds())
 
 
-def _raise_if_garmin_cooling_down():
-    remaining = _garmin_cooldown_remaining_sec()
+def _raise_if_garmin_cooling_down(user_id: str):
+    remaining = _garmin_cooldown_remaining_sec(user_id)
     log.debug(f"garmin cooldown check: {remaining:.0f}s remaining")
     if remaining > 0:
         mins = int(remaining // 60) + 1
@@ -1095,27 +1101,27 @@ def _raise_if_garmin_cooling_down():
         )
 
 
-def _record_garmin_rate_limit_hit():
-    failures = int(get_sync_meta(GARMIN_RATE_LIMIT_FAILURES_KEY) or "0") + 1
+def _record_garmin_rate_limit_hit(user_id: str):
+    failures = int(get_sync_meta(user_key(user_id, GARMIN_RATE_LIMIT_FAILURES_KEY)) or "0") + 1
     cooldown = min(GARMIN_COOLDOWN_BASE_SEC * (2 ** (failures - 1)), GARMIN_COOLDOWN_MAX_SEC)
     until = datetime.now(timezone.utc) + timedelta(seconds=cooldown)
-    set_sync_meta(GARMIN_RATE_LIMIT_FAILURES_KEY, str(failures))
-    set_sync_meta(GARMIN_RATE_LIMIT_COOLDOWN_UNTIL_KEY, until.isoformat())
+    set_sync_meta(user_key(user_id, GARMIN_RATE_LIMIT_FAILURES_KEY), str(failures))
+    set_sync_meta(user_key(user_id, GARMIN_RATE_LIMIT_COOLDOWN_UNTIL_KEY), until.isoformat())
     log.debug(f"garmin rate limit hit #{failures} — cooldown set for {cooldown:.0f}s (until {until.isoformat()})")
 
 
-def _clear_garmin_rate_limit_cooldown():
-    set_sync_meta(GARMIN_RATE_LIMIT_FAILURES_KEY, "0")
-    set_sync_meta(GARMIN_RATE_LIMIT_COOLDOWN_UNTIL_KEY, "")
+def _clear_garmin_rate_limit_cooldown(user_id: str):
+    set_sync_meta(user_key(user_id, GARMIN_RATE_LIMIT_FAILURES_KEY), "0")
+    set_sync_meta(user_key(user_id, GARMIN_RATE_LIMIT_COOLDOWN_UNTIL_KEY), "")
     log.debug("garmin rate limit cooldown cleared")
 
 
 def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
-    _raise_if_garmin_cooling_down()
+    _raise_if_garmin_cooling_down(user_id)
     try:
         client = _login(user_id)
     except GarminLoginRateLimitError:
-        _record_garmin_rate_limit_hit()
+        _record_garmin_rate_limit_hit(user_id)
         raise
 
     # Run these BEFORE the activity loop, not after — every real sync so far has hit
@@ -1137,13 +1143,13 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
     # repeated manual syncs close together don't each burn 2 calls on a plan that
     # hasn't had time to change. See coach.sync_garmin_suggested_workouts for the
     # change-preserving upsert logic.
-    last_plan_check = get_sync_meta(GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY)
+    last_plan_check = get_sync_meta(user_key(user_id, GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY))
     if not last_plan_check or _seconds_since(last_plan_check) >= GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC:
         try:
             today = local_today()
             window_end = (today + timedelta(days=6)).isoformat()
             plan_entries = _fetch_adaptive_plan_workouts(client, today.isoformat(), window_end)
-            set_sync_meta(GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY, datetime.now(timezone.utc).isoformat())
+            set_sync_meta(user_key(user_id, GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY), datetime.now(timezone.utc).isoformat())
             if plan_entries:
                 import coach
                 db = SessionLocal()
@@ -1168,7 +1174,7 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
     except Exception as e:
         if progress_cb:
             progress_cb("Stopped — Garmin API rate limit hit during wellness sync")
-        _record_garmin_rate_limit_hit()
+        _record_garmin_rate_limit_hit(user_id)
         raise GarminMidSyncRateLimitError(0) from e
 
     activities = client.get_activities(0, limit)
@@ -1186,7 +1192,7 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
             # the single highest-leverage fix for hitting Garmin's rate limit, since
             # the per-activity detail calls (not the cheap activity-list call) are
             # what actually cost API budget.
-            if not run_needs_detail_sync(db, f"garmin_{act['activityId']}"):
+            if not run_needs_detail_sync(db, resolve_run_id(db, "garmin", act['activityId'], user_id)):
                 log.debug(f"garmin quick sync: activity {act.get('activityId')} already synced — stopping")
                 break
             log.debug(f"garmin quick sync: activity {act.get('activityId')} needs detail fetch")
@@ -1202,7 +1208,7 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
                     progress_cb(
                         f"Stopped — Garmin API rate limit hit mid-sync ({count} runs saved)"
                     )
-                _record_garmin_rate_limit_hit()
+                _record_garmin_rate_limit_hit(user_id)
                 raise GarminMidSyncRateLimitError(count) from e
             if processed:
                 count += 1
@@ -1212,7 +1218,7 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
     finally:
         db.close()
 
-    _clear_garmin_rate_limit_cooldown()
+    _clear_garmin_rate_limit_cooldown(user_id)
     return count
 
 
@@ -1235,11 +1241,11 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
     own break-on-first-known logic, so a completed historical walk doesn't need to be
     repeated just because time passed. (No UI to force a fresh full walk yet — clearing
     these two sync_meta keys directly is the manual escape hatch if ever needed.)"""
-    _raise_if_garmin_cooling_down()
+    _raise_if_garmin_cooling_down(user_id)
     try:
         client = _login(user_id)
     except GarminLoginRateLimitError:
-        _record_garmin_rate_limit_hit()
+        _record_garmin_rate_limit_hit(user_id)
         raise
 
     # See sync_garmin_activities for why steps runs first, not last. Resting HR no longer
@@ -1260,17 +1266,17 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
     except Exception as e:
         if progress_cb:
             progress_cb("Stopped — Garmin API rate limit hit during wellness sync")
-        _record_garmin_rate_limit_hit()
+        _record_garmin_rate_limit_hit(user_id)
         raise GarminMidSyncRateLimitError(0) from e
 
-    if get_sync_meta(GARMIN_ACTIVITIES_BACKLOG_COMPLETE_KEY) == "1":
+    if get_sync_meta(user_key(user_id, GARMIN_ACTIVITIES_BACKLOG_COMPLETE_KEY)) == "1":
         log.debug("garmin backlog sync: already marked complete, returning early")
         if progress_cb:
             progress_cb("Activity history already fully walked — nothing left to confirm")
         return 0
 
     batch = 5
-    start = int(get_sync_meta(GARMIN_ACTIVITIES_BACKLOG_OFFSET_KEY) or "0")
+    start = int(get_sync_meta(user_key(user_id, GARMIN_ACTIVITIES_BACKLOG_OFFSET_KEY)) or "0")
     log.debug(f"garmin backlog sync: starting at offset {start}, batch size {batch}")
     if start and progress_cb:
         progress_cb(f"Resuming backlog walk at offset {start}")
@@ -1283,7 +1289,7 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
             activities = client.get_activities(start, batch)
             log.debug(f"garmin backlog sync: page at offset {start} returned {len(activities)} activities")
             if not activities:
-                set_sync_meta(GARMIN_ACTIVITIES_BACKLOG_COMPLETE_KEY, "1")
+                set_sync_meta(user_key(user_id, GARMIN_ACTIVITIES_BACKLOG_COMPLETE_KEY), "1")
                 log.debug("garmin backlog sync: empty page — marking complete")
                 if progress_cb:
                     progress_cb("Reached the end of activity history — backlog walk complete")
@@ -1296,7 +1302,7 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
                 # Backlog sync still walks full history (confirming nothing's
                 # missing via this cheap paginated list call) but skips the
                 # expensive detail fetch entirely for anything already stored.
-                if not run_needs_detail_sync(db, f"garmin_{act['activityId']}"):
+                if not run_needs_detail_sync(db, resolve_run_id(db, "garmin", act['activityId'], user_id)):
                     skipped += 1
                     continue
                 log.debug(f"garmin backlog sync: activity {act.get('activityId')} needs detail fetch")
@@ -1312,7 +1318,7 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
                         progress_cb(
                             f"Stopped — Garmin API rate limit hit mid-sync ({count} runs saved)"
                         )
-                    _record_garmin_rate_limit_hit()
+                    _record_garmin_rate_limit_hit(user_id)
                     raise GarminMidSyncRateLimitError(count) from e
                 if processed:
                     count += 1
@@ -1331,11 +1337,11 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
             # line runs, so the cursor stays put and the next run re-attempts this
             # same page instead of skipping over unfinished work.
             start += len(activities)
-            set_sync_meta(GARMIN_ACTIVITIES_BACKLOG_OFFSET_KEY, str(start))
+            set_sync_meta(user_key(user_id, GARMIN_ACTIVITIES_BACKLOG_OFFSET_KEY), str(start))
             log.debug(f"garmin backlog sync: page done ({skipped} skipped), cursor advanced to {start}")
 
             if len(activities) < batch:
-                set_sync_meta(GARMIN_ACTIVITIES_BACKLOG_COMPLETE_KEY, "1")
+                set_sync_meta(user_key(user_id, GARMIN_ACTIVITIES_BACKLOG_COMPLETE_KEY), "1")
                 log.debug("garmin backlog sync: short page — marking complete")
                 if progress_cb:
                     progress_cb("Reached the end of activity history — backlog walk complete")
@@ -1344,5 +1350,5 @@ def sync_all_garmin_activities(user_id: str, progress_cb=None):
     finally:
         db.close()
 
-    _clear_garmin_rate_limit_cooldown()
+    _clear_garmin_rate_limit_cooldown(user_id)
     return count

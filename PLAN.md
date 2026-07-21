@@ -528,15 +528,60 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 1.3: OIDC/JWT + device-token auth middleware"
 
 ### 1.4 Endpoint threading
-- [ ] Every endpoint in `main.py`: `user_id = Depends(auth.current_user_id)` replaces
-      DEFAULT_USER_ID literals
-- [ ] In-memory job state keyed `(user_id, source)` (quick-sync + backlog dicts)
-- [ ] `sync_meta` scoping: `user_key(user_id, key)` helper; migrate cooldown/cursor/
-      cache/throttle call sites; one-time copy of globals to `u:default:*`
-- [ ] Run-id collision guard: on cross-user id conflict in `_process_activity`, write
-      `{source}_{user_id}_{activity_id}`
-- [ ] Verify: full curl regression as default user; `STATUS.md`
-- [ ] Commit: "Phase 1.4: per-user scoping of endpoints, job state, sync_meta"
+- [x] Every endpoint in `main.py`: `user_id = Depends(auth.current_user_id)` replaces
+      DEFAULT_USER_ID literals — all ~40 endpoints threaded (catalogued exhaustively
+      first via a research pass before editing). Along the way, fixed several endpoints
+      that had **no user scoping at all** (not just a hardcode) prior to this phase:
+      `PATCH /api/runs/{run_id}` (`db.get(Run, run_id)` → `owned_by()`-filtered query),
+      `GET /api/garmin/route-diagnostics` (added an `owned_by()` filter it never had).
+      The 9 `coach.py`-backed endpoints (health-notes/workouts/recovery-*) turned out to
+      already accept a `user_id` parameter (defaulting to `DEFAULT_USER_ID`) — main.py
+      just wasn't passing it through; smaller fix than the original research pass
+      expected, since it only needed call-site threading, not new function signatures.
+      `/auth/strava/login`, `/api/geocode`, `/api/chat/status`, and the SPA catch-all
+      stay unscoped (genuinely no user concept)
+- [x] In-memory job state keyed `(user_id, source)` (quick-sync + backlog dicts) — both
+      `_quick_sync_jobs`/`_backlog_jobs` switched from eagerly-initialized `{source: {...}}`
+      dicts to lazily-created `{(user_id, source): {...}}` via `_get_quick_sync_job()`/
+      `_get_backlog_job()` (`.setdefault(...)`), since the set of real users isn't known
+      ahead of time the way the 2 fixed sources were
+- [x] `sync_meta` scoping: `user_key(user_id, key)` helper (`models.py`) applied to
+      every genuinely per-user key across `main.py` (`_record_sync`,
+      `_refresh_dashboard_cache`, the dashboard cache pair, `manual_sync`/
+      `start_backlog_sync`'s error-clear) and `garmin_sync.py` (the 4 rate-limit-cooldown
+      helper functions gained a `user_id` parameter and now use `user_key()`; the
+      adaptive-plan-last-checked and activities-backlog-offset/complete keys too).
+      Deliberately **not** applied to the geocode cache (`f"geocode_{lat:.2f}_{lon:.2f}"`)
+      — that's keyed by physical location, not by asker, and should stay one shared
+      cache. `_next_auto_sync_time()` checks `DEFAULT_USER_ID`'s own namespaced key
+      specifically (documented simplification — it's a one-time scheduler-startup
+      heuristic to avoid hammering Strava right after a redeploy, not per-user data,
+      and `_auto_sync()` already re-syncs every credentialed user on every tick
+      regardless of what this heuristic decides). One-time copy of every pre-1.4
+      global key to its `user_key(DEFAULT_USER_ID, key)` equivalent —
+      `_migrate_sync_meta_to_user_keys()`, copies (not moves) so a rollback still reads
+      its own expected keys, idempotent (skips a key whose namespaced target is already set)
+- [x] Run-id collision guard: on cross-user id conflict in `_process_activity`, write
+      `{source}_{user_id}_{activity_id}` — `models.resolve_run_id(db, source, activity_id,
+      user_id)`, shared by both `strava.py` and `garmin_sync.py`'s `_process_activity`
+      *and* their loop-level dedup-check call sites (both must agree on the same id for
+      the same activity). Plain `f"{source}_{activity_id}"` id used in the common case
+      (no existing row, or an existing row already owned by this user or unowned);
+      falls back to the user-suffixed id only on a genuine cross-user conflict
+- [x] Verify: full curl regression as default user; `STATUS.md` — deployed for real
+      (`docker compose up -d --build`, confirmed clean startup logs) and ran a full
+      curl regression across every read endpoint (all 200s) plus content-level checks
+      confirming exact byte-for-byte-equivalent data to before the refactor (same sync
+      timestamps — proving the one-time key migration correctly carried forward
+      existing state, same route-diagnostics counts, same dashboard headerStats, same
+      run counts windowed/all-time, same goal count). Verified a real write path
+      end-to-end, not just reads: triggered `POST /api/sync/strava`, confirmed the job
+      dict correctly tracked running→done under the new `(user_id, source)` keying,
+      and confirmed `GET /api/sync/meta` reflected the new sync timestamp under the
+      namespaced key. Screenshotted Home against the live production deployment —
+      identical to pre-refactor, confirming the full stack (new frontend + refactored
+      backend) still works together correctly
+- [x] Commit: "Phase 1.4: per-user scoping of endpoints, job state, sync_meta"
 
 ### 1.5 Token management + onboarding
 - [ ] `POST/GET/DELETE /api/tokens` (raw token shown once); Settings UI section

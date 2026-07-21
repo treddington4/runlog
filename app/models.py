@@ -372,11 +372,50 @@ def set_sync_meta(key: str, value: str):
         db.close()
 
 
+# Per-user keys prefixed with "u:{user_id}:{key}" (Phase 1.4) — genuinely user-specific
+# state (sync timestamps/counts/errors, dashboard cache, Garmin cooldown/backlog cursor)
+# gets namespaced through this so two real users never clobber each other's sync_meta
+# rows. Deliberately NOT applied to the geocode cache (`f"geocode_{lat:.2f}_{lon:.2f}"`)
+# — that's keyed by physical location, not by who's asking, and should stay a single
+# shared cache across every user.
+def user_key(user_id: str, key: str) -> str:
+    return f"u:{user_id}:{key}"
+
+
+_LEGACY_GLOBAL_SYNC_META_KEYS = [
+    "strava_last_synced_at", "strava_last_count", "strava_last_error",
+    "garmin_last_synced_at", "garmin_last_count", "garmin_last_error",
+    "strava_backlog_last_synced_at", "strava_backlog_last_count", "strava_backlog_last_error",
+    "garmin_backlog_last_synced_at", "garmin_backlog_last_count", "garmin_backlog_last_error",
+    "dashboard_summary_cache", "dashboard_summary_cache_updated_at",
+    "garmin_adaptive_plan_last_checked_at", "garmin_rate_limit_cooldown_until",
+    "garmin_rate_limit_consecutive_failures", "garmin_activities_backlog_offset",
+    "garmin_activities_backlog_complete",
+]
+
+
+def _migrate_sync_meta_to_user_keys():
+    """One-time copy of every pre-Phase-1.4 global sync_meta key to its DEFAULT_USER_ID-
+    namespaced equivalent, so upgrading doesn't silently lose sync history, Garmin
+    cooldown state, or the backlog cursor (all previously global, now per-user).
+    Copies rather than moves — the old global key is left in place, untouched, so a
+    rollback to a pre-1.4 build still reads its own expected keys. Idempotent: only
+    copies a key if its namespaced target doesn't already have a value."""
+    for key in _LEGACY_GLOBAL_SYNC_META_KEYS:
+        old_value = get_sync_meta(key)
+        if old_value is None:
+            continue
+        new_key = user_key(DEFAULT_USER_ID, key)
+        if get_sync_meta(new_key) is None:
+            set_sync_meta(new_key, old_value)
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     Base.metadata.create_all(engine)
     _migrate_add_missing_columns()
     _migrate_daily_steps_composite_pk()
+    _migrate_sync_meta_to_user_keys()
     _backfill_detail_synced_at()
     _seed_default_user_and_credentials()
     _seed_marathon_goal()
@@ -465,6 +504,24 @@ def run_needs_detail_sync(db, run_id: str) -> bool:
     no API call, no retry-wrapper sleep."""
     existing = db.get(Run, run_id)
     return existing is None or not existing.detail_synced_at
+
+
+def resolve_run_id(db, source: str, activity_id, user_id: str) -> str:
+    """Returns the Run.id to use for a given (source, raw activity id, user) — shared
+    by both strava.py and garmin_sync.py (their loop-level dedup check AND their
+    _process_activity, so both always agree on the same id for the same activity).
+    The plain f"{source}_{activity_id}" id is used in the common case (no existing
+    row, or an existing row that's unowned or already belongs to this same user);
+    only falls back to a user-suffixed id on a genuine cross-user conflict — two
+    different real users' Strava/Garmin accounts happening to produce the same raw
+    numeric activity id, which would otherwise silently reassign the first user's
+    Run row to the second user (Run.id is a single-column PK with no user_id
+    component)."""
+    plain_id = f"{source}_{activity_id}"
+    existing = db.get(Run, plain_id)
+    if existing is None or existing.user_id in (None, user_id):
+        return plain_id
+    return f"{source}_{user_id}_{activity_id}"
 
 
 def day_needs_wellness_sync(db, date_str: str, user_id: str = DEFAULT_USER_ID) -> bool:

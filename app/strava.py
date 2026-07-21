@@ -6,7 +6,7 @@ import bisect
 import requests
 from datetime import datetime, timezone
 
-from models import SessionLocal, Run, ProviderCredential, run_needs_detail_sync
+from models import SessionLocal, Run, ProviderCredential, run_needs_detail_sync, resolve_run_id
 from weather import get_historical_weather
 from util import gap_sec_per_mi, classify_run_type, detect_intervals, decode_polyline
 
@@ -253,7 +253,7 @@ def _process_activity(act: dict, headers: dict, db, user_id: str) -> bool:
     activity_type = act.get("type", "Run")
     is_run = activity_type == "Run"
 
-    run_id = f"strava_{act['id']}"
+    run_id = resolve_run_id(db, "strava", act['id'], user_id)
     # Strava's "trainer" flag just means "recorded on stationary/indoor equipment" —
     # true for an indoor bike trainer, and (per Hevy's Strava export) even weight
     # training. "Treadmill" is specifically a running concept, so only running
@@ -363,7 +363,7 @@ def sync_activities(user_id: str, limit: int = 10, progress_cb=None):
             # everything after it is too — stop here instead of re-fetching full
             # details (splits/route/weather) for activities we already have. This is
             # what makes "quick sync" naturally mean "today's/recent new data only".
-            if not run_needs_detail_sync(db, f"strava_{act['id']}"):
+            if not run_needs_detail_sync(db, resolve_run_id(db, "strava", act['id'], user_id)):
                 break
             if _process_activity(act, headers, db, user_id):
                 count += 1
@@ -405,7 +405,7 @@ def sync_all_activities(user_id: str, progress_cb=None):
                 # Backlog sync still walks full history (confirming nothing's missing
                 # via this cheap paginated list call) but skips the expensive detail
                 # fetch entirely for anything already stored — no API cost for a skip.
-                if not run_needs_detail_sync(db, f"strava_{act['id']}"):
+                if not run_needs_detail_sync(db, resolve_run_id(db, "strava", act['id'], user_id)):
                     skipped += 1
                     continue
                 if _process_activity(act, headers, db, user_id):

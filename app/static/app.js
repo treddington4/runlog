@@ -11,6 +11,8 @@ const SEGMENT_STYLE = {
 };
 
 let runs = [];
+let runsLoaded = false; // true once /api/runs (several MB) has actually resolved — gates the
+// empty-state check so a not-yet-loaded `runs` array can never be mistaken for a real zero
 let goals = [];
 let expandedId = null;
 let currentTab = "home";
@@ -214,13 +216,21 @@ function mergeDuplicateRuns(rawRuns) {
   return merged;
 }
 
-async function loadRuns() {
+async function loadRuns(isInitialLoad = false) {
   const res = await fetch("/api/runs");
   const raw = await res.json();
   runs = mergeDuplicateRuns(raw);
+  runsLoaded = true;
   computeHRFloor();
   populateActivityTypeSelect();
-  dispatchCurrentTab();
+  // On the very first load, dispatchCurrentTab() already ran synchronously at bootstrap
+  // (Home tab rendered immediately from cheap/approximate data, see the Init section) —
+  // a second full dispatch here would just re-fetch /api/dashboard/summary and
+  // /api/wellness again for no reason. Patch in the now-exact header numbers instead.
+  // Every other caller (a sync completing, etc.) still wants — and needs — a real
+  // dispatch, since new runs can change dashboard cards beyond just the stat-strip.
+  if (isInitialLoad && currentTab === "home") updateHeaderStats();
+  else dispatchCurrentTab();
 }
 
 async function loadGoals() {
@@ -345,14 +355,7 @@ const ACTIVITY_VERBS = {
   Yoga: "Did yoga", Elliptical: "Did elliptical",
 };
 
-function renderStatBreakdown() {
-  const weekAgo = new Date(Date.now() - 7 * 86400000);
-  const byType = {};
-  runs.filter((r) => new Date(r.date) >= weekAgo).forEach((r) => {
-    const t = r.activityType || "Run";
-    byType[t] = (byType[t] || 0) + (r.distanceMi || 0);
-  });
-
+function renderStatBreakdown(byType) {
   const el = document.getElementById("stat-breakdown");
   const types = Object.keys(byType);
   // Only worth a separate line when something other than running happened this week —
@@ -367,24 +370,48 @@ function renderStatBreakdown() {
     .join(" · ");
 }
 
+// Most recent /api/dashboard/summary response — small and already server-cached (see
+// stats.py's _header_stats), reused below as a fast approximation for the stat-strip
+// while the several-MB /api/runs payload is still loading.
+let lastDashboardSummary = null;
+
 // Home-tab-only now (moved out of the global header) — only meaningful to call once
-// renderHomeTab() has put the stat-week/pace/count/breakdown elements in the DOM.
+// renderHomeTab() has put the stat-week/pace/count/breakdown elements in the DOM. Two
+// data sources, exact takes priority: once /api/runs has actually loaded (runsLoaded),
+// compute from the real client-merged `runs` array (accounts for mergeDuplicateRuns()).
+// Until then, fall back to dashboard_summary's headerStats — an approximation (no
+// Strava+Garmin duplicate merge applied server-side) good enough for the first second
+// or two of a page load, corrected automatically once the real data lands.
 function updateHeaderStats() {
-  // Other captured activity types (rides, walks, hikes, ...) show up in the plain Runs
-  // list below, but shouldn't silently inflate running-specific stats/Insights charts.
-  const runningRuns = runs.filter(isRunActivity);
+  if (runsLoaded) {
+    // Other captured activity types (rides, walks, hikes, ...) show up in the plain Runs
+    // list below, but shouldn't silently inflate running-specific stats/Insights charts.
+    const runningRuns = runs.filter(isRunActivity);
+    const weekAgo = new Date(Date.now() - 7 * 86400000);
+    const weekMi = runningRuns.filter((r) => new Date(r.date) >= weekAgo).reduce((s, r) => s + (r.distanceMi || 0), 0);
+    document.getElementById("stat-week").textContent = `${weekMi.toFixed(1)} mi`;
 
-  const weekAgo = new Date(Date.now() - 7 * 86400000);
-  const weekMi = runningRuns.filter((r) => new Date(r.date) >= weekAgo).reduce((s, r) => s + (r.distanceMi || 0), 0);
-  document.getElementById("stat-week").textContent = `${weekMi.toFixed(1)} mi`;
+    const withPace = runningRuns.filter((r) => isPlausiblePace(r.avgPaceSecPerMi, r.distanceMi));
+    const avgPace = withPace.length
+      ? withPace.reduce((s, r) => s + r.avgPaceSecPerMi * r.distanceMi, 0) / withPace.reduce((s, r) => s + r.distanceMi, 0)
+      : null;
+    document.getElementById("stat-pace").textContent = avgPace ? `${paceStr(avgPace)}/mi` : "--";
+    document.getElementById("stat-count").textContent = runningRuns.length;
 
-  const withPace = runningRuns.filter((r) => isPlausiblePace(r.avgPaceSecPerMi, r.distanceMi));
-  const avgPace = withPace.length
-    ? withPace.reduce((s, r) => s + r.avgPaceSecPerMi * r.distanceMi, 0) / withPace.reduce((s, r) => s + r.distanceMi, 0)
-    : null;
-  document.getElementById("stat-pace").textContent = avgPace ? `${paceStr(avgPace)}/mi` : "--";
-  document.getElementById("stat-count").textContent = runningRuns.length;
-  renderStatBreakdown();
+    const byType = {};
+    runs.filter((r) => new Date(r.date) >= weekAgo).forEach((r) => {
+      const t = r.activityType || "Run";
+      byType[t] = (byType[t] || 0) + (r.distanceMi || 0);
+    });
+    renderStatBreakdown(byType);
+  } else if (lastDashboardSummary && lastDashboardSummary.headerStats) {
+    const hs = lastDashboardSummary.headerStats;
+    document.getElementById("stat-week").textContent = `${(hs.weekMileageRun || 0).toFixed(1)} mi`;
+    document.getElementById("stat-pace").textContent = hs.avgPaceSecPerMiAllTime ? `${paceStr(hs.avgPaceSecPerMiAllTime)}/mi` : "--";
+    document.getElementById("stat-count").textContent = hs.runCountAllTime || 0;
+    renderStatBreakdown(hs.weeklyBreakdown || {});
+  }
+  // else: neither source ready yet — leave the "--" placeholders already in the DOM.
 }
 
 // Global, ambient — kept visible on every tab (unlike the stat-strip, which moved into
@@ -405,7 +432,11 @@ function renderRaceCountdown() {
 // are all special-cased in dispatchCurrentTab() instead, same pattern map/settings/chat
 // already used before this refactor.
 function render() {
-  document.getElementById("empty-state").style.display = runs.length === 0 ? "block" : "none";
+  // Only assert "no activities" once /api/runs has actually resolved — before that,
+  // `runs` is just its initial empty value, not evidence of a real empty account (this
+  // used to flash a false "No activities yet" on every load, since loadRestingHR()'s
+  // much smaller /api/config fetch resolves first and used to call render() unconditionally).
+  document.getElementById("empty-state").style.display = (runsLoaded && runs.length === 0) ? "block" : "none";
   if (currentTab === "runs") renderRunsTab();
   else if (currentTab === "insights") renderInsightsTab();
 }
@@ -1983,6 +2014,8 @@ async function renderHomeTab() {
   renderHomeGoalsSection();
 
   const dashboard = await fetch("/api/dashboard/summary").then((r) => r.json()).catch(() => null);
+  lastDashboardSummary = dashboard;
+  updateHeaderStats(); // refresh with real (if runsLoaded) or now-available approximate numbers
   const homeDashboardEl = document.getElementById("home-dashboard");
   homeDashboardEl.innerHTML = dashboard ? renderDashboardCards(dashboard) : "";
   wireNavCards(homeDashboardEl);
@@ -2655,16 +2688,21 @@ async function renderChatTab() {
 }
 
 // ---------- Init ----------
-loadRuns();
+// Dispatch immediately, before any fetch resolves — Home (the default tab) doesn't need
+// to wait on anything: its goal cards/stat-strip/dashboard/wellness sections all degrade
+// gracefully to placeholders or cheap approximations (see renderHomeTab(), updateHeaderStats())
+// until their real data arrives. Only /api/runs is genuinely large (several MB of splits/
+// weather/route data for every run) — nothing about the first paint should wait on it.
+dispatchCurrentTab();
+loadRuns(true); // true: this is the initial load — see loadRuns()'s own comment for why
 loadGoals().then(() => {
   renderRaceCountdown();
-  // Home tab already rendered once from loadRuns()'s own completion (using whatever
-  // `goals` held at that moment, possibly still empty if this fetch was slower) — patch
-  // in the now-current goals instead of a full dispatchCurrentTab() re-render, which
-  // would also redundantly re-fetch /api/dashboard/summary and /api/wellness. Goals tab
-  // has no such partial-update path (and no extra network cost from re-rendering it —
-  // it's driven entirely by the already-fetched `goals` array), so it still gets a full,
-  // cheap dispatch.
+  // Home tab already rendered once (immediately, above) using whatever `goals` held at
+  // that moment (likely still empty, since this fetch resolves later) — patch in the
+  // now-current goals instead of a full dispatchCurrentTab() re-render, which would also
+  // redundantly re-fetch /api/dashboard/summary and /api/wellness. Goals tab has no such
+  // partial-update path (and no extra network cost from re-rendering it — it's driven
+  // entirely by the already-fetched `goals` array), so it still gets a full, cheap dispatch.
   if (currentTab === "home") renderHomeGoalsSection();
   else if (currentTab === "goals") dispatchCurrentTab();
 });

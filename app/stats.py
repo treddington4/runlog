@@ -304,6 +304,33 @@ def days_since_last_run(db, activity_type: str = "Run", user_id: str = DEFAULT_U
     return {"days": days, "date": latest.date, "runId": latest.id, "name": latest.name}
 
 
+def _header_stats(db, user_id: str = DEFAULT_USER_ID) -> dict:
+    """Cheap approximation of the Home tab's stat-strip (This week / avg pace / runs
+    logged) and weekly per-activity-type breakdown — computed from the DB directly,
+    not from the several-MB /api/runs payload (full splits/weather/route data for
+    every run) app.js normally derives these from. Included in dashboard_summary()
+    (small, already cached in sync_meta) so the Home tab's first paint doesn't have to
+    wait on that fetch. Approximate for one specific, documented reason (see module
+    docstring): no client-side mergeDuplicateRuns() dedup, so counts/totals here can be
+    off by however many Strava+Garmin duplicate pairs exist, until the real /api/runs
+    data lands and app.js's updateHeaderStats() corrects it with the exact numbers."""
+    week_ago = (local_today() - timedelta(days=7)).isoformat()
+    all_time = run_summary(db, activity_type="Run", user_id=user_id)
+    this_week = run_summary(db, start_date=week_ago, activity_type="Run", user_id=user_id)
+    week_runs = [r for r in _all_runs(db, activity_type=None, user_id=user_id) if r.date and r.date >= week_ago]
+    breakdown = {}
+    for r in week_runs:
+        t = r.activity_type or "Run"
+        breakdown[t] = round(breakdown.get(t, 0) + (r.distance_mi or 0), 2)
+    return {
+        "totalActivityCount": len(_all_runs(db, activity_type=None, user_id=user_id)),
+        "runCountAllTime": all_time["runCount"],
+        "avgPaceSecPerMiAllTime": all_time["avgPaceSecPerMi"],
+        "weekMileageRun": this_week["totalDistanceMi"],
+        "weeklyBreakdown": breakdown,
+    }
+
+
 def dashboard_summary(db, user_id: str = DEFAULT_USER_ID) -> dict:
     """Everything the Home tab's stat-card grid needs, in one call. Moved here from
     main.py's dashboard_summary endpoint so the cached and live-fallback paths (see
@@ -318,6 +345,7 @@ def dashboard_summary(db, user_id: str = DEFAULT_USER_ID) -> dict:
         "paceTrend": rolling_pace_trend(db, days=90, user_id=user_id),
         "personalRecords": personal_records(db, user_id=user_id),
         "monthlyMileage": monthly_mileage(db, months=2, user_id=user_id),
+        "headerStats": _header_stats(db, user_id=user_id),
     }
 
 

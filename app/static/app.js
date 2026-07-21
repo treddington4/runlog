@@ -355,19 +355,32 @@ const ACTIVITY_VERBS = {
   Yoga: "Did yoga", Elliptical: "Did elliptical",
 };
 
+// byType: { [activityType]: { distanceMi, movingTimeSec } }. A non-distance activity
+// (strength training, a generic gym Workout, ...) always has distanceMi === 0 — showing
+// that as "0.0 mi" is technically correct but meaningless, so those types are shown by
+// duration instead (isDistanceActivity(), same run/ride/walk/hike/swim family list the
+// edit modal already uses to decide whether weather/distance fields apply at all).
 function renderStatBreakdown(byType) {
   const el = document.getElementById("stat-breakdown");
-  const types = Object.keys(byType);
+  const entries = Object.entries(byType);
   // Only worth a separate line when something other than running happened this week —
   // otherwise it'd just repeat the "This week" stat card above.
-  if (types.length <= 1) {
+  if (entries.length <= 1) {
     el.textContent = "";
     return;
   }
-  el.textContent = Object.entries(byType)
-    .sort((a, b) => b[1] - a[1])
-    .map(([t, mi]) => `${ACTIVITY_VERBS[t] || t} ${mi.toFixed(1)} mi`)
-    .join(" · ");
+  // Distance and duration aren't comparable magnitudes (a 45min workout's raw seconds
+  // would otherwise always outrank a few miles of running) — sort within each group by
+  // its own unit, distance-based entries first since that's this line's primary purpose.
+  const distanceParts = entries
+    .filter(([t]) => isDistanceActivity(t))
+    .sort((a, b) => b[1].distanceMi - a[1].distanceMi)
+    .map(([t, v]) => `${ACTIVITY_VERBS[t] || t} ${v.distanceMi.toFixed(1)} mi`);
+  const timeParts = entries
+    .filter(([t]) => !isDistanceActivity(t))
+    .sort((a, b) => b[1].movingTimeSec - a[1].movingTimeSec)
+    .map(([t, v]) => `${ACTIVITY_VERBS[t] || t} ${timeStr(v.movingTimeSec)}`);
+  el.textContent = [...distanceParts, ...timeParts].join(" · ");
 }
 
 // Most recent /api/dashboard/summary response — small and already server-cached (see
@@ -401,7 +414,9 @@ function updateHeaderStats() {
     const byType = {};
     runs.filter((r) => new Date(r.date) >= weekAgo).forEach((r) => {
       const t = r.activityType || "Run";
-      byType[t] = (byType[t] || 0) + (r.distanceMi || 0);
+      if (!byType[t]) byType[t] = { distanceMi: 0, movingTimeSec: 0 };
+      byType[t].distanceMi += r.distanceMi || 0;
+      byType[t].movingTimeSec += r.movingTimeSec || 0;
     });
     renderStatBreakdown(byType);
   } else if (lastDashboardSummary && lastDashboardSummary.headerStats) {

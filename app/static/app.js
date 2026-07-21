@@ -2412,7 +2412,6 @@ async function renderWorkoutsTab() {
   el.innerHTML = `
     <div class="btn-row" style="justify-content:flex-start;margin:16px 0"><button class="btn" id="new-workout-btn">+ New Workout</button></div>
     <div id="workouts-list"><div class="empty-chart">Loading…</div></div>
-    <div id="recovery-list"></div>
   `;
   document.getElementById("new-workout-btn").onclick = () => openWorkoutModal(null);
 
@@ -2421,21 +2420,36 @@ async function renderWorkoutsTab() {
     fetch("/api/recovery-sessions").then((r) => r.json()).catch(() => []),
     fetch("/api/recovery-tools").then((r) => r.json()).catch(() => []),
   ]);
+  const toolsById = Object.fromEntries(recoveryTools.map((t) => [t.id, t]));
+
+  // Single date-ordered list — workouts and recovery sessions used to be two separate
+  // sections (each with their own Upcoming/Past), which meant a recovery session
+  // scheduled between two workouts didn't show where it actually falls chronologically.
+  // Tag each item with its kind so the right card renderer/action-wiring can be picked
+  // after merging; both API responses are already date-sorted, but re-sort anyway
+  // once interleaved since concatenation alone doesn't merge two sorted lists.
+  const items = [
+    ...workouts.map((w) => ({ ...w, _kind: "workout" })),
+    ...recoverySessions.map((s) => ({ ...s, _kind: "recovery" })),
+  ].sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
+  const cardHTML = (item) => item._kind === "workout" ? workoutCardHTML(item) : recoverySessionCardHTML(item, toolsById);
+
   // Local calendar date, not toISOString()'s UTC date — near midnight UTC (e.g. evening
-  // in US timezones) the two disagree, which would otherwise hide/show today's workout
-  // a few hours early or late.
+  // in US timezones) the two disagree, which would otherwise hide/show today's item a
+  // few hours early or late.
   const today = toDateInputValue(todayMidnight());
-  const upcoming = workouts.filter((w) => w.status === "planned" && w.scheduledDate >= today);
-  // Completed workouts older than today clear from view once done — the run itself
-  // still lives on in the Runs tab; this just stops the Past list growing forever.
-  const past = workouts.filter(
-    (w) => !(w.status === "planned" && w.scheduledDate >= today) && !(w.status === "completed" && w.scheduledDate < today)
+  const upcoming = items.filter((i) => i.status === "planned" && i.scheduledDate >= today);
+  // Completed items older than today clear from view once done — the underlying Run
+  // (for a workout) still lives on in the Runs tab; this just stops the Past list
+  // growing forever.
+  const past = items.filter(
+    (i) => !(i.status === "planned" && i.scheduledDate >= today) && !(i.status === "completed" && i.scheduledDate < today)
   );
 
   document.getElementById("workouts-list").innerHTML = `
     <div class="chart-title">Upcoming</div>
-    <div style="margin-top:10px">${upcoming.length ? upcoming.map(workoutCardHTML).join("") : `<div class="empty-chart">Nothing scheduled — ask the coach in Chat, or add one here.</div>`}</div>
-    ${past.length ? `<div class="chart-title" style="margin-top:20px">Past</div><div style="margin-top:10px">${past.map(workoutCardHTML).join("")}</div>` : ""}
+    <div style="margin-top:10px">${upcoming.length ? upcoming.map(cardHTML).join("") : `<div class="empty-chart">Nothing scheduled — ask the coach in Chat, or add one here.</div>`}</div>
+    ${past.length ? `<div class="chart-title" style="margin-top:20px">Past</div><div style="margin-top:10px">${past.map(cardHTML).join("")}</div>` : ""}
   `;
 
   document.querySelectorAll("[data-workout-edit]").forEach((btn) => {
@@ -2447,43 +2461,28 @@ async function renderWorkoutsTab() {
       renderWorkoutsTab();
     };
   });
-
-  // Only shown once the user actually has a recovery tool on file — no empty section
-  // for everyone else, same convention as Home's Wellness section.
-  if (recoveryTools.length) {
-    const toolsById = Object.fromEntries(recoveryTools.map((t) => [t.id, t]));
-    const recUpcoming = recoverySessions.filter((s) => s.status === "planned" && s.scheduledDate >= today);
-    const recPast = recoverySessions.filter(
-      (s) => !(s.status === "planned" && s.scheduledDate >= today) && !(s.status === "completed" && s.scheduledDate < today)
-    );
-    document.getElementById("recovery-list").innerHTML = `
-      <div class="chart-title" style="margin-top:20px">Recovery</div>
-      <div style="margin-top:10px">${recUpcoming.length ? recUpcoming.map((s) => recoverySessionCardHTML(s, toolsById)).join("") : `<div class="empty-chart">Nothing scheduled — ask the coach in Chat about a recovery session.</div>`}</div>
-      ${recPast.length ? `<div class="chart-title" style="margin-top:20px">Past</div><div style="margin-top:10px">${recPast.map((s) => recoverySessionCardHTML(s, toolsById)).join("")}</div>` : ""}
-    `;
-    document.querySelectorAll("[data-recovery-complete]").forEach((btn) => {
-      btn.onclick = async () => {
-        await fetch(`/api/recovery-sessions/${btn.dataset.recoveryComplete}`, {
-          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "completed" }),
-        });
-        renderWorkoutsTab();
-      };
-    });
-    document.querySelectorAll("[data-recovery-skip]").forEach((btn) => {
-      btn.onclick = async () => {
-        await fetch(`/api/recovery-sessions/${btn.dataset.recoverySkip}`, {
-          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "skipped" }),
-        });
-        renderWorkoutsTab();
-      };
-    });
-    document.querySelectorAll("[data-recovery-delete]").forEach((btn) => {
-      btn.onclick = async () => {
-        await fetch(`/api/recovery-sessions/${btn.dataset.recoveryDelete}`, { method: "DELETE" });
-        renderWorkoutsTab();
-      };
-    });
-  }
+  document.querySelectorAll("[data-recovery-complete]").forEach((btn) => {
+    btn.onclick = async () => {
+      await fetch(`/api/recovery-sessions/${btn.dataset.recoveryComplete}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "completed" }),
+      });
+      renderWorkoutsTab();
+    };
+  });
+  document.querySelectorAll("[data-recovery-skip]").forEach((btn) => {
+    btn.onclick = async () => {
+      await fetch(`/api/recovery-sessions/${btn.dataset.recoverySkip}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "skipped" }),
+      });
+      renderWorkoutsTab();
+    };
+  });
+  document.querySelectorAll("[data-recovery-delete]").forEach((btn) => {
+    btn.onclick = async () => {
+      await fetch(`/api/recovery-sessions/${btn.dataset.recoveryDelete}`, { method: "DELETE" });
+      renderWorkoutsTab();
+    };
+  });
 }
 
 function openWorkoutModal(workout) {

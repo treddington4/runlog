@@ -65,16 +65,25 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
       through `/api/dashboard/summary`
 - [x] Commit: "Phase 0.1: web/ scaffold, design tokens, API client"
 
-  **Environment note for future sections**: this machine's working copy
-  (`Y:\runlog`) is an SMB share (`\\DXP2800-C0A1\docker`), not a local disk —
-  confirmed via `net use Y:`. Two known SMB-specific issues, both fixed here:
-  (1) `npm install`/`rm -rf node_modules` can be extremely slow (~15min for a
-  ~60-package install) and bulk deletes can fail with `ENOTEMPTY` from
-  network-latency races — avoid running concurrent `npm install`s in the same
-  `web/` directory; (2) Vite's dev server crashes on startup with
-  `Error: UNKNOWN: unknown error, watch` because native `fs.watch()` isn't
-  supported over network shares — fixed via `server.watch.usePolling` in
-  `vite.config.ts`, needed by every later section that runs `npm run dev`.
+  **Environment note for future sections**: on a network-mounted working copy
+  (confirm with your platform's mount-info command — e.g. `net use` on
+  Windows), avoid running `npm`/Vite directly against that mount: bulk
+  `node_modules` operations are extremely slow and can fail outright
+  (`ENOTEMPTY` on deletes; Vite's dev server can crash on startup with
+  `Error: UNKNOWN: unknown error, watch`, since native `fs.watch()` isn't
+  supported over network filesystems). The real fix isn't a slower-but-working
+  code tweak — if your network mount points at a real machine you can reach
+  (a NAS, a remote dev box), run `npm`/`vite` **there**, against the local
+  path the mount resolves to, ideally inside a throwaway container pinned to
+  a modern Node (this repo's target: `node:22-slim`, matching Phase 0.10's
+  eventual Dockerfile stage) so the host's own Node version doesn't matter.
+  Confirmed in this repo: the same `npm install` that took ~15min over the
+  mount took ~9s run this way, and Vite's dev-server startup dropped from
+  ~28s to ~480ms with native (non-polling) file-watching working correctly.
+  `server.watch.usePolling` in `vite.config.ts` is kept only as a defensive
+  fallback for whoever runs `npm run dev` directly over a network mount
+  anyway — see the gitignored `.RUNBOOK.md` for this dev environment's exact
+  commands.
 
 ### 0.2 App shell
 - [ ] Persistent left sidebar (desktop ≥900px) / bottom tab bar (mobile): Home, Goals,

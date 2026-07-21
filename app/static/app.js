@@ -2238,9 +2238,16 @@ async function renderWorkoutsTab() {
   document.getElementById("new-workout-btn").onclick = () => openWorkoutModal(null);
 
   const workouts = await fetch("/api/workouts").then((r) => r.json()).catch(() => []);
-  const today = new Date().toISOString().slice(0, 10);
+  // Local calendar date, not toISOString()'s UTC date — near midnight UTC (e.g. evening
+  // in US timezones) the two disagree, which would otherwise hide/show today's workout
+  // a few hours early or late.
+  const today = toDateInputValue(todayMidnight());
   const upcoming = workouts.filter((w) => w.status === "planned" && w.scheduledDate >= today);
-  const past = workouts.filter((w) => !(w.status === "planned" && w.scheduledDate >= today));
+  // Completed workouts older than today clear from view once done — the run itself
+  // still lives on in the Runs tab; this just stops the Past list growing forever.
+  const past = workouts.filter(
+    (w) => !(w.status === "planned" && w.scheduledDate >= today) && !(w.status === "completed" && w.scheduledDate < today)
+  );
 
   document.getElementById("workouts-list").innerHTML = `
     <div class="chart-title">Upcoming</div>

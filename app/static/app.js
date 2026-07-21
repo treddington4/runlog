@@ -1590,7 +1590,7 @@ async function renderSettingsTab() {
       <div class="settings-title">About</div>
       <div class="settings-row"><span class="settings-label"></span><span class="settings-value" style="color:var(--faint);font-weight:400;text-align:right">HALE — HALE's Adaptive Life Engine — is free and open source. Found a bug, want a feature, or just want to support the project?</span></div>
       <div class="btn-row" style="justify-content:flex-start;margin-top:10px">
-        <a class="btn btn-ghost" style="text-decoration:none;display:inline-block" href="https://github.com/treddington4/runlog" target="_blank" rel="noopener noreferrer">Contribute / Donate on GitHub</a>
+        <a class="btn btn-ghost" style="text-decoration:none;display:inline-block" href="https://github.com/treddington4/hale" target="_blank" rel="noopener noreferrer">Contribute / Donate on GitHub</a>
       </div>
     </div>
   `;

@@ -217,7 +217,11 @@ function mergeDuplicateRuns(rawRuns) {
 }
 
 async function loadRuns(isInitialLoad = false) {
-  const res = await fetch("/api/runs");
+  // Explicit all=true: /api/runs defaults to a 90-day window as of the Phase 0.5
+  // backend change (added for the new React frontend's Activities tab) — this
+  // legacy app was never updated to opt into that windowing and needs full
+  // history for Map/Insights/the global `runs` array to work correctly.
+  const res = await fetch("/api/runs?all=true");
   const raw = await res.json();
   runs = mergeDuplicateRuns(raw);
   runsLoaded = true;

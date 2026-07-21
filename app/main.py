@@ -159,34 +159,83 @@ def strava_status():
     return {"connected": token is not None}
 
 
-# ---------- Sync ----------
-@app.post("/api/sync/strava")
-def manual_sync_strava():
-    set_sync_meta("strava_last_error", "")  # clear any stale error the moment a new attempt starts, not just on success
-    try:
-        n = strava.sync_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT)
-        _record_sync("strava", count=n)
-        return {"synced": n}
-    except Exception as e:
-        _record_sync("strava", error=str(e))
-        raise HTTPException(400, str(e))
+# ---------- Sync ("Sync Now" — runs as a background job with live status, same shape
+# as backlog sync below, since a Garmin quick sync alone (login + wellness + adaptive
+# plan + per-activity detail fetches) can genuinely take long enough that a blocking
+# request with a static "Syncing…" label isn't good enough feedback) ----------
+_QUICK_SYNC_LOG_LIMIT = 50
+_quick_sync_lock = threading.Lock()
+_quick_sync_jobs = {
+    "strava": {"status": "idle", "count": 0, "log": [], "startedAt": None, "finishedAt": None, "error": None},
+    "garmin": {"status": "idle", "count": 0, "log": [], "startedAt": None, "finishedAt": None, "error": None},
+}
 
 
-@app.post("/api/sync/garmin")
-def manual_sync_garmin():
-    import garmin_sync
-    set_sync_meta("garmin_last_error", "")  # clear any stale error the moment a new attempt starts, not just on success
+def _quick_sync_progress(source: str, msg: str, count: int = None):
+    with _quick_sync_lock:
+        job = _quick_sync_jobs[source]
+        job["log"].append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
+        job["log"] = job["log"][-_QUICK_SYNC_LOG_LIMIT:]
+        if count is not None:
+            job["count"] = count
+
+
+def _run_quick_sync(source: str):
     try:
-        n = garmin_sync.sync_garmin_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT)
-        _record_sync("garmin", count=n)
-        return {"synced": n}
+        cb = lambda msg, count=None: _quick_sync_progress(source, msg, count)
+        if source == "strava":
+            n = strava.sync_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT, progress_cb=cb)
+        else:
+            import garmin_sync
+            n = garmin_sync.sync_garmin_activities(DEFAULT_USER_ID, limit=SYNC_LIMIT, progress_cb=cb)
+        with _quick_sync_lock:
+            job = _quick_sync_jobs[source]
+            job["status"] = "done"
+            job["count"] = n
+            job["finishedAt"] = datetime.now(timezone.utc).isoformat()
+        _record_sync(source, count=n)
+        _quick_sync_progress(source, f"Done — {n} runs upserted")
     except Exception as e:
         msg = str(e)
+        with _quick_sync_lock:
+            job = _quick_sync_jobs[source]
+            job["status"] = "error"
+            job["error"] = msg
+            job["finishedAt"] = datetime.now(timezone.utc).isoformat()
         # A rate-limit error mid-sync still carries real progress (see
         # GarminMidSyncRateLimitError.synced_count) — record it as a partial success,
         # not just an error, so "Last synced" doesn't misleadingly say "Never".
-        _record_sync("garmin", count=getattr(e, "synced_count", None), error=msg)
-        raise HTTPException(400, msg)
+        _record_sync(source, count=getattr(e, "synced_count", None), error=msg)
+        _quick_sync_progress(source, f"Error: {msg}")
+
+
+@app.post("/api/sync/{source}")
+def manual_sync(source: str):
+    if source not in ("strava", "garmin"):
+        raise HTTPException(404, "Unknown source")
+    if source == "strava" and not strava.get_valid_access_token(DEFAULT_USER_ID):
+        raise HTTPException(400, "Not authenticated with Strava — visit /auth/strava/login first")
+    if source == "garmin" and not _has_credential(DEFAULT_USER_ID, "garmin"):
+        raise HTTPException(400, "Add your Garmin credentials in Settings → Connections to use this")
+
+    with _quick_sync_lock:
+        job = _quick_sync_jobs[source]
+        if job["status"] == "running":
+            raise HTTPException(409, "Sync already running")
+        job.update({"status": "running", "count": 0, "log": [], "startedAt": datetime.now(timezone.utc).isoformat(),
+                    "finishedAt": None, "error": None})
+
+    set_sync_meta(f"{source}_last_error", "")  # clear any stale error the moment a new attempt starts, not just on success
+    threading.Thread(target=_run_quick_sync, args=(source,), daemon=True).start()
+    return {"status": "started"}
+
+
+@app.get("/api/sync/{source}/status")
+def quick_sync_status(source: str):
+    if source not in ("strava", "garmin"):
+        raise HTTPException(404, "Unknown source")
+    with _quick_sync_lock:
+        return dict(_quick_sync_jobs[source])
 
 
 @app.post("/api/garmin/import")

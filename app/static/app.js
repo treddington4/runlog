@@ -1267,6 +1267,7 @@ function tempScatter(canvasId, data, label, color, unit, tickFmt, reverse = fals
 
 // ---------- Settings ----------
 const backlogPollTimers = { strava: null, garmin: null };
+const syncPollTimers = { strava: null, garmin: null };
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -1338,6 +1339,65 @@ async function checkBacklogOnce(source) {
   }
 }
 
+// Sync Now's live status — same job/poll shape as backlog sync above (see that
+// section's comments for the "why one-time check, not unconditional polling" reasoning,
+// which applies identically here to avoid the same flashing-loop class of bug).
+function stopSyncPolling(source) {
+  if (syncPollTimers[source]) {
+    clearTimeout(syncPollTimers[source]);
+    syncPollTimers[source] = null;
+  }
+}
+
+function renderSyncPanel(source, job) {
+  const panel = document.getElementById(`sync-panel-${source}`);
+  const btn = document.getElementById(`settings-${source}-sync-btn`);
+  if (!panel || !btn) return;
+
+  const logHtml = job.log.length
+    ? `<pre class="backlog-log">${job.log.map(escapeHtml).join("\n")}</pre>` : "";
+
+  if (job.status === "running") {
+    btn.textContent = "Syncing…";
+    btn.disabled = true;
+    panel.style.display = "block";
+    panel.innerHTML = `<div class="backlog-summary">${job.count} run${job.count === 1 ? "" : "s"} synced so far…</div>${logHtml}`;
+  } else {
+    btn.textContent = "Sync Now";
+    btn.disabled = false;
+    if (job.status === "error") {
+      panel.style.display = "block";
+      panel.innerHTML = `<div class="backlog-summary" style="color:var(--hot)">Failed: ${escapeHtml(job.error || "unknown error")}</div>${logHtml}`;
+    } else {
+      panel.style.display = "none";
+      panel.innerHTML = "";
+    }
+  }
+  const logEl = panel.querySelector(".backlog-log");
+  if (logEl) logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function pollSyncStatus(source, { reloadOnFinish } = {}) {
+  const res = await fetch(`/api/sync/${source}/status`);
+  const job = await res.json();
+  renderSyncPanel(source, job);
+  if (job.status === "running") {
+    syncPollTimers[source] = setTimeout(() => pollSyncStatus(source, { reloadOnFinish }), 1000);
+  } else {
+    stopSyncPolling(source);
+    if (reloadOnFinish) await loadRuns();
+  }
+}
+
+async function checkSyncOnce(source) {
+  const res = await fetch(`/api/sync/${source}/status`);
+  const job = await res.json();
+  renderSyncPanel(source, job);
+  if (job.status === "running") {
+    pollSyncStatus(source, { reloadOnFinish: true });
+  }
+}
+
 function wireSyncNowButton(source) {
   const btn = document.getElementById(`settings-${source}-sync-btn`);
   if (!btn) return;
@@ -1345,15 +1405,24 @@ function wireSyncNowButton(source) {
     btn.textContent = "Syncing…";
     btn.disabled = true;
     try {
-      await fetch(`/api/sync/${source}`, { method: "POST" });
+      const res = await fetch(`/api/sync/${source}`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const panel = document.getElementById(`sync-panel-${source}`);
+        if (panel) {
+          panel.style.display = "block";
+          panel.innerHTML = `<div class="backlog-summary" style="color:var(--hot)">${escapeHtml(data.detail || "Failed to start sync")}</div>`;
+        }
+        btn.textContent = "Sync Now";
+        btn.disabled = false;
+        return;
+      }
     } catch (e) {
-      // network-level failures aside, server-side outcomes are persisted via sync_meta
-      // and will show up in the re-rendered panel below regardless.
+      btn.textContent = "Sync Now";
+      btn.disabled = false;
+      return;
     }
-    // loadRuns() already re-renders Settings via dispatchCurrentTab() when this tab is
-    // active — a second explicit renderSettingsTab() call here was a redundant full
-    // tab rebuild on every Sync Now click (visible as a jump/flicker).
-    await loadRuns();
+    pollSyncStatus(source, { reloadOnFinish: true });
   };
 }
 
@@ -1462,6 +1531,7 @@ async function renderSettingsTab() {
         <button class="btn" id="settings-strava-sync-btn" ${stravaStatus.connected ? "" : "disabled"}>Sync Now</button>
         <button class="btn btn-ghost" id="settings-strava-backlog-btn" ${stravaStatus.connected ? "" : "disabled"}>Run Backlog Sync</button>
       </div>
+      <div class="backlog-panel" id="sync-panel-strava" style="display:none"></div>
       <div class="backlog-panel" id="backlog-panel-strava" style="display:none"></div>
     </div>
     <div class="settings-section">
@@ -1480,6 +1550,7 @@ async function renderSettingsTab() {
         <button class="btn" id="settings-garmin-sync-btn" ${garminStatus.configured ? "" : "disabled"}>Sync Now</button>
         <button class="btn btn-ghost" id="settings-garmin-backlog-btn" ${garminStatus.configured ? "" : "disabled"}>Run Backlog Sync</button>
       </div>
+      <div class="backlog-panel" id="sync-panel-garmin" style="display:none"></div>
       <div class="backlog-panel" id="backlog-panel-garmin" style="display:none"></div>
     </div>
     <div class="settings-section">
@@ -1573,6 +1644,10 @@ async function renderSettingsTab() {
   stopBacklogPolling("garmin");
   checkBacklogOnce("strava");
   checkBacklogOnce("garmin");
+  stopSyncPolling("strava");
+  stopSyncPolling("garmin");
+  checkSyncOnce("strava");
+  checkSyncOnce("garmin");
 }
 
 // ---------- Map (heatmap of all synced GPS routes, groupable by location and metric) ----------

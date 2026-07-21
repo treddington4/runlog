@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom"
 import { useDashboardSummary } from "@/hooks/useDashboardSummary"
-import { useRuns } from "@/hooks/useRuns"
+import { useAllRuns } from "@/hooks/useRuns"
 import { useGoals } from "@/hooks/useGoals"
 import { useWellness } from "@/hooks/useWellness"
 import { isRunActivity, isDistanceActivity, activityFamily, totalWeightLbLifted, ACTIVITY_VERBS } from "@/lib/runs"
@@ -19,7 +19,7 @@ const WEEK_MS = 7 * 86400000
 // /api/runs payload resolves, its merged, exact numbers replace the approximation.
 function useStatStrip() {
   const dashboard = useDashboardSummary()
-  const runsQuery = useRuns()
+  const runsQuery = useAllRuns()
   const runs = runsQuery.data
 
   if (runs) {

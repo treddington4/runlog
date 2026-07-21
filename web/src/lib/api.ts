@@ -3,6 +3,7 @@
 // grows tab-by-tab as each port needs more endpoints, it does not attempt to
 // cover the whole API up front.
 
+export type { Run } from "./runs"
 import type { Run } from "./runs"
 
 export interface HeaderStats {
@@ -221,11 +222,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export interface Config {
+  syncIntervalHours: number
+  syncActivityLimit: number
+  restingHrBpm: number | null
+}
+
+export interface RunsQuery {
+  start?: string
+  end?: string
+  all?: boolean
+}
+
+export interface RunUpdate {
+  type?: string
+  tempF?: number | null
+  weatherCondition?: string | null
+  rpe?: number | null
+  isTreadmill?: boolean
+  notes?: string
+}
+
 export const api = {
   dashboardSummary: () => request<DashboardSummary>("/api/dashboard/summary"),
+  config: () => request<Config>("/api/config"),
   goals: () => request<Goal[]>("/api/goals"),
-  runs: () => request<Run[]>("/api/runs"),
+  runs: (query: RunsQuery = {}) => {
+    const params = new URLSearchParams()
+    if (query.all) params.set("all", "true")
+    if (query.start) params.set("start", query.start)
+    if (query.end) params.set("end", query.end)
+    const qs = params.toString()
+    return request<Run[]>(`/api/runs${qs ? `?${qs}` : ""}`)
+  },
   wellness: (days = 30) => request<WellnessDay[]>(`/api/wellness?days=${days}`),
+  updateRun: (id: string, body: RunUpdate) =>
+    request<Run>(`/api/runs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   workouts: () => request<Workout[]>("/api/workouts"),
   createWorkout: (body: WorkoutInput) =>

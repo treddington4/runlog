@@ -41,6 +41,16 @@ export function todayLocalDateString(): string {
   return `${y}-${m}-${day}`
 }
 
+export function tempColor(f: number | null | undefined): string {
+  if (f == null) return "#5A6270"
+  const clamp = Math.max(30, Math.min(100, f))
+  const pct = (clamp - 30) / 70
+  const cold = [76, 201, 240]
+  const hot = [255, 107, 53]
+  const c = cold.map((c0, i) => Math.round(c0 + (hot[i] - c0) * pct))
+  return `rgb(${c[0]},${c[1]},${c[2]})`
+}
+
 export function fmtGoalDate(d: string | null | undefined): string {
   if (!d) return ""
   return new Date(d + "T00:00:00").toLocaleDateString(undefined, {

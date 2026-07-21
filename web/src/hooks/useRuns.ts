@@ -1,17 +1,23 @@
 import { useQuery } from "@tanstack/react-query"
-import { api } from "@/lib/api"
+import { api, type RunsQuery } from "@/lib/api"
 import { mergeDuplicateRuns } from "@/lib/runs"
 
-// The full /api/runs payload (several MB — see CLAUDE.md) merged client-side, same
-// as the legacy app's loadRuns(). Slow to resolve on first load, which is why Home
-// (0.3) treats /api/dashboard/summary's headerStats as a fast-paint fallback until
-// this query settles — see HomePage.tsx. Phase 0.5 replaces the unbounded fetch with
-// a windowed one; this hook's shape (merged Run[]) stays the same either way.
-export function useRuns() {
+// Phase 0.5 windowed /api/runs (see main.py get_runs) — defaults to the last 90
+// days server-side; pass `all: true` for true all-time totals. Result is merged
+// client-side the same way regardless of range (see lib/runs.ts).
+export function useRuns(query: RunsQuery = {}) {
   return useQuery({
-    queryKey: ["runs"],
-    queryFn: api.runs,
+    queryKey: ["runs", query],
+    queryFn: () => api.runs(query),
     select: mergeDuplicateRuns,
     staleTime: 5 * 60_000,
   })
+}
+
+// Home's exact stat-strip numbers (see HomePage.tsx's useStatStrip) need true
+// all-time totals ("Avg pace (all)", all-time run count) — a windowed default
+// would silently understate them. Kept as its own hook (rather than a default
+// argument) so every call site states its intent explicitly.
+export function useAllRuns() {
+  return useRuns({ all: true })
 }

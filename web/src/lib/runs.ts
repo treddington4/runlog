@@ -24,9 +24,37 @@ export interface RunSplit {
   avgCadence: number | null
 }
 
-// Fields used by the Phase 0.3 (Home) port. Widened with an index signature so
-// fields not yet consumed (route, intervals, recovery, ...) pass through untyped
-// until the tabs that actually render them (0.5 Activities, 0.7 Map) type them.
+export type IntervalSegment = "warmup" | "work" | "recovery" | "cooldown"
+
+export interface IntervalRep {
+  durationSec: number | null
+  distanceMi: number | null
+  paceSecPerMi: number | null
+  elevGainFt: number | null
+  avgHR: number | null
+  maxHR: number | null
+  avgCadence: number | null
+  elapsedTimeSec: number | null
+  segment: IntervalSegment | string
+}
+
+export interface RecoveryRep {
+  repIndex: number
+  recoverySec: number | null
+}
+
+export interface RouteMetricPoint {
+  lat: number
+  lon: number
+  paceSecPerMi: number | null
+  hr: number | null
+  cadence: number | null
+  gradePct: number | null
+}
+
+// Fields used by the Phase 0.3 (Home) and 0.5 (Activities) ports. Widened with an
+// index signature so fields no tab consumes yet (0.7 Map's route rendering needs
+// nothing beyond `route`/`routeMetrics`, already typed here) still pass through.
 export interface Run {
   id: string
   source: "strava" | "garmin"
@@ -43,12 +71,40 @@ export interface Run {
   avgPaceSecPerMi: number | null
   isTreadmill: boolean
   tempF: number | null
+  weatherCondition: string | null
+  heatIndexF: number | null
+  wetBulbF: number | null
+  suggestedType: string | null
   type: string | null
+  rpe: number | null
+  notes: string | null
   exerciseSets: ExerciseSet[] | null
   splits: RunSplit[] | null
+  intervals: IntervalRep[]
+  recovery: RecoveryRep[]
+  route: [number, number][]
+  routeMetrics: RouteMetricPoint[]
+  verticalOscillationMm: number | null
+  groundContactTimeMs: number | null
+  verticalRatioPct: number | null
+  strideLengthM: number | null
+  avgPowerWatts: number | null
   mergedSources?: string[]
   mergedIds?: string[]
   [key: string]: unknown
+}
+
+export const RUN_TYPES = ["Easy", "Tempo", "Interval", "Long Run", "Recovery", "Hill", "Race"]
+export const STRENGTH_TYPES = ["Full Body", "Upper Body", "Lower Body", "Push", "Pull", "Legs", "Core", "Other"]
+
+export const TYPE_COLORS: Record<string, string> = {
+  Easy: "#5FD68A",
+  Tempo: "#FFC857",
+  Interval: "rgb(255,107,53)",
+  "Long Run": "rgb(76,201,240)",
+  Recovery: "#5A6270",
+  Hill: "#B98CE0",
+  Race: "#FF4D6D",
 }
 
 export function canonicalActivityType(t: string | null | undefined): string {

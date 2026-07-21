@@ -158,14 +158,42 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.4: Workouts tab ported"
 
 ### 0.5 Activities (Runs) port
-- [ ] Run cards (badges, mini-stats, weather, dynamics rows), expand with splits/
+- [x] Run cards (badges, mini-stats, weather, dynamics rows), expand with splits/
       intervals/inline map, edit modal (activity-family-aware fields — preserve
-      `isDistanceActivity` logic), filter bar (modes, type select, date nav)
-- [ ] While here: filter-driven fetching — `/api/runs` gains `start`/`end`/`limit`
-      params; default load = last 90 days; wider filters fetch on demand (kills the
-      7 MB initial payload; client merge/dedup logic ports as-is)
-- [ ] Verify: payload size before/after; screenshot; edit round-trip
-- [ ] Commit: "Phase 0.5: Activities tab ported + windowed /api/runs fetching"
+      `isDistanceActivity` logic), filter bar (modes, type select, date nav) —
+      `components/activities/`: `RunCard`, `SplitsTable`, `IntervalsTable`,
+      `ExerciseSetsTable`, `MiniMap` (Leaflet, one instance per expanded card,
+      cleans up on unmount/route-change), `EditRunDialog`, `FilterBar`; ported
+      `mergeDuplicateRuns`'s partner logic (GAP/`gapSecPerMi`+`minettiCost` in
+      `lib/gap.ts`, explicitly the documented client-side GAP duplicate per
+      CLAUDE.md), route-gap splitting (`lib/route.ts`), HR-floor computation
+      (`hooks/useHrFloor.ts`) faithfully; fixed one real legacy bug in passing —
+      badge alpha colors were built by string-concatenating a hex suffix onto
+      `TYPE_COLORS`, which silently produced invalid CSS for the `rgb(...)`
+      entries (Interval/Long Run) — `lib/color.ts`'s `withAlpha()` parses either
+      form properly instead of reproducing the same breakage
+- [x] While here: filter-driven fetching — `/api/runs` gains `start`/`end`/`all`
+      params (`main.py`); default load = last 90 days; `all=true` bypasses the
+      window for callers needing true all-time totals (Home's exact stat-strip,
+      `hooks/useRuns.ts`'s `useAllRuns()`) — wider Activities filters (6 Months/
+      Year/All) fetch on demand via TanStack Query's per-key caching, no explicit
+      pagination code needed; client merge/dedup logic (`lib/runs.ts`) unchanged
+- [x] Verify: payload size before/after; screenshot; edit round-trip — deployed
+      the backend change and confirmed via curl: default 148 runs vs `all=true`'s
+      524, explicit `start`/`end` correctly bounded; payload 7.24MB → 2.85MB (61%)
+      on the default view. Screenshotted the filter bar (all 8 modes, prev/next
+      nav, custom range, type select) and an expanded run card against real data
+      — numbers matched a direct API fetch exactly (splits, mini-stats, weather).
+      Separately verified the two less-common expand paths against real runs:
+      a strength session's `ExerciseSetsTable` (warmup badges, per-exercise set
+      grouping) and an interval run's `IntervalsTable` + mini-map. Did a real
+      edit (RPE + notes) via the actual dialog on a real run, confirmed via
+      `GET /api/runs`, then reverted it back to its original `null`/`null` via a
+      direct PATCH (this touches real synced data, unlike Workouts' disposable
+      test rows, so the round-trip had to restore state exactly rather than
+      delete). Console/pageerror-checked the route before screenshotting — no
+      errors.
+- [x] Commit: "Phase 0.5: Activities tab ported + windowed /api/runs fetching"
 
 ### 0.6 Insights port
 - [ ] All existing charts (weekly mileage, pace trend, HR, cadence, dynamics, steps,

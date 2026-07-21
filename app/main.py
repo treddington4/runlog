@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 from sqlalchemy import func
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
@@ -20,6 +20,7 @@ from models import (
 )
 import strava
 import stats
+from util import local_today
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL)
@@ -595,12 +596,27 @@ def _run_to_dict(r: Run):
     }
 
 
+DEFAULT_RUNS_WINDOW_DAYS = 90
+
+
 @app.get("/api/runs")
-def get_runs():
+def get_runs(start: str | None = None, end: str | None = None, all_time: bool = Query(False, alias="all")):
+    """Windowed by default (Phase 0.5 — this used to return every activity ever
+    synced unconditionally, a multi-MB payload on every page load). `all=true`
+    bypasses the window entirely — used by callers that need true all-time totals
+    (e.g. the Home tab's exact stat-strip numbers, see web/src/hooks/useRuns.ts)
+    rather than trying to guess a "big enough" default range for every caller."""
     db = SessionLocal()
     try:
-        runs = (db.query(Run).filter(owned_by(Run.user_id, DEFAULT_USER_ID))
-                .order_by(Run.date.desc()).all())
+        q = db.query(Run).filter(owned_by(Run.user_id, DEFAULT_USER_ID))
+        if not all_time:
+            if not start and not end:
+                start = (local_today() - timedelta(days=DEFAULT_RUNS_WINDOW_DAYS - 1)).isoformat()
+            if start:
+                q = q.filter(Run.date >= start)
+            if end:
+                q = q.filter(Run.date <= end)
+        runs = q.order_by(Run.date.desc()).all()
         return [_run_to_dict(r) for r in runs]
     finally:
         db.close()

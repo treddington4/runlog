@@ -448,13 +448,40 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 ## Phase 1 — Multi-tenant isolation & auth
 
 ### 1.1 daily_steps composite PK
-- [ ] Copy-table migration in `models.init_db()` (SQLite can't alter PKs): new table
-      PK `(user_id, date)`, backfill NULL user_id → `'default'`, swap, idempotent
-- [ ] Update every `db.get(DailySteps, date)` call site (garmin_sync, stats, coach,
-      main) to composite lookup
-- [ ] Verify: migration on a **copy** of the live DB; row counts identical; wellness
-      cards still render
-- [ ] Commit: "Phase 1.1: daily_steps composite PK migration"
+- [x] Copy-table migration in `models.init_db()` (SQLite can't alter PKs): new table
+      PK `(date, user_id)`, backfill NULL user_id → `'default'`, swap, idempotent —
+      `_migrate_daily_steps_composite_pk()` reflects the live table's exact column
+      set via `PRAGMA table_info` (so it carries any column added since by
+      `_migrate_add_missing_columns()`, which runs first in `init_db()`), copies
+      every row with `COALESCE(user_id, 'default')`, then drops/renames. Idempotent
+      via a `PRAGMA table_info` check for whether `user_id` is already part of the
+      primary key — true for both an already-migrated DB and a brand-new one
+      (`create_all()` already builds the composite-PK schema from scratch there).
+      `DailySteps.user_id` changed from `nullable=True` to `primary_key=True,
+      default=DEFAULT_USER_ID`
+- [x] Update every `db.get(DailySteps, date)` call site (garmin_sync, garmin_import,
+      models.py's `day_needs_wellness_sync`) to composite `(date, user_id)` lookup —
+      `stats.py`'s `DailySteps` queries use `.query().filter()`, not `.get()` by PK,
+      so they needed no change (already `owned_by()`-scoped). `day_needs_wellness_sync`
+      gained a `user_id` parameter, threaded from its one call site in
+      `garmin_sync.py`. No `coach.py` call site exists — that module doesn't touch
+      `DailySteps` at all
+- [x] Verify: migration on a **copy** of the live DB; row counts identical; wellness
+      cards still render — copied the live DB out of the running container
+      (`docker cp`), ran the actual `_migrate_daily_steps_composite_pk()` function
+      against the copy inside a throwaway container built from the real app image
+      (so real SQLAlchemy/dependencies, not a bare Python venv): 208 rows before
+      and after (no data loss), PK correctly `(date, user_id)`, zero NULL `user_id`
+      rows, and a second run confirmed idempotency (no further change). Deployed
+      for real via `docker compose up -d --build`; confirmed via a fresh `sqlite3`
+      read against the actual production DB (not just the copy) that the composite
+      PK and all 208 rows are present; `GET /api/wellness`/`GET /api/steps` both
+      still return correct real data post-migration. Did not force a live Garmin
+      sync to exercise the write path directly, since Garmin was mid-rate-limit-
+      cooldown at deploy time and forcing a sync would only have extended that
+      backoff — relied instead on the migration's data-preservation proof plus
+      direct review of every updated `.get()`/constructor call site
+- [x] Commit: "Phase 1.1: daily_steps composite PK migration"
 
 ### 1.2 Auth schema
 - [ ] `User.oidc_subject` (unique, nullable) — `users` already in `_MIGRATABLE_TABLES`

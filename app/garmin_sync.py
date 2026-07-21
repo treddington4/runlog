@@ -371,9 +371,8 @@ def _sync_daily_steps(client, user_id: str, days: int = 30) -> int:
             )
             if not date_str or steps is None:
                 continue
-            existing = db.get(DailySteps, date_str)
-            row = existing or DailySteps(date=date_str)
-            row.user_id = user_id
+            existing = db.get(DailySteps, (date_str, user_id))
+            row = existing or DailySteps(date=date_str, user_id=user_id)
             row.steps = int(steps)
             db.merge(row)
             count += 1
@@ -493,11 +492,11 @@ def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> i
         while cursor <= end:
             date_str = cursor.isoformat()
             if cursor >= volatile_start:
-                row = db.get(DailySteps, date_str)
+                row = db.get(DailySteps, (date_str, user_id))
                 last_synced = row.wellness_synced_at if row else None
                 if not last_synced or _seconds_since(last_synced) >= GARMIN_WELLNESS_RECHECK_MIN_SEC:
                     dates_to_sync.append(date_str)
-            elif day_needs_wellness_sync(db, date_str):
+            elif day_needs_wellness_sync(db, date_str, user_id):
                 dates_to_sync.append(date_str)
             cursor += timedelta(days=1)
     finally:
@@ -511,8 +510,7 @@ def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> i
 
         db = SessionLocal()
         try:
-            row = db.get(DailySteps, date_str) or DailySteps(date=date_str)
-            row.user_id = user_id
+            row = db.get(DailySteps, (date_str, user_id)) or DailySteps(date=date_str, user_id=user_id)
 
             try:
                 stats = client.get_stats(date_str) or {}

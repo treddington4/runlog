@@ -79,15 +79,15 @@ class Run(Base):
 class DailySteps(Base):
     """Garmin-only daily step count. Unlike Run rows (one per activity), this is one row
     per calendar date — a passive wellness metric, not tied to a synced activity.
-    KNOWN LIMITATION: user_id is a plain column here, not part of the primary key (still
-    just `date`) — safe today since there's only ever one real user, but two real users
-    syncing steps for the same calendar date would collide. Needs a proper composite-PK
-    migration (table recreation, not a simple ALTER TABLE) before real multi-user step
-    tracking works — not attempted in this pass, flagged in STATUS.md."""
+    Composite (date, user_id) primary key (Phase 1.1) — two real users syncing steps
+    for the same calendar date no longer collide. Migrated via a copy-table swap in
+    _migrate_daily_steps_composite_pk() below, since SQLite can't ALTER a primary key;
+    every pre-existing row's NULL user_id is backfilled to DEFAULT_USER_ID during that
+    migration, since a composite PK can't contain NULL."""
     __tablename__ = "daily_steps"
 
     date = Column(String, primary_key=True)  # YYYY-MM-DD
-    user_id = Column(String, nullable=True)
+    user_id = Column(String, primary_key=True, default=DEFAULT_USER_ID)
     steps = Column(Integer)
 
     # Wellness metrics (Garmin-only, one row per day) — resting_hr_bpm/vo2max come from
@@ -358,6 +358,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     Base.metadata.create_all(engine)
     _migrate_add_missing_columns()
+    _migrate_daily_steps_composite_pk()
     _backfill_detail_synced_at()
     _seed_default_user_and_credentials()
     _seed_marathon_goal()
@@ -391,6 +392,39 @@ def _migrate_add_missing_columns():
         conn.commit()
 
 
+def _migrate_daily_steps_composite_pk():
+    """SQLite can't ALTER a primary key, so upgrading daily_steps from its original
+    plain `date` PK to a composite (date, user_id) PK (Phase 1.1) requires a full
+    copy-table swap: build a new table with the target schema (reflected from the
+    live table via PRAGMA table_info, so it carries every column — including any
+    added since by _migrate_add_missing_columns(), which must run before this),
+    copy every row across while backfilling NULL user_id to DEFAULT_USER_ID (a
+    composite PK can't contain NULL), drop the old table, rename the new one into
+    place. Idempotent: checks whether user_id is already part of the primary key
+    and no-ops if so — true for both an already-migrated existing DB and a brand
+    new one (create_all() above already builds the composite-PK schema from
+    scratch for a fresh install, so this has nothing to do there either)."""
+    with engine.connect() as conn:
+        info = conn.exec_driver_sql("PRAGMA table_info(daily_steps)").fetchall()
+        pk_cols = {row[1] for row in info if row[5] > 0}
+        if "user_id" in pk_cols:
+            return
+
+        col_names = [row[1] for row in info]
+        col_ddl = ", ".join(f'"{row[1]}" {row[2]}' for row in info)
+        select_cols = ", ".join(
+            f"COALESCE(\"user_id\", '{DEFAULT_USER_ID}')" if name == "user_id" else f'"{name}"'
+            for name in col_names
+        )
+        insert_cols = ", ".join(f'"{c}"' for c in col_names)
+
+        conn.exec_driver_sql(f'CREATE TABLE daily_steps_new ({col_ddl}, PRIMARY KEY (date, user_id))')
+        conn.exec_driver_sql(f"INSERT INTO daily_steps_new ({insert_cols}) SELECT {select_cols} FROM daily_steps")
+        conn.exec_driver_sql("DROP TABLE daily_steps")
+        conn.exec_driver_sql("ALTER TABLE daily_steps_new RENAME TO daily_steps")
+        conn.commit()
+
+
 def _backfill_detail_synced_at():
     """One-time, idempotent: a Run row only ever gets db.merge()'d at the very end of
     a fully-successful _process_activity() — every earlier failure path (including
@@ -415,12 +449,12 @@ def run_needs_detail_sync(db, run_id: str) -> bool:
     return existing is None or not existing.detail_synced_at
 
 
-def day_needs_wellness_sync(db, date_str: str) -> bool:
+def day_needs_wellness_sync(db, date_str: str, user_id: str = DEFAULT_USER_ID) -> bool:
     """Same dedup principle as run_needs_detail_sync, applied to DailySteps' wellness
     columns (resting HR/VO2max/sleep) instead of activities — a settled day's row
     won't be re-fetched. Callers are responsible for the trailing "volatile window"
     exception (today's/yesterday's data can still change), same as _sync_daily_steps."""
-    existing = db.get(DailySteps, date_str)
+    existing = db.get(DailySteps, (date_str, user_id))
     return existing is None or not existing.wellness_synced_at
 
 

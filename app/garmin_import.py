@@ -284,9 +284,8 @@ def import_garmin_export(zip_bytes: bytes, user_id: str) -> dict:
             steps = _first(rec, _WELLNESS_STEPS_KEYS)
             if not date_str or steps is None:
                 continue
-            existing = db.get(DailySteps, date_str)
-            row = existing or DailySteps(date=date_str)
-            row.user_id = user_id
+            existing = db.get(DailySteps, (date_str, user_id))
+            row = existing or DailySteps(date=date_str, user_id=user_id)
             row.steps = int(steps)
             resting_hr = _first(rec, _WELLNESS_RESTING_HR_KEYS)
             if resting_hr is not None and row.resting_hr_bpm is None:

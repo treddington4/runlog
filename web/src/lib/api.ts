@@ -22,6 +22,26 @@ export interface DashboardSummary {
   headerStats: HeaderStats
 }
 
+export type GoalType = "race" | "consistency" | "distance_target"
+export type GoalStatus = "active" | "completed" | "abandoned"
+
+export interface Goal {
+  id: string
+  goalType: GoalType
+  name: string
+  status: GoalStatus
+  activityTypes: string[]
+  targetValue: number | null
+  targetUnit: string | null
+  targetDate: string | null
+  startDate: string | null
+  notes: string
+  priority: number
+  createdAt: string
+  completedAt: string | null
+  progress: { daysUntil?: number; [key: string]: unknown }
+}
+
 class ApiError extends Error {
   status: number
 
@@ -45,4 +65,5 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   dashboardSummary: () => request<DashboardSummary>("/api/dashboard/summary"),
+  goals: () => request<Goal[]>("/api/goals"),
 }

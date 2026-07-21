@@ -86,14 +86,27 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
   commands.
 
 ### 0.2 App shell
-- [ ] Persistent left sidebar (desktop ≥900px) / bottom tab bar (mobile): Home, Goals,
-      Activities, Insights, Map, Chat, Workouts, Settings
-- [ ] React Router routes per tab; HALE wordmark (white `HAL` + amber `E`) + tagline
-      "HALE's Adaptive Life Engine"; race-countdown chip in the shell header
-- [ ] Loading skeleton components + empty-state component (icon, message, CTA) —
-      reused by every tab port below
-- [ ] Verify: screenshot desktop + mobile viewports
-- [ ] Commit: "Phase 0.2: app shell — sidebar/bottom-tab nav, skeletons, empty states"
+- [x] Persistent left sidebar (desktop ≥900px) / bottom tab bar (mobile): Home, Goals,
+      Activities, Insights, Map, Chat, Workouts, Settings — `min-[900px]:` arbitrary
+      Tailwind breakpoint used for the exact 900px cutoff (`Shell.tsx`)
+- [x] React Router routes per tab; HALE wordmark (white `HAL` + amber `E`) + tagline
+      "HALE's Adaptive Life Engine"; race-countdown chip in the shell header —
+      `RaceCountdown.tsx` reads `daysUntil` from `/api/goals`' already-computed
+      `progress` field (`stats.goal_progress()`) rather than recomputing date math
+      client-side like the legacy `renderRaceCountdown()` did
+- [x] Loading skeleton components + empty-state component (icon, message, CTA) —
+      reused by every tab port below — `components/ui/skeleton.tsx` +
+      `components/ui/empty-state.tsx`; all 8 routes currently render
+      `PlaceholderPage` (thin `EmptyState` wrapper) pointing at the PLAN.md section
+      that ports them, swapped out route-by-route in 0.3–0.9
+- [x] Verify: screenshot desktop + mobile viewports — `tsc -b --noEmit` and `oxlint`
+      clean (same one expected `button.tsx` warning), `npm run build` succeeds,
+      screenshotted Home/Goals/Workouts routes at both viewports via the NAS-hosted
+      dev server (see `.RUNBOOK.md`): sidebar nav + active-route highlighting work
+      correctly on desktop, bottom tab bar (all 8 icons, not cramped) + top header
+      work correctly on mobile, race-countdown chip shows real data ("53 days to
+      Wedding") in both layouts
+- [x] Commit: "Phase 0.2: app shell — sidebar/bottom-tab nav, skeletons, empty states"
 
 ### 0.3 Home tab port
 - [ ] Stat strip (fast paint from `/api/dashboard/summary` headerStats, exact numbers

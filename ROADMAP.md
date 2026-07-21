@@ -8,10 +8,12 @@ migrations validated against a DB copy first).
 ## Naming
 
 The project has outgrown "RunLog" (running + cycling + strength + sleep + recovery +
-nutrition + vitals). **Decided: meliora** — Latin for "ever better," carrying the
-project's thesis of continuous self-betterment (the tagline "ever better" ships in the
-app header). In-app branding done; repo rename next (GitHub auto-redirects); local
-paths/container names migrate later at a convenient maintenance window.
+nutrition + vitals). **Decided: HALE** — a GNU-style recursive acronym, "HALE's
+Adaptive Life Engine," doubling as the old English word for healthy ("hale and
+hearty") and hiding HAL in the wordmark (white "HAL" + amber "E"). Ships with the
+expansion as the header tagline. An earlier candidate ("meliora") was briefly deployed
+before this decision. In-app branding done; repo rename next (GitHub auto-redirects);
+local paths/container names migrate later at a convenient maintenance window.
 
 ## Phase 0 — Frontend re-architecture (early, before complexity compounds)
 

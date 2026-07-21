@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-meliora (formerly RunLog; Latin "ever better"): a self-hosted fitness tracker. FastAPI backend, SQLite storage (via SQLAlchemy), vanilla-JS/Chart.js static frontend, no build step. Pulls activities from Strava (official OAuth API, primary) and optionally Garmin Connect (unofficial `garminconnect` library, secondary/manual-only), enriches them with historical weather, grade-adjusted pace, and a heuristic run-type/interval classifier, computed once at sync time and stored — not recomputed on read (except GAP, see Gotchas).
+HALE (formerly RunLog; recursive acronym "HALE's Adaptive Life Engine", also "hale" as in hale and hearty): a self-hosted fitness tracker. FastAPI backend, SQLite storage (via SQLAlchemy), vanilla-JS/Chart.js static frontend, no build step. Pulls activities from Strava (official OAuth API, primary) and optionally Garmin Connect (unofficial `garminconnect` library, secondary/manual-only), enriches them with historical weather, grade-adjusted pace, and a heuristic run-type/interval classifier, computed once at sync time and stored — not recomputed on read (except GAP, see Gotchas).
 
 ## Commands
 

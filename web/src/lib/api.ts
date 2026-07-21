@@ -99,6 +99,39 @@ export interface GeocodeResult {
   cached: boolean
 }
 
+export interface ToolCall {
+  tool: string
+  input: Record<string, unknown>
+}
+
+export interface ChartSpec {
+  chartType: "line" | "bar"
+  title: string
+  labels: string[]
+  datasets: { label: string; data: number[] }[]
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant"
+  content: string
+  toolCalls: ToolCall[] | null
+  charts: ChartSpec[] | null
+  createdAt?: string
+}
+
+export interface ChatStatus {
+  configured: boolean
+}
+
+export type CoachPersonality = "encouraging" | "normal" | "spicy" | "insulting"
+
+// Deliberately never throws — mirrors the legacy send() closure's distinction
+// between an HTTP error (server responded, has a `detail` message) and a
+// network/fetch failure (no response at all), which get different display text.
+export type ChatSendResult =
+  | { ok: true; reply: string; toolCalls: ToolCall[]; charts: ChartSpec[] }
+  | { ok: false; kind: "http" | "network"; message: string }
+
 export interface SleepStageSegment {
   stage: string
   start: string
@@ -280,6 +313,25 @@ export const api = {
   wellness: (days = 30) => request<WellnessDay[]>(`/api/wellness?days=${days}`),
   steps: (days = 30) => request<DailyStepsPoint[]>(`/api/steps?days=${days}`),
   geocode: (lat: number, lon: number) => request<GeocodeResult>(`/api/geocode?lat=${lat}&lon=${lon}`),
+
+  chatStatus: () => request<ChatStatus>("/api/chat/status"),
+  coachPersonality: () => request<{ personality: CoachPersonality }>("/api/coach/personality"),
+  chatHistory: () => request<ChatMessage[]>("/api/chat/history"),
+  resetChat: () => request<{ status: string }>("/api/chat/reset", { method: "POST" }),
+  sendChatMessage: async (message: string): Promise<ChatSendResult> => {
+    try {
+      const res = await fetch("/api/chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) return { ok: false, kind: "http", message: data.detail || "something went wrong" }
+      return { ok: true, reply: data.reply, toolCalls: data.toolCalls ?? [], charts: data.charts ?? [] }
+    } catch {
+      return { ok: false, kind: "network", message: "Network error — try again." }
+    }
+  },
   sleepStages: (date?: string) =>
     request<SleepStagesResponse>(`/api/wellness/sleep-stages${date ? `?date=${date}` : ""}`),
   updateRun: (id: string, body: RunUpdate) =>

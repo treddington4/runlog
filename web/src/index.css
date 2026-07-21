@@ -132,3 +132,49 @@
   color: var(--hale-text) !important;
   border-color: var(--hale-border) !important;
 }
+
+/* Chat assistant replies are rendered through a small hand-rolled Markdown
+   subset (lib/chatMarkdown.ts) rather than a full markdown library — these
+   rules are ported 1:1 from the legacy .chat-markdown block. */
+.chat-markdown p {
+  margin: 0 0 8px;
+}
+.chat-markdown p:last-child {
+  margin-bottom: 0;
+}
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0 0 8px 18px;
+  padding: 0;
+}
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  margin: 0 0 6px;
+}
+.chat-markdown code {
+  background: var(--hale-surface-2);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+.chat-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.chat-markdown table:last-child {
+  margin-bottom: 0;
+}
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid var(--hale-border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.chat-markdown th {
+  background: var(--hale-surface-2);
+  font-weight: 600;
+}

@@ -115,7 +115,10 @@ function latestWellnessValue(data: WellnessDay[], field: keyof WellnessDay) {
   return null
 }
 
-function DashboardCards() {
+// Exported for reuse by the Chat tab, which shows the same dashboard cards
+// above the thread (mirrors legacy's renderChatTab() calling the same
+// renderDashboardCards() helper Home uses).
+export function DashboardCards() {
   const { data: d } = useDashboardSummary()
   const navigate = useNavigate()
   if (!d) return <Skeleton className="h-40 w-full" />

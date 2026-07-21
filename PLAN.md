@@ -288,10 +288,58 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 0.7: Map tab ported"
 
 ### 0.8 Chat port
-- [ ] Thread UI, tool-call transparency chips, inline charts (`charts` payload),
-      persona-aware empty state, send flow with optimistic pending bubble
-- [ ] Verify: real message round-trip; history renders with charts
-- [ ] Commit: "Phase 0.8: Chat tab ported"
+- [x] Thread UI, tool-call transparency chips, inline charts (`charts` payload),
+      persona-aware empty state, send flow with optimistic pending bubble —
+      `lib/chatMarkdown.ts` ports the legacy hand-rolled Markdown subset
+      (`escapeHtml`/`inlineMd`/`splitTableRow`/`renderMarkdown`) line-for-line —
+      escapes everything first, only ever injects tags it generates itself, so
+      it's safe to render via `dangerouslySetInnerHTML` despite not being a real
+      markdown library; `components/chat/ChatBubble.tsx` (bubble shell + tool
+      trace + charts), `ChatChart.tsx` (own `useMemo`'d Chart.js config, reusing
+      0.6's `ChartCanvas`/`chartTheme` — no manual `chatCharts` array/
+      `destroyChatCharts()` needed, React's per-component effect cleanup gives
+      Insights-vs-Chat chart isolation for free), `ChatInputBar.tsx` (owns its
+      own input state so keystroke re-renders never touch the message list or
+      any mounted chart instance — the React-idiomatic replacement for legacy's
+      DOM-mutation approach, which never re-rendered the thread per keystroke
+      either, just via a different mechanism). `pages/ChatPage.tsx` reuses
+      `DashboardCards` exported from `HomePage.tsx` (matches legacy's
+      `renderChatTab()` reusing the same `renderDashboardCards()` Home uses).
+      New persona-aware empty state (`PERSONA_LABELS`, short UI glosses of
+      `coach.py`'s `PERSONA_PROMPTS` tones, fetched via new `api.coachPersonality()`)
+      — this is a deliberate addition beyond legacy parity per this section's own
+      checklist, since legacy has no empty state at all (blank thread pane until
+      the first message)
+- [x] While here: `api.sendChatMessage()` never throws — returns a discriminated
+      `ChatSendResult` (`{ok:true,...}` or `{ok:false, kind:"http"|"network", message}`)
+      so the page can reproduce legacy's exact two different error strings
+      (`Error: ${detail}` for a real HTTP error vs. the bare literal
+      `"Network error — try again."` for a fetch failure) without a try/catch
+      in the component
+- [x] Verify: real message round-trip; history renders with charts — `tsc -b
+      --noEmit` and `oxlint` clean (same one expected `button.tsx` warning),
+      `npm run build` succeeds. Screenshotted against live data (14 real
+      persisted messages, `insulting` persona active): collapse/expand toggle
+      works ("Show earlier (12)" / "Hide earlier"), markdown renders correctly
+      (bold, lists, dashes), tool-trace chip shows real bare tool names
+      (`get_scheduled_workouts, get_run_summary, get_training_load_trend,
+      get_health_history`). Caught and fixed a real bug during verification:
+      user-message bubbles showed literal `&#39;` instead of an apostrophe —
+      `ChatBubble` was calling `escapeHtml()` on plain JSX text children, but
+      React already escapes text nodes itself; `escapeHtml` is only correct for
+      the markdown branch, which builds a raw HTML string for
+      `dangerouslySetInnerHTML`. Removed the double-escaping, re-verified with a
+      screenshot showing the correct apostrophe. Did a real send round-trip
+      (not a mock): typed a message, clicked Send, confirmed the `POST
+      /api/chat/message` request/response over the network, and confirmed the
+      real reply rendered in the active `insulting` persona's tone, input
+      cleared and re-enabled correctly. Deliberately did **not** exercise the
+      "Clear conversation" button against this live data — unlike Workouts'
+      disposable test rows, resetting Chat destroys the entire real
+      conversation history irreversibly with no undo, so this path was verified
+      by code review (the handler is a two-line `resetChat()` + cache-clear)
+      rather than a live click
+- [x] Commit: "Phase 0.8: Chat tab ported"
 
 ### 0.9 Goals + Settings port
 - [ ] Goals CRUD + progress cards; Settings: connections, sync controls with live

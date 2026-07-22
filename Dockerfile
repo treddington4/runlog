@@ -16,9 +16,10 @@ WORKDIR /app
 COPY requirements.txt .
 COPY app/ ./app/
 
-# Added --no-build-isolation to stop pip from spinning up an isolated 
-# environment that trips over local workspace module resolution
-RUN pip install --no-cache-dir --no-build-isolation -r requirements.txt
+# Install setuptools/wheel globally so --no-build-isolation can use them, 
+# then install the requirements without build isolation
+RUN pip install --no-cache-dir setuptools wheel \
+    && pip install --no-cache-dir --no-build-isolation -r requirements.txt
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

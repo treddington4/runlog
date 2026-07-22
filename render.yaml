@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: hale-demo
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ENABLE_DEMO_LOGIN
+        value: "true"
+      - key: AUTH_MODE
+        value: "enabled"
+      - key: DEMO_CAPACITY
+        value: "5"
+      - key: DEMO_SESSION_HOURS
+        value: "2"
+      - key: SYNC_INTERVAL_HOURS
+        value: "6"
+      - key: DB_PATH
+        value: /data/runlog.db
+    disk:
+      name: hale-demo-data
+      mountPath: /data
+      sizeGB: 1

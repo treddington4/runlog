@@ -5,6 +5,13 @@ computes real per-mile splits, grade-adjusted pace, and interval structure, look
 historical weather for free via Open-Meteo, and auto-syncs on a schedule — no external
 API tokens burned per sync, and no LLM in the loop.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/treddington4/hale)
+
+Want to poke around before self-hosting? The button above spins up a live instance
+with a "Try the Demo" login — a throwaway account pre-populated with sample data,
+reset automatically after a couple hours, with no real Strava/Garmin/AI credentials
+ever touched.
+
 ## Setup
 
 ### 1. Create a Strava API app

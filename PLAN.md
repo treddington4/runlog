@@ -1219,6 +1219,14 @@ between requests, not just an always-on one.
       self-hosters and isn't the actual root cause — the two flagged-vs-not-flagged
       sets don't cleanly map to any single editable property of that file, so
       chasing SnapDeploy's exact heuristic isn't worth it)
+- [x] **Follow-up (done directly on a later SnapDeploy retry, merged back in — not
+      part of this session's own pass)**: swapped which file is which — the demo
+      vars now live at `.env.example` (the filename SnapDeploy's auto-detection
+      actually scans by convention) and the full self-host reference moved to
+      `.env.running.example`; `.env.demo.example` no longer exists. `README.md`'s
+      setup step (`cp .env.example .env`) and its demo-mode section link were both
+      stale after this rename — fixed to `cp .env.running.example .env` and a link
+      to the new `.env.example` respectively when merging this back into master
 - [x] Verify (mine): the GHCR workflow YAML parses correctly and its exact
       `docker build` step was independently validated many times over via
       `docker compose build` on the NAS throughout 11.1-11.3's verification. Every

@@ -19,7 +19,7 @@ Go to https://www.strava.com/settings/api and create an app.
 
 ### 2. Configure environment
 ```bash
-cp .env.example .env
+cp .env.running.example .env
 # edit .env and fill in STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET
 ```
 
@@ -100,7 +100,7 @@ The app has a built-in ephemeral demo mode (Phase 11): set `ENABLE_DEMO_LOGIN=tr
 and `AUTH_MODE=enabled` and a fresh deployment gets a "Try the Demo" login screen
 instead of going straight in — a throwaway account per visitor, capacity-limited,
 auto-expiring, with real Strava/Garmin syncs and the AI chat both mocked so nothing
-external is ever actually touched. See [`.env.demo.example`](.env.demo.example) for
+external is ever actually touched. See [`.env.example`](.env.example) for
 the 4 env vars that actually matter.
 
 This is meant for a **separate, disposable** deployment, never your own real data.

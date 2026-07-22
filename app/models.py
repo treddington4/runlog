@@ -365,6 +365,20 @@ class UserTrainingConfig(Base):
     strength_template = Column(String, default="full_body_ab")  # selects the rotation in generator.py
 
 
+class ExerciseProgress(Base):
+    """Phase 4.4 — per-exercise progression state for the strength generator's double-
+    progression rule (see generator.py). Separate from UserTrainingConfig (one flat
+    row per user) since each exercise in the rotation progresses independently."""
+    __tablename__ = "exercise_progress"
+
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    exercise = Column(String, primary_key=True)  # matches the template's exercise name exactly
+    current_weight_lb = Column(Float, nullable=True)  # null = bodyweight
+    current_reps_target = Column(Integer, default=8)
+    current_hold_sec = Column(Integer, nullable=True)  # only set for isometric exercises
+    last_completed_at = Column(String, nullable=True)
+
+
 class RecoveryTool(Base):
     """A recovery device the athlete owns that the coach can factor into
     recommendations — e.g. compression boots. Deliberately concrete/narrow for now

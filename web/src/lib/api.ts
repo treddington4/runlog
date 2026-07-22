@@ -240,7 +240,30 @@ export interface EnduranceStep {
   children?: WorkoutStep[]
 }
 
-export type WorkoutStep = LegacyStep | EnduranceStep
+export type SetTargetType = "reps" | "hold_sec"
+
+export interface StrengthSet {
+  index: number
+  targetType: SetTargetType
+  targetReps: number | null
+  targetHoldSec: number | null
+  targetWeightLb: number | null
+  actualReps: number | null
+  actualHoldSec: number | null
+  actualWeightLb: number | null
+  completedAt: string | null
+}
+
+// Phase 4.4 — restSeconds lives on the exercise (not per-set), mirroring the real
+// Hevy routine shape this was modeled on.
+export interface StrengthStep {
+  stepType: "strength_exercise"
+  exercise: string
+  restSeconds: number
+  sets: StrengthSet[]
+}
+
+export type WorkoutStep = LegacyStep | EnduranceStep | StrengthStep
 
 export interface Workout {
   id: string

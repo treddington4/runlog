@@ -1,5 +1,5 @@
 import * as React from "react"
-import type { Workout, WorkoutStep, EnduranceStep } from "@/lib/api"
+import type { Workout, WorkoutStep, EnduranceStep, StrengthStep } from "@/lib/api"
 import { WORKOUT_TYPE_LABELS, WORKOUT_STATUS_COLORS } from "@/lib/workouts"
 import { paceStr } from "@/lib/format"
 import { Card } from "@/components/ui/card"
@@ -54,9 +54,38 @@ function EnduranceStepLine({ step }: { step: EnduranceStep }) {
   )
 }
 
+// Phase 4.4 — strength exercise: one set-count summary line, plus a per-set
+// breakdown (target, and actuals once logged via the workout runner) collapsed
+// behind <details> so a 5-exercise session's card doesn't get overwhelming.
+function StrengthStepLine({ step }: { step: StrengthStep }) {
+  const setSummaries = step.sets.map((s) => {
+    const target = s.targetType === "hold_sec" ? `${s.targetHoldSec}s hold` : `${s.targetReps} reps`
+    const weight = s.targetWeightLb ? ` @ ${s.targetWeightLb}lb` : ""
+    const actual = s.actualReps != null || s.actualHoldSec != null || s.actualWeightLb != null
+      ? ` — did: ${s.actualHoldSec != null ? `${s.actualHoldSec}s` : `${s.actualReps} reps`}${s.actualWeightLb ? ` @ ${s.actualWeightLb}lb` : ""}`
+      : ""
+    return `Set ${s.index + 1}: ${target}${weight}${actual}`
+  })
+  return (
+    <li>
+      <details>
+        <summary className="cursor-pointer">
+          {step.exercise} — {step.sets.length} set{step.sets.length === 1 ? "" : "s"}, {step.restSeconds}s rest
+        </summary>
+        <ul className="text-muted-foreground mt-1 space-y-0.5 pl-2 text-xs">
+          {setSummaries.map((s, i) => (
+            <li key={i}>{s}</li>
+          ))}
+        </ul>
+      </details>
+    </li>
+  )
+}
+
 // Ports workoutStepLineHTML() — how-to guidance collapses behind <details> by
 // default so a 20+ step routine stays scannable.
 function WorkoutStepLine({ step }: { step: WorkoutStep }) {
+  if (step.stepType === "strength_exercise") return <StrengthStepLine step={step} />
   if (step.stepType) return <EnduranceStepLine step={step} />
 
   const amount = []

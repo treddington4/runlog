@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import stats
 from models import (
     HealthNote, Workout, Run, RecoveryTool, RecoverySession, UserTrainingConfig,
-    DEFAULT_USER_ID, owned_by,
+    ExerciseProgress, DEFAULT_USER_ID, owned_by,
 )
 from util import local_today
 
@@ -133,12 +133,58 @@ def _validate_endurance_step(i: int, step: dict, allow_repeat: bool = True) -> d
     }
 
 
+VALID_SET_TARGET_TYPES = ("reps", "hold_sec")
+
+
+def _validate_strength_step(i: int, step: dict) -> dict:
+    """{stepType: "strength_exercise", exercise: str, restSeconds: int,
+    sets: [{index, targetType: "reps"|"hold_sec", targetReps?, targetHoldSec?,
+            targetWeightLb?, actualReps?, actualHoldSec?, actualWeightLb?,
+            completedAt?}]}. restSeconds lives on the exercise, not per-set — mirrors
+    the real Hevy routine shape this was modeled on (confirmed from a real captured
+    Hevy API response: rest lives per-exercise there too). `actual*`/`completedAt`
+    start absent at prescription time and get filled in incrementally as the user
+    logs each set live (Phase 4.5's workout-runner UI), via a plain
+    PATCH /api/workouts/{id} steps replacement — no separate completion endpoint
+    needed, update_workout already accepts a full steps replacement."""
+    if not step.get("exercise"):
+        raise ValueError(f"step {i} must have an 'exercise' name")
+    rest_seconds = step.get("restSeconds")
+    if not isinstance(rest_seconds, int) or rest_seconds < 0:
+        raise ValueError(f"step {i} ({step['exercise']!r}): restSeconds must be a non-negative int")
+    sets = step.get("sets")
+    if not isinstance(sets, list) or not sets:
+        raise ValueError(f"step {i} ({step['exercise']!r}): needs a non-empty sets list")
+    cleaned_sets = []
+    for j, s in enumerate(sets):
+        if not isinstance(s, dict):
+            raise ValueError(f"step {i} set {j} must be an object")
+        target_type = s.get("targetType")
+        if target_type not in VALID_SET_TARGET_TYPES:
+            raise ValueError(f"step {i} set {j}: targetType must be one of {VALID_SET_TARGET_TYPES}")
+        if target_type == "reps" and s.get("targetReps") is None:
+            raise ValueError(f"step {i} set {j}: targetType reps needs targetReps")
+        if target_type == "hold_sec" and s.get("targetHoldSec") is None:
+            raise ValueError(f"step {i} set {j}: targetType hold_sec needs targetHoldSec")
+        cleaned_sets.append({
+            "index": s.get("index", j), "targetType": target_type,
+            "targetReps": s.get("targetReps"), "targetHoldSec": s.get("targetHoldSec"),
+            "targetWeightLb": s.get("targetWeightLb"),
+            "actualReps": s.get("actualReps"), "actualHoldSec": s.get("actualHoldSec"),
+            "actualWeightLb": s.get("actualWeightLb"), "completedAt": s.get("completedAt"),
+        })
+    return {
+        "stepType": "strength_exercise", "exercise": str(step["exercise"]),
+        "restSeconds": rest_seconds, "sets": cleaned_sets,
+    }
+
+
 def _validate_steps(steps):
-    """Dispatches each step on whether `stepType` is present: absent -> the original
-    generic shape (unchanged); present -> the Phase 4.2 structured-endurance shape
-    (Phase 4.4 adds a third, strength_exercise). Raises ValueError with a specific
-    reason so a malformed tool call surfaces something the model can actually
-    correct, same discipline as every other coach.py validator."""
+    """Dispatches each step on `stepType`: absent -> the original generic shape
+    (unchanged); "strength_exercise" -> Phase 4.4's sets/reps/weight/rest shape;
+    any other value -> Phase 4.2's structured-endurance shape. Raises ValueError with
+    a specific reason so a malformed tool call surfaces something the model can
+    actually correct, same discipline as every other coach.py validator."""
     if steps is None:
         return None
     if not isinstance(steps, list):
@@ -147,7 +193,10 @@ def _validate_steps(steps):
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
             raise ValueError(f"step {i} must be an object")
-        if step.get("stepType"):
+        step_type = step.get("stepType")
+        if step_type == "strength_exercise":
+            cleaned.append(_validate_strength_step(i, step))
+        elif step_type:
             cleaned.append(_validate_endurance_step(i, step))
         else:
             cleaned.append(_validate_generic_step(i, step))
@@ -666,6 +715,45 @@ def update_training_config(db, user_id: str = DEFAULT_USER_ID, **fields) -> dict
             setattr(config, key, fields[key])
     db.commit()
     return _training_config_to_dict(config)
+
+
+def _exercise_progress_to_dict(p: ExerciseProgress) -> dict:
+    return {
+        "exercise": p.exercise, "currentWeightLb": p.current_weight_lb,
+        "currentRepsTarget": p.current_reps_target, "currentHoldSec": p.current_hold_sec,
+        "lastCompletedAt": p.last_completed_at,
+    }
+
+
+def get_exercise_progress(db, exercise: str, user_id: str = DEFAULT_USER_ID) -> dict:
+    """Phase 4.4 — returns the exercise's current progression state, or the schema's
+    default starting point (8-rep target, no weight/hold set yet) if this exercise
+    has never been prescribed before. Same "pass defaults explicitly rather than rely
+    on Column(default=...) firing on an unflushed object" fix as get_training_config."""
+    progress = db.get(ExerciseProgress, (user_id, exercise))
+    if not progress:
+        progress = ExerciseProgress(user_id=user_id, exercise=exercise, current_reps_target=8)
+    return _exercise_progress_to_dict(progress)
+
+
+def list_exercise_progress(db, user_id: str = DEFAULT_USER_ID) -> list:
+    rows = db.query(ExerciseProgress).filter(owned_by(ExerciseProgress.user_id, user_id)).all()
+    return [_exercise_progress_to_dict(r) for r in rows]
+
+
+def upsert_exercise_progress(db, exercise: str, user_id: str = DEFAULT_USER_ID, **fields) -> dict:
+    """Called by generator.py's double-progression rule once a completed session's
+    actuals are logged — never directly by a chat tool or REST endpoint (this is
+    derived state, not something a user or the model sets by hand)."""
+    progress = db.get(ExerciseProgress, (user_id, exercise))
+    if not progress:
+        progress = ExerciseProgress(user_id=user_id, exercise=exercise, current_reps_target=8)
+        db.add(progress)
+    for key in ("current_weight_lb", "current_reps_target", "current_hold_sec", "last_completed_at"):
+        if key in fields and fields[key] is not None:
+            setattr(progress, key, fields[key])
+    db.commit()
+    return _exercise_progress_to_dict(progress)
 
 
 def record_workout_completion(db, workout_id: str, run_id=None, critique_text=None,

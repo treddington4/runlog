@@ -783,6 +783,56 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
       values from the real production DB afterward
 - [x] Commit: "Phase 4.2: endurance step contract + training config"
 
+### 4.4 Strength step contract + progression state
+
+New sub-phase (not in the original plan) — added when the user asked to expand the
+generator to also prescribe strength/weight-training sessions with real sets/reps/
+weight/rest structure and a live rest-timer, mirroring a real Hevy-routine gap this
+session's own memory already flagged (`feedback_workout_rest_times`: a Hevy routine
+built with `restSeconds` left null on every exercise, with a direct note that RunLog's
+own `Workout.steps` schema would likely need the same fix eventually).
+
+- [x] `coach._validate_steps` gained a third dispatched shape,
+      `stepType: "strength_exercise"` → `{exercise, restSeconds, sets: [{index,
+      targetType: "reps"|"hold_sec", targetReps?, targetHoldSec?, targetWeightLb?,
+      actualReps?, actualHoldSec?, actualWeightLb?, completedAt?}]}` — `restSeconds`
+      lives on the exercise, not per-set, mirroring the real Hevy routine shape
+      (confirmed from an actual captured Hevy API response in this session's own
+      history: rest lives per-exercise there too, not per-set). `actual*`/
+      `completedAt` start absent at prescription time and fill in incrementally via
+      a plain `PATCH /api/workouts/{id}` steps replacement as Phase 4.5's workout-
+      runner logs each set live — no new endpoint needed
+- [x] New `ExerciseProgress` table (`(user_id, exercise)` composite PK,
+      `current_weight_lb`/`current_reps_target`/`current_hold_sec`/
+      `last_completed_at`) + `coach.get_exercise_progress`/`list_exercise_progress`/
+      `upsert_exercise_progress` — derived state the Phase 4.3 generator's double-
+      progression rule reads/writes, never set directly by a chat tool or REST
+      endpoint. Caught the same `Column(default=...)`-only-applies-at-flush bug as
+      4.2's `get_training_config` and fixed it the same way (explicit Python
+      defaults in `get_exercise_progress`'s fallback)
+- [x] Frontend: `WorkoutFormDialog` gained a real step editor — scoped deliberately
+      to strength steps only (shown when `workoutType === "strength"`), not a
+      generic all-three-shapes editor. Authored as "N sets of one target" (matching
+      how a real prescription reads, "3×8-12 @ 45lb") rather than editing every
+      individual set — per-set *actuals* are what genuinely vary session to session
+      and get logged live via 4.5's workout-runner, not authored here. This also
+      closes a real pre-existing gap: the dialog had *no* step-editing UI at all
+      before this, for any step shape. `WorkoutCard` renders a strength step as a
+      collapsed `<details>` summary (exercise, set count, rest) with a per-set
+      breakdown inside
+- [x] Verify: deployed for real; curled a strength workout create with 2 exercises
+      (a 3×10 rep-based squat + a single hold-based plank set), confirmed correct
+      structure back; confirmed `targetType` validation 400s with a specific message;
+      `PATCH`-ed the same workout with actuals filled in + `status: "completed"`
+      (simulating what the workout-runner will do) and confirmed it saves correctly;
+      exercised `get_exercise_progress`/`upsert_exercise_progress`/
+      `list_exercise_progress` directly against production, confirming the same
+      explicit-defaults fix pattern as 4.2 actually works here too. Drove the real
+      `WorkoutFormDialog` via Playwright (selected Strength, added an exercise) and
+      screenshotted the rendered editor and the resulting `WorkoutCard` against live
+      production — both match the design exactly. Cleaned up all test data afterward
+- [x] Commit: "Phase 4.4: strength step contract + progression state"
+
 ### 4.3 Generator engine
 - [ ] `weekly_plan` table: `(user_id, week_start) PK, target_tss, actual_tss,
       is_deload, frozen`

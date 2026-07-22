@@ -11,12 +11,18 @@ aggregate totals may be marginally inflated versus what the merged UI shows. Sam
 boundary as the existing /api/runs endpoint, not a new gap introduced by this module.
 """
 import json
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
-from .models import Run, DailySteps, Goal, DEFAULT_USER_ID, owned_by
+from .models import (
+    Run, DailySteps, Goal, DEFAULT_USER_ID, owned_by,
+    SessionLocal, get_sync_meta, set_sync_meta, user_key,
+)
 from .util import local_today
+
+log = logging.getLogger("runlog")
 
 # Strava's activity_type is a single PascalCase word ("Run","Ride","Walk"); Garmin's raw
 # types are lowercase and sometimes multi-word ("running","trail_running",
@@ -632,3 +638,47 @@ def _distance_target_progress(db, goal, types, user_id):
         "completedMi": summary["totalDistanceMi"], "pctComplete": pct,
         "startDate": start, "deadline": goal.target_date, "daysRemaining": days_remaining,
     }
+
+
+# ---------- Dashboard cache (moved here from main.py during the routes/ split —
+# routes/sync.py calls record_sync() after every sync attempt, routes/dashboard.py
+# reads the cache it populates, and it already calls dashboard_summary() below, so
+# this keeps "the dashboard cache" next to the computation it caches rather than
+# leaving it stranded as state neither router individually owns) ----------
+DASHBOARD_CACHE_KEY = "dashboard_summary_cache"
+DASHBOARD_CACHE_UPDATED_AT_KEY = "dashboard_summary_cache_updated_at"
+
+
+def refresh_dashboard_cache(user_id: str):
+    """Recomputes the Home tab's stat-card data and caches it in sync_meta (reusing the
+    existing generic key-value store rather than a new single-purpose table — same
+    pattern already used for the geocode cache) so /api/dashboard/summary is a plain
+    lookup instead of recomputing 8 stats functions on every page load. Called from
+    record_sync, the one place every sync path (auto/manual Strava, manual Garmin,
+    both backlog syncs) already funnels through, so the cache is refreshed at least as
+    often as SYNC_INTERVAL_HOURS even on a day with zero new activities — day-counting
+    stats like "days since longest run" still need to advance without new data."""
+    db = SessionLocal()
+    try:
+        summary = dashboard_summary(db, user_id=user_id)
+        set_sync_meta(user_key(user_id, DASHBOARD_CACHE_KEY), json.dumps(summary))
+        set_sync_meta(user_key(user_id, DASHBOARD_CACHE_UPDATED_AT_KEY), datetime.now(timezone.utc).isoformat())
+    except Exception as e:
+        log.warning(f"Dashboard cache refresh failed (stale cache will keep serving): {e}")
+    finally:
+        db.close()
+
+
+def record_sync(source: str, user_id: str, count: int = None, error: str = None):
+    """Persist last-sync info to sync_meta so the UI can show real history
+    across page loads instead of only reflecting the current browser session.
+    A sync can partially succeed and then error (e.g. Garmin rate-limits mid-backlog
+    after committing several real activities) — count and error aren't mutually
+    exclusive, so both are recorded when both are given, instead of a real partial
+    success being silently lost behind "Never synced". Namespaced per-user (Phase 1.4)
+    so two real users' sync history never overwrites each other's."""
+    if count is not None:
+        set_sync_meta(user_key(user_id, f"{source}_last_synced_at"), datetime.now(timezone.utc).isoformat())
+        set_sync_meta(user_key(user_id, f"{source}_last_count"), str(count))
+    set_sync_meta(user_key(user_id, f"{source}_last_error"), error or "")
+    refresh_dashboard_cache(user_id)

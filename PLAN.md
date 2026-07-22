@@ -1323,12 +1323,35 @@ shouldnt rely on it").
       then recreated the real production container and reconfirmed real data
       (144 runs, 5 goals, Strava still connected) untouched.
 
-**Stage 2 — split `main.py` into `routes/` (not started):** see the full
-endpoint→router mapping table from the approved plan (9 routers: auth, sync,
-settings, wellness, chat, health, workouts, goals, dashboard; dashboard-cache
-functions relocate into `stats.py` as a cross-cutting exception). Same
-per-router incremental verification approach before a final full-pass
-production redeploy.
+**Stage 2 — split `main.py` into `routes/` (done):**
+- [x] `main.py`'s 1311 lines / 55 route decorators (54 API endpoints + the SPA
+      catch-all) split into 9 `app/routes/*.py` files per the approved mapping
+      table (auth, sync, settings, wellness, chat, health, workouts, goals,
+      dashboard) — confirmed byte-for-byte identical path coverage via a
+      before/after diff of every `@app.`/`@router.` decorator across the old
+      file and the new routers + `main.py`'s remaining catch-all.
+- [x] `_record_sync`/`_refresh_dashboard_cache`/`DASHBOARD_CACHE_KEY`/
+      `DASHBOARD_CACHE_UPDATED_AT_KEY` moved into `stats.py` (renamed to public
+      `record_sync`/`refresh_dashboard_cache` since they're now called from
+      `routes/sync.py` and `routes/dashboard.py` across a module boundary) —
+      the cross-cutting exception the plan called for, since dashboard-cache
+      state belongs next to `dashboard_summary()`, not stranded in either
+      individual router.
+- [x] `main.py` shrank from 1311 lines to ~105 — app instantiation, both
+      middlewares, the `startup()` event (now importing `routes.sync`'s
+      `_auto_sync`/`_next_auto_sync_time` and `coach.generator`), and the
+      `/legacy` + `/assets` + SPA-fallback static serving are all that's left.
+- [x] `pyproject.toml`'s `packages` list extended once more, to add
+      `"app.routes"`.
+- [x] Verify: same throwaway-container-first discipline — build-only, curled
+      every endpoint category (auth, sync trigger+status, settings/config,
+      wellness/runs, chat, health/recovery, a full workout CRUD round-trip, a
+      full goal CRUD round-trip, generator run, dashboard summary, SPA
+      fallback on a client-routed path, legacy mount) all green on a throwaway
+      instance, only then recreated the real production container and
+      reconfirmed real data (144 runs, 5 goals, Strava connected, dashboard
+      cache serving real mileage numbers) untouched, plus a Home tab
+      screenshot rendering exactly as before.
 
 ---
 

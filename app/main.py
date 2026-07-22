@@ -76,13 +76,20 @@ def _next_auto_sync_time():
 def startup():
     init_db()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(_auto_sync, "interval", hours=SYNC_INTERVAL_HOURS, next_run_time=_next_auto_sync_time())
     import demo
     if demo.is_enabled():
-        scheduler.add_job(demo.sweep_expired_demo_users, "interval", minutes=10)
-        log.info(f"Demo login enabled — capacity {demo.DEMO_CAPACITY}, sessions {demo.DEMO_SESSION_HOURS}h")
+        # Demo users never have real Strava/Garmin credentials — auto-sync would
+        # just iterate over zero credentialed users every cycle. Expiry cleanup is
+        # lazy (see demo.create_demo_session's opportunistic sweep), not a periodic
+        # job, so this deployment registers no background jobs at all and has no
+        # dependency on the process staying alive between requests — it runs fine
+        # on a sleep-on-idle free host, not just an always-on one.
+        log.info(f"Demo login enabled — capacity {demo.DEMO_CAPACITY}, sessions {demo.DEMO_SESSION_HOURS}h "
+                 "(no background scheduler — sync/expiry are both handled inline per request)")
+    else:
+        scheduler.add_job(_auto_sync, "interval", hours=SYNC_INTERVAL_HOURS, next_run_time=_next_auto_sync_time())
+        log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
     scheduler.start()
-    log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
 
 
 DASHBOARD_CACHE_KEY = "dashboard_summary_cache"

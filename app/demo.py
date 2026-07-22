@@ -1,8 +1,16 @@
 """Ephemeral demo login (Phase 11.1-11.3). Gated entirely behind ENABLE_DEMO_LOGIN —
 when unset/false, is_enabled() is False, /auth/demo/login 404s, and nothing else in
 this module is ever reached from a real request. Meant for a separate, disposable
-cloud deployment (Phase 11.4's Render template) with its own throwaway SQLite
-volume — never intended to run alongside a real user's own production data.
+cloud deployment (Phase 11.4's Koyeb template) with its own local SQLite storage —
+never intended to run alongside a real user's own production data.
+
+Deliberately purely request-driven — no background scheduler dependency. Demo users
+never have real Strava/Garmin credentials, so main.py skips registering the auto-sync
+job entirely when demo mode is on (nothing for it to sync). Expiry cleanup is lazy
+(see create_demo_session's opportunistic sweep) rather than a periodic job, so
+correctness never depends on the process staying alive between requests — this is
+what lets the demo deployment run on a sleep-on-idle free host, not just an
+always-on one.
 
 Teardown relies on real DB-level ON DELETE CASCADE (see models.py's per-user tables'
 `ForeignKey("users.id", ondelete="CASCADE")` + the PRAGMA foreign_keys=ON connect
@@ -56,11 +64,16 @@ def mock_chat_reply(message: str) -> str:  # noqa: ARG001 — message unused, ca
 
 
 def create_demo_session(db) -> dict:
-    """Raises ValueError("capacity_full") if at/over DEMO_CAPACITY concurrent demo
-    users. Seeding runs synchronously (seed_engine does zero external I/O, so it's
-    fast) rather than as a background task — avoids a visitor landing on an empty
-    Home tab before seeding finishes."""
+    """Raises ValueError("capacity_full") if at/over DEMO_CAPACITY concurrent (live,
+    non-expired) demo users. Opportunistically sweeps expired sessions first, in the
+    same lock, before counting — this is the only place expiry cleanup happens (no
+    periodic background job), so capacity is always correct regardless of whether
+    the process has been sitting idle since the last expiry. Seeding runs
+    synchronously (seed_engine does zero external I/O, so it's fast) rather than as a
+    background task — avoids a visitor landing on an empty Home tab before seeding
+    finishes."""
     with _capacity_lock:
+        _sweep_expired(db)
         active = db.query(User).filter(User.is_demo == True).count()  # noqa: E712
         if active >= DEMO_CAPACITY:
             raise ValueError("capacity_full")
@@ -99,15 +112,23 @@ def delete_demo_user(db, user_id: str) -> None:
     db.commit()
 
 
+def _sweep_expired(db) -> int:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    expired = db.query(User).filter(User.is_demo == True, User.expires_at < now_iso).all()  # noqa: E712
+    for user in expired:
+        delete_demo_user(db, user.id)
+    return len(expired)
+
+
 def sweep_expired_demo_users() -> int:
-    """Called periodically (main.py's scheduler) to catch users who close the tab
-    without hitting /auth/demo/logout. Returns how many were swept."""
+    """Not called by anything in this app anymore — create_demo_session() sweeps
+    lazily on every login instead, so correctness never depends on a background job
+    actually running (this deployment doesn't register one, see main.py's startup()).
+    Kept as a standalone entrypoint for manual/ad-hoc use (e.g. a one-off admin
+    script), or for a future deployment target that does want periodic tidiness on
+    top of the lazy sweep."""
     db = SessionLocal()
     try:
-        now_iso = datetime.now(timezone.utc).isoformat()
-        expired = db.query(User).filter(User.is_demo == True, User.expires_at < now_iso).all()  # noqa: E712
-        for user in expired:
-            delete_demo_user(db, user.id)
-        return len(expired)
+        return _sweep_expired(db)
     finally:
         db.close()

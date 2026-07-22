@@ -5,12 +5,15 @@ computes real per-mile splits, grade-adjusted pace, and interval structure, look
 historical weather for free via Open-Meteo, and auto-syncs on a schedule — no external
 API tokens burned per sync, and no LLM in the loop.
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/treddington4/hale)
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&repository=github.com/treddington4/hale&branch=master&builder=dockerfile&dockerfile=Dockerfile&instance_type=free&ports=8000;http;/&env[ENABLE_DEMO_LOGIN]=true&env[AUTH_MODE]=enabled&env[DEMO_CAPACITY]=5&env[DEMO_SESSION_HOURS]=2&name=hale-demo)
 
 Want to poke around before self-hosting? The button above spins up a live instance
-with a "Try the Demo" login — a throwaway account pre-populated with sample data,
-reset automatically after a couple hours, with no real Strava/Garmin/AI credentials
-ever touched.
+(Koyeb's free tier — no card required) with a "Try the Demo" login — a throwaway
+account pre-populated with sample data, reset automatically after a couple hours,
+with no real Strava/Garmin/AI credentials ever touched. The demo deployment needs no
+persistent storage (Koyeb's free instances don't support volumes anyway) — demo data
+is disposable by design, so an ephemeral local SQLite file that resets on restart is
+fine here.
 
 ## Setup
 

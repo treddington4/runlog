@@ -912,9 +912,12 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 
 ## Phase 11 — Interactive Ephemeral Demo Environment
 
-Meant for a separate, disposable cloud deployment (Render/Railway, its own throwaway
-SQLite volume) — `ENABLE_DEMO_LOGIN`/`AUTH_MODE=enabled` are deployment env vars, unset
-on this app's own real NAS instance, which sees zero behavior change throughout.
+Meant for a separate, disposable cloud deployment (Koyeb's free tier — see 11.4) —
+`ENABLE_DEMO_LOGIN`/`AUTH_MODE=enabled` are deployment env vars, unset on this app's
+own real NAS instance, which sees zero behavior change throughout. Deliberately
+purely request-driven, no background scheduler dependency at all (see 11.1/11.3
+below) — this is what makes it viable on a free host that suspends the container
+between requests, not just an always-on one.
 
 ### 11.1 Ephemeral auth & session lifecycle
 - [x] `User` gains `is_demo`/`expires_at` (already-existing `_MIGRATABLE_TABLES` entry
@@ -939,9 +942,19 @@ on this app's own real NAS instance, which sees zero behavior change throughout.
       SHA-256 pattern as `POST /api/tokens`) rather than a JWT — `auth.py`'s existing
       `X-Api-Token` path authenticates it with **zero changes to `auth.py` itself**;
       the demo deployment's `AUTH_MODE=enabled` is what activates that path
-- [x] `POST /auth/demo/logout` (deletes only if `is_demo`) + a 10-minute
-      `scheduler.add_job(demo.sweep_expired_demo_users, ...)` registered only when
-      `ENABLE_DEMO_LOGIN` is set
+- [x] `POST /auth/demo/logout` (deletes only if `is_demo`). **Revised after initial
+      ship**: expiry cleanup is lazy, not a periodic scheduler job — demo users never
+      have real credentials to sync, so `main.py`'s `startup()` skips registering
+      `_auto_sync` entirely when demo mode is on, and `create_demo_session()`
+      opportunistically sweeps expired sessions (`demo._sweep_expired()`) under the
+      same capacity lock, on every login, before counting. This means the demo
+      deployment registers **zero** background jobs and has no dependency on the
+      process staying alive between requests — verified by backdating a session's
+      `expires_at` with no scheduler running at all and confirming a plain login
+      request both swept it (cascade-confirmed gone) and reclaimed its capacity slot.
+      `demo.sweep_expired_demo_users()` kept as a standalone callable (ad-hoc/admin
+      use, or a future always-on target that wants extra tidiness) but nothing in
+      this app calls it anymore
 - [x] Verify: full flow tested against an isolated **throwaway second container**
       (fresh anonymous volume, port 8001, demo env vars) — never touched the real
       running container. Two logins succeeded with independent seeded data, a 3rd hit
@@ -1003,19 +1016,29 @@ on this app's own real NAS instance, which sees zero behavior change throughout.
 - [x] `.github/workflows/docker-publish.yml` — checkout → Buildx → GHCR login
       (`GITHUB_TOKEN`) → build root `Dockerfile` → push
       `ghcr.io/treddington4/hale:latest` (+ semver on a version tag)
-- [x] `render.yaml` — `runtime: docker` building the repo's own `Dockerfile` directly
-      (deliberately not pulling the GHCR image, so this doesn't depend on that
-      package's visibility being public), persistent disk at `/data`,
-      `ENABLE_DEMO_LOGIN=true`/`AUTH_MODE=enabled`/`DEMO_CAPACITY=5`/
-      `DEMO_SESSION_HOURS=2`
-- [x] `README.md` — "Deploy to Render" badge + a one-line demo pointer
-- [x] Verify (mine): both new YAML files parse correctly (`yaml.safe_load`); the exact
-      build step the workflow runs was independently validated many times over via
-      `docker compose build` on the NAS throughout 11.1-11.3's verification, always
-      succeeding cleanly
+- [x] **Host: Koyeb, not Render** — switched after shipping a Render version, on
+      request: no credit card required at all (Render's free tier does), and once
+      11.1/11.3 dropped the background-scheduler dependency, Koyeb's free instance
+      (always-on, no cold-start sleep) became the only remaining differentiator worth
+      picking on — a visitor's first click never eats a wake-up delay, unlike a
+      sleep-on-idle free host. `README.md`'s "Deploy to Koyeb" button (built from
+      Koyeb's documented one-click-deploy URL query params — `type=git`,
+      `builder=dockerfile`, `instance_type=free`, `ports=8000;http;/`, `env[...]`
+      pairs for `ENABLE_DEMO_LOGIN`/`AUTH_MODE`/`DEMO_CAPACITY`/`DEMO_SESSION_HOURS`)
+      replaces the earlier `render.yaml` (deleted — Koyeb has no repo-committed
+      Blueprint-equivalent file, it's purely URL-parameter-driven). Confirmed via
+      Koyeb's own docs that free instances don't support persistent volumes at all —
+      a non-issue here since demo data is disposable by design anyway; an ephemeral
+      local SQLite file that resets on container restart is exactly the right amount
+      of persistence for a throwaway demo
+- [x] Verify (mine): both the workflow YAML and the deploy-link query params were
+      checked against Koyeb's own documented format (fetched directly, not guessed);
+      the exact `docker build` step the workflow runs was independently validated
+      many times over via `docker compose build` on the NAS throughout 11.1-11.3's
+      verification, always succeeding cleanly
 - [ ] **Verify (yours — real external-account actions, out of reach from here)**:
-      confirm the Action actually runs and publishes on your next push to `main` or a
-      version tag; click the Render badge from a clean browser and confirm it
+      confirm the Action actually runs and publishes on your next push to `main`/a
+      version tag; click the Koyeb badge from a clean browser and confirm it
       provisions and boots to the demo login screen
 - [x] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
 

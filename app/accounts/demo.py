@@ -27,7 +27,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from .models import SessionLocal, User, ApiToken, SyncMeta
+from ..models import SessionLocal, User, ApiToken, SyncMeta
 from . import seed_engine
 
 ENABLE_DEMO_LOGIN = os.environ.get("ENABLE_DEMO_LOGIN", "false").lower() == "true"

@@ -10,12 +10,12 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from . import stats
-from .models import (
+from .. import stats
+from ..models import (
     HealthNote, Workout, Run, RecoveryTool, RecoverySession, UserTrainingConfig,
     ExerciseProgress, DEFAULT_USER_ID, owned_by,
 )
-from .util import local_today
+from ..util import local_today
 
 VALID_MESOCYCLE_PATTERNS = ("3:1", "2:1", "4:1")
 VALID_DISTRIBUTIONS = ("pyramidal", "polarized")

@@ -1288,6 +1288,50 @@ auto-detection inventing a phantom pip package called `garmin_sync` from a plain
 
 ---
 
+## Infra: backend reorg — domain sub-packages + `main.py` router split
+
+Follow-up to the flat→package restructuring above: the user asked for the
+*internal* organization to also "make sense for understandability and
+maintenance as well as addition and classification of new features," not just
+"it's a package now." Two-stage pass, done in full rather than deferred
+(explicit call: "full pass now, we have git if we mess up, although we
+shouldnt rely on it").
+
+**Stage 1 — domain sub-packages (done):**
+- [x] `app/sync/` (`strava.py`, `garmin_sync.py`, `garmin_import.py`,
+      `weather.py` — external ingestion), `app/coach/` (`core.py` — renamed
+      from the old top-level `coach.py` to avoid a `coach/coach.py` stutter —
+      plus `generator.py`, `assistant.py`), `app/accounts/` (`auth.py`,
+      `demo.py`, `seed_engine.py`). `models.py`/`util.py`/`stats.py`/`push.py`/
+      `main.py` stay top-level as cross-cutting concerns, not owned by one
+      domain. Moved via `git mv` to preserve history.
+- [x] Every cross-reference updated by hand per the exact new relative depth
+      (same-package sibling vs. `..` up to a top-level module vs. a different
+      sub-package) — `coach.py`'s old call sites keep working unchanged via
+      `from .coach import core as coach` / `from . import core as coach`
+      aliasing, so no call site needed renaming. Verified afterward: zero
+      remaining references to the old flat module paths anywhere in `app/` or
+      `scripts/`.
+- [x] `pyproject.toml`'s `packages` list extended to `["app", "app.sync",
+      "app.coach", "app.accounts"]`.
+- [x] Verify: same never-touch-prod-first discipline as the flat→package
+      restructuring — build-only, throwaway container on a different port,
+      curled one endpoint per domain (Strava status, Garmin status, generator
+      run exercising the full `main → coach.generator → coach.core/stats`
+      import chain, workouts, demo status, dashboard summary, training-config)
+      all green, clean startup logs with both scheduler jobs registered, only
+      then recreated the real production container and reconfirmed real data
+      (144 runs, 5 goals, Strava still connected) untouched.
+
+**Stage 2 — split `main.py` into `routes/` (not started):** see the full
+endpoint→router mapping table from the approved plan (9 routers: auth, sync,
+settings, wellness, chat, health, workouts, goals, dashboard; dashboard-cache
+functions relocate into `stats.py` as a cross-cutting exception). Same
+per-router incremental verification approach before a final full-pass
+production redeploy.
+
+---
+
 ## Cross-cutting features (slot in any time after the listed dependency)
 
 - [ ] **Daily AI insight card** (after 0.3): Sonnet one-shot (separate short-lived SDK

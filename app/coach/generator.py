@@ -30,13 +30,13 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_
 
-from .models import (
+from ..models import (
     SessionLocal, Workout, Goal, User, UserTrainingConfig, HealthNote,
     Run, WeeklyPlan, DEFAULT_USER_ID, owned_by,
 )
-from . import stats
-from . import coach
-from .util import local_today
+from .. import stats
+from . import core as coach
+from ..util import local_today
 
 log = logging.getLogger("runlog")
 

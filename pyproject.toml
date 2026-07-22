@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "app.sync", "app.coach", "app.accounts"]
 
 [build-system]
 requires = ["setuptools>=68"]

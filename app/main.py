@@ -21,8 +21,8 @@ from .models import (
     init_db, SessionLocal, Run, DailySteps, ChatMessage, User, ProviderCredential, Goal, ApiToken,
     DEFAULT_USER_ID, owned_by, get_sync_meta, set_sync_meta, user_key,
 )
-from . import auth
-from . import strava
+from .accounts import auth
+from .sync import strava
 from . import stats
 from .util import local_today
 
@@ -76,7 +76,7 @@ def _next_auto_sync_time():
 def startup():
     init_db()
     scheduler = BackgroundScheduler()
-    from . import demo
+    from .accounts import demo
     if demo.is_enabled():
         # Demo users never have real Strava/Garmin credentials — auto-sync would
         # just iterate over zero credentialed users every cycle. Expiry cleanup is
@@ -91,7 +91,7 @@ def startup():
         log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
 
         def _run_generator():
-            from . import generator
+            from .coach import generator
             generator.run_for_all_users()
 
         from .util import APP_TIMEZONE
@@ -196,13 +196,13 @@ def strava_status(user_id: str = Depends(auth.current_user_id)):
 # ApiToken authenticates via that module's existing X-Api-Token path. ----------
 @app.get("/auth/demo/status")
 def demo_status():
-    from . import demo
+    from .accounts import demo
     return {"enabled": demo.is_enabled()}
 
 
 @app.post("/auth/demo/login")
 async def demo_login(request: Request):
-    from . import demo
+    from .accounts import demo
     if not demo.is_enabled():
         raise HTTPException(404, "Not found")
     body = await request.json()
@@ -220,7 +220,7 @@ async def demo_login(request: Request):
 
 @app.post("/auth/demo/logout")
 def demo_logout(user_id: str = Depends(auth.current_user_id)):
-    from . import demo
+    from .accounts import demo
     db = SessionLocal()
     try:
         if demo.is_demo_user(db, user_id):
@@ -265,7 +265,7 @@ def _run_quick_sync(user_id: str, source: str):
         if source == "strava":
             n = strava.sync_activities(user_id, limit=SYNC_LIMIT, progress_cb=cb)
         else:
-            from . import garmin_sync
+            from .sync import garmin_sync
             n = garmin_sync.sync_garmin_activities(user_id, limit=SYNC_LIMIT, progress_cb=cb)
         with _quick_sync_lock:
             job = _get_quick_sync_job(user_id, source)
@@ -293,7 +293,7 @@ def manual_sync(source: str, user_id: str = Depends(auth.current_user_id)):
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
 
-    from . import demo
+    from .accounts import demo
     db = SessionLocal()
     try:
         is_demo = demo.is_demo_user(db, user_id)
@@ -345,7 +345,7 @@ async def import_garmin_export(file: UploadFile = File(...), user_id: str = Depe
     is automatically skipped on future syncs, so the live API only has to handle activities
     genuinely newer than the export. Safe to re-upload the same or an overlapping export."""
     _reject_if_demo(user_id)
-    from . import garmin_import
+    from .sync import garmin_import
     data = await file.read()
     log.info(f"garmin import: received {file.filename} ({len(data)} bytes)")
     summary = garmin_import.import_garmin_export(data, user_id)
@@ -389,7 +389,7 @@ def _run_backlog_sync(user_id: str, source: str):
         if source == "strava":
             n = strava.sync_all_activities(user_id, progress_cb=lambda msg, count=None: _backlog_progress(user_id, source, msg, count))
         else:
-            from . import garmin_sync
+            from .sync import garmin_sync
             # Auto-continue through rate limits instead of stopping and requiring a
             # manual re-click: this thread is already backgrounded, so waiting out the
             # cooldown (garmin_sync's own exponential backoff, 5min base, capped at 4h)
@@ -453,7 +453,7 @@ def _reject_if_demo(user_id: str):
     """Blocks a handful of endpoints that are either meaningless for a demo account
     (fake credentials sync-mocking already prevents from ever being used) or a real
     parsing operation not worth exposing publicly — see Phase 11.3."""
-    from . import demo
+    from .accounts import demo
     db = SessionLocal()
     try:
         if demo.is_demo_user(db, user_id):
@@ -467,7 +467,7 @@ def start_backlog_sync(source: str, user_id: str = Depends(auth.current_user_id)
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
 
-    from . import demo
+    from .accounts import demo
     db = SessionLocal()
     try:
         is_demo = demo.is_demo_user(db, user_id)
@@ -698,7 +698,7 @@ def garmin_route_diagnostics(user_id: str = Depends(auth.current_user_id)):
 @app.get("/api/config")
 def get_config(user_id: str = Depends(auth.current_user_id)):
     from . import push
-    from . import demo
+    from .accounts import demo
     db = SessionLocal()
     try:
         resting_hr = stats.latest_resting_hr_bpm(db, user_id)
@@ -893,7 +893,7 @@ async def update_run(run_id: str, request: Request, user_id: str = Depends(auth.
 # ---------- AI Chat Assistant ----------
 @app.get("/api/chat/status")
 def chat_status():
-    from . import assistant
+    from .coach import assistant
     return {"configured": assistant.is_configured()}
 
 
@@ -920,7 +920,7 @@ async def chat_message(request: Request, user_id: str = Depends(auth.current_use
     if not message:
         raise HTTPException(400, "message is required")
 
-    from . import demo
+    from .accounts import demo
     db = SessionLocal()
     try:
         if demo.is_demo_user(db, user_id):
@@ -935,7 +935,7 @@ async def chat_message(request: Request, user_id: str = Depends(auth.current_use
     finally:
         db.close()
 
-    from . import assistant
+    from .coach import assistant
     if not assistant.is_configured():
         raise HTTPException(400, "AI assistant not configured — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
     try:
@@ -946,7 +946,7 @@ async def chat_message(request: Request, user_id: str = Depends(auth.current_use
 
 @app.post("/api/chat/reset")
 async def chat_reset(user_id: str = Depends(auth.current_user_id)):
-    from . import assistant
+    from .coach import assistant
     db = SessionLocal()
     try:
         db.query(ChatMessage).filter(owned_by(ChatMessage.user_id, user_id)).delete(synchronize_session=False)
@@ -969,8 +969,8 @@ def get_coach_personality(user_id: str = Depends(auth.current_user_id)):
 
 @app.post("/api/coach/personality")
 async def set_coach_personality(request: Request, user_id: str = Depends(auth.current_user_id)):
-    from . import assistant
-    from . import coach
+    from .coach import assistant
+    from .coach import core as coach
     body = await request.json()
     personality = body.get("personality")
     if personality not in coach.VALID_PERSONAS:
@@ -993,7 +993,7 @@ async def set_coach_personality(request: Request, user_id: str = Depends(auth.cu
 def get_health_notes(status: str = None, category: str = None, user_id: str = Depends(auth.current_user_id)):
     """Read-only — no POST/PATCH/DELETE. Health-note lifecycle is chat-tool-driven
     only (see coach.py's log_health_note/update_health_status), not a manual form."""
-    from . import coach
+    from .coach import core as coach
     db = SessionLocal()
     try:
         return coach.list_health_notes(db, status, category, user_id)
@@ -1006,7 +1006,7 @@ def get_health_notes(status: str = None, category: str = None, user_id: str = De
 @app.get("/api/workouts")
 def get_workouts(startDate: str = None, endDate: str = None, status: str = None,
                   user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     db = SessionLocal()
     try:
         return coach.list_workouts(db, startDate, endDate, status, user_id)
@@ -1016,7 +1016,7 @@ def get_workouts(startDate: str = None, endDate: str = None, status: str = None,
 
 @app.post("/api/workouts")
 async def create_workout_endpoint(request: Request, user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     body = await request.json()
     db = SessionLocal()
     try:
@@ -1033,7 +1033,7 @@ async def create_workout_endpoint(request: Request, user_id: str = Depends(auth.
 
 @app.patch("/api/workouts/{workout_id}")
 async def update_workout_endpoint(workout_id: str, request: Request, user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     body = await request.json()
     field_map = {
         "scheduledDate": "scheduled_date", "workoutType": "workout_type", "activityType": "activity_type",
@@ -1052,7 +1052,7 @@ async def update_workout_endpoint(workout_id: str, request: Request, user_id: st
 
 @app.delete("/api/workouts/{workout_id}")
 def delete_workout_endpoint(workout_id: str, user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     db = SessionLocal()
     try:
         coach.delete_workout(db, workout_id, user_id)
@@ -1063,7 +1063,7 @@ def delete_workout_endpoint(workout_id: str, user_id: str = Depends(auth.current
 
 @app.get("/api/training-config")
 def get_training_config_endpoint(user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     db = SessionLocal()
     try:
         return coach.get_training_config(db, user_id)
@@ -1073,7 +1073,7 @@ def get_training_config_endpoint(user_id: str = Depends(auth.current_user_id)):
 
 @app.patch("/api/training-config")
 async def update_training_config_endpoint(request: Request, user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     body = await request.json()
     field_map = {
         "maxHr": "max_hr", "thresholdHr": "threshold_hr", "ftpWatts": "ftp_watts",
@@ -1098,7 +1098,7 @@ def run_generator_endpoint(date: str = None, user_id: str = Depends(auth.current
     """Force-runs the Phase 4.3 generator for the current user (optionally for a
     specific past/future date, mainly for verification) instead of waiting for the
     04:00 local scheduled tick."""
-    from . import generator
+    from .coach import generator
     db = SessionLocal()
     try:
         return generator.run_for_user(db, user_id, date)
@@ -1111,7 +1111,7 @@ def run_generator_endpoint(date: str = None, user_id: str = Depends(auth.current
 # health-notes above; manual creation isn't built yet, see coach.py's RecoveryTool docstring) ----------
 @app.get("/api/recovery-tools")
 def get_recovery_tools_endpoint(user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     db = SessionLocal()
     try:
         return coach.list_recovery_tools(db, user_id)
@@ -1122,7 +1122,7 @@ def get_recovery_tools_endpoint(user_id: str = Depends(auth.current_user_id)):
 @app.get("/api/recovery-sessions")
 def get_recovery_sessions_endpoint(startDate: str = None, endDate: str = None, status: str = None,
                                     user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     db = SessionLocal()
     try:
         return coach.list_recovery_sessions(db, startDate, endDate, status, user_id)
@@ -1132,7 +1132,7 @@ def get_recovery_sessions_endpoint(startDate: str = None, endDate: str = None, s
 
 @app.patch("/api/recovery-sessions/{session_id}")
 async def update_recovery_session_endpoint(session_id: str, request: Request, user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     body = await request.json()
     db = SessionLocal()
     try:
@@ -1145,7 +1145,7 @@ async def update_recovery_session_endpoint(session_id: str, request: Request, us
 
 @app.delete("/api/recovery-sessions/{session_id}")
 def delete_recovery_session_endpoint(session_id: str, user_id: str = Depends(auth.current_user_id)):
-    from . import coach
+    from .coach import core as coach
     db = SessionLocal()
     try:
         coach.delete_recovery_session(db, session_id, user_id)

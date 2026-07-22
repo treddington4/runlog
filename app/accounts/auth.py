@@ -25,7 +25,7 @@ import jwt
 import requests
 from fastapi import Header, HTTPException
 
-from .models import SessionLocal, User, ApiToken, DEFAULT_USER_ID
+from ..models import SessionLocal, User, ApiToken, DEFAULT_USER_ID
 
 AUTH_MODE = os.environ.get("AUTH_MODE", "disabled")
 OIDC_ISSUER = os.environ.get("OIDC_ISSUER", "")

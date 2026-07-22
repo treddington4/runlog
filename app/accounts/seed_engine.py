@@ -11,7 +11,7 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from .models import Run, DailySteps, Goal, ChatMessage
+from ..models import Run, DailySteps, Goal, ChatMessage
 
 WEATHER_CONDITIONS = ["Clear", "Partly Cloudy", "Cloudy", "Light Rain", "Overcast"]
 

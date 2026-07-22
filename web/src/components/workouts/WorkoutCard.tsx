@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Link } from "react-router-dom"
 import type { Workout, WorkoutStep, EnduranceStep, StrengthStep } from "@/lib/api"
 import { WORKOUT_TYPE_LABELS, WORKOUT_STATUS_COLORS } from "@/lib/workouts"
 import { paceStr } from "@/lib/format"
@@ -137,6 +138,12 @@ export function WorkoutCard({
   if (workout.targetPaceSecPerMi) targetParts.push(`${paceStr(workout.targetPaceSecPerMi)}/mi`)
   if (workout.targetDurationSec) targetParts.push(`${Math.round(workout.targetDurationSec / 60)} min`)
 
+  // The runner only knows how to walk through strength_exercise steps (rest-timer +
+  // hold/rep logging) — an endurance workout is GPS-tracked externally via Strava/
+  // Garmin instead, so "Start" only ever shows up here, and only while still planned.
+  const hasStrengthSteps = workout.steps?.some((s) => s.stepType === "strength_exercise") ?? false
+  const canStart = hasStrengthSteps && workout.status === "planned"
+
   return (
     <Card className="gap-2">
       <div className="flex items-baseline justify-between gap-3 text-sm">
@@ -162,6 +169,11 @@ export function WorkoutCard({
       )}
       {workout.critiqueText && <Row label="Critique" value={<span className="font-normal">{workout.critiqueText}</span>} />}
       <div className="mt-1 flex gap-3">
+        {canStart && (
+          <Button asChild size="sm" className="h-auto py-1">
+            <Link to={`/workouts/${workout.id}/run`}>Start</Link>
+          </Button>
+        )}
         <Button variant="link" size="sm" className="h-auto p-0" onClick={onEdit}>
           Edit
         </Button>

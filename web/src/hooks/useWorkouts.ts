@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { api, type WorkoutInput, type RecoverySessionStatus, type TrainingConfig } from "@/lib/api"
+import { api, type WorkoutInput, type WorkoutStatus, type RecoverySessionStatus, type TrainingConfig } from "@/lib/api"
 
 export function useWorkouts() {
   return useQuery({ queryKey: ["workouts"], queryFn: api.workouts })
@@ -38,7 +38,8 @@ export function useWorkoutMutations() {
     onSuccess: invalidateWorkouts,
   })
   const updateWorkout = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<WorkoutInput> }) => api.updateWorkout(id, body),
+    mutationFn: ({ id, body }: { id: string; body: Partial<WorkoutInput & { status: WorkoutStatus }> }) =>
+      api.updateWorkout(id, body),
     onSuccess: invalidateWorkouts,
   })
   const deleteWorkout = useMutation({

@@ -15,6 +15,7 @@ import { GoalsPage } from "@/pages/GoalsPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 import { OnboardingPage } from "@/pages/OnboardingPage"
 import { DemoLoginPage } from "@/pages/DemoLoginPage"
+import { WorkoutRunnerPage } from "@/pages/WorkoutRunnerPage"
 
 // Gates the entire route tree above Shell/page level (not a useEffect-based redirect
 // inside Shell, the way useOnboardingGate works) — that matters: gating one level up
@@ -44,6 +45,7 @@ export default function App() {
           <Routes>
             <Route path="/demo-login" element={<DemoLoginPage />} />
             <Route path="/onboarding" element={<OnboardingPage />} />
+            <Route path="/workouts/:id/run" element={<WorkoutRunnerPage />} />
             <Route element={<Shell />}>
               <Route path="/" element={<HomePage />} />
               <Route path="/goals" element={<GoalsPage />} />

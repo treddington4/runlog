@@ -907,6 +907,74 @@ own `Workout.steps` schema would likely need the same fix eventually).
       production afterward and confirmed real data (144 runs, 9 real workouts) unaffected
 - [x] Commit: "Phase 4.3: goal-driven daily workout generator"
 
+### 4.5 Workout-runner + rest timer UI
+
+New sub-phase (not in the original plan) — closes the loop the user asked for at the
+very start of this phase: a live foreground timer for lifting, confirmed exact UX
+directly ("I start a timer to hold a 30 second plank, it gives me a 5 second
+countdown then starts the actual countdown"). Only meaningful once 4.4's
+`strength_exercise` step shape existed to drive it.
+
+- [x] `web/src/hooks/useCountdown.ts` — this app's first `setInterval` usage anywhere
+      (confirmed zero prior instances). One hook instance is reused across the
+      runner's several sequential countdowns (5s get-ready, hold, rest) rather than
+      fixing a duration/callback at construction time — `start(seconds, onComplete)`
+      takes both per call, since each phase needs a different completion action.
+      `pause`/`resume`/`skip` included alongside `start`.
+- [x] `web/src/lib/beep.ts` — Web Audio API oscillator beep (no binary asset needed,
+      nothing like this existed in the repo before). Wrapped in try/catch since
+      autoplay policy can block `AudioContext` before any user gesture — the visual
+      countdown stays authoritative either way.
+- [x] New top-level route `/workouts/:id/run` (outside `<Shell/>`, same "focused, no
+      nav chrome" pattern as `/onboarding`/`/demo-login`) — `WorkoutRunnerPage.tsx`.
+      Reuses the already-cached `useWorkouts()` list (finds by id from the URL param)
+      rather than adding a new single-workout GET endpoint, since the list is already
+      fetched app-wide. Flattens only `strength_exercise` steps into a linear
+      sequence of sets to run through — endurance steps (warmup/active/rest/
+      cooldown) are GPS-tracked externally via Strava/Garmin, not a manual timer, so
+      they're left alone.
+- [x] Flow per set, matching the user's exact description: a hold-based set runs a
+      5s "Get ready…" countdown, then the real hold countdown, then auto-records
+      `actualHoldSec` = the target and advances; a rep-based set shows weight/reps
+      inputs pre-filled from the target with a "Log Set" button. Every set (either
+      kind) is followed by a rest countdown sized from the step's `restSeconds` —
+      skipped only after the very last set overall. A beep fires at every countdown
+      completion (get-ready → hold, hold → rest, rest → next set).
+- [x] "Finish Workout" builds the full `steps` array with actuals folded in (adds
+      `completedAt` per logged set) and does a single `PATCH /api/workouts/{id}`
+      with `status: "completed"` — no new endpoint, reuses `update_workout`'s
+      existing full-steps-replacement contract exactly as 4.4 designed it to be used.
+      This is also what triggers `coach.update_workout`'s existing "planned →
+      completed" hook into `generator.apply_strength_progression` — the runner was
+      the missing piece that hook was built for in 4.3/4.4 but had no real caller yet.
+- [x] `WorkoutCard.tsx` gained a "Start" button, shown only when a workout has at
+      least one `strength_exercise` step and is still `status: "planned"` — an
+      endurance-only workout never shows it, matching the runner's own scope.
+- [x] Known v1 limitation, stated up front rather than discovered later: the runner
+      always starts from set 1 on load — it does not persist/resume mid-workout
+      progress across a page reload. Matches this phase's established "explicitly
+      bounded v1, not a guess at unstated requirements" discipline (same framing as
+      4.3's hardcoded exercise template).
+- [x] Verify: `tsc -b`/`oxlint` both clean (one pre-existing, unrelated `oxlint`
+      warning in `button.tsx`); `npm run build` succeeds. Built a throwaway container
+      from the full image (frontend included) and created a real test workout with
+      one hold-based set (10s plank) and one rep-based set (8×25lb goblet squat), then
+      drove the actual rendered UI end-to-end via a scripted Playwright click-through
+      (not just a curl simulation): confirmed the "Start" button appears on the
+      Workouts list, the get-ready→hold→rest→log-set→finished sequence renders and
+      transitions correctly with real 5s/10s/20s countdowns actually elapsing, and
+      that clicking "Finish Workout" redirects back to `/workouts`. Confirmed via a
+      direct DB query afterward that the `PATCH` persisted real actuals
+      (`actualHoldSec: 10`, `actualReps: 9`, `actualWeightLb: 30`,
+      `status: "completed"`) **and** that `apply_strength_progression` fired for
+      real off that exact request — Goblet Squat's `ExerciseProgress` row bumped
+      25lb→35lb (hit-target rep progression) and Plank's bumped 10s→15s (hit-target
+      hold progression), confirming the full runner→completion→progression pipeline
+      this phase exists to close, not just the UI in isolation. Only after that
+      passed was the real production container recreated with the same verified
+      image — confirmed real data (144 runs, 5 goals) untouched.
+- [x] Commit: "Phase 4.5: workout-runner + rest timer UI"
+
 ---
 
 ## Phase 6 — Training-load analytics

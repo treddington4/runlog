@@ -247,6 +247,85 @@ def training_load_trend(db, weeks: int = 8, user_id: str = DEFAULT_USER_ID):
     }
 
 
+_HARD_RUN_TYPES = ("Tempo", "Interval", "Long Run")
+
+
+def readiness(db, user_id: str = DEFAULT_USER_ID, date=None) -> dict:
+    """Phase 4.1 — single computation core for both the workout generator (4.3, both
+    the endurance and strength paths share this one result for a given date) and the
+    `get_readiness` chat tool. Reads DailySteps' HRV/resting-HR/sleep columns
+    (garmin_sync._sync_daily_wellness) plus real Run history — no invented composite
+    "readiness score", just real numbers and named flags, same "don't fabricate a
+    judgment" principle as goal_progress()."""
+    target = date or local_today()
+    if isinstance(target, str):
+        target = datetime.strptime(target, "%Y-%m-%d").date()
+
+    def _wellness_row(d):
+        return (
+            db.query(DailySteps)
+            .filter(DailySteps.date == d.isoformat(), owned_by(DailySteps.user_id, user_id))
+            .first()
+        )
+
+    today_row = _wellness_row(target)
+
+    def _trailing_avg(field: str):
+        vals = []
+        for i in range(1, 8):  # trailing 7 days, excluding target itself
+            row = _wellness_row(target - timedelta(days=i))
+            v = getattr(row, field, None) if row else None
+            if v is not None:
+                vals.append(v)
+        return (sum(vals) / len(vals)) if vals else None
+
+    flags = []
+
+    hrv_today = today_row.hrv_last_night_avg_ms if today_row else None
+    hrv_baseline = _trailing_avg("hrv_last_night_avg_ms")
+    hrv_delta_ms = round(hrv_today - hrv_baseline) if (hrv_today is not None and hrv_baseline is not None) else None
+    if hrv_delta_ms is not None and hrv_delta_ms < -10:
+        flags.append("hrv_below_baseline")
+
+    rhr_today = today_row.resting_hr_bpm if today_row else None
+    rhr_baseline = _trailing_avg("resting_hr_bpm")
+    resting_hr_delta = round(rhr_today - rhr_baseline) if (rhr_today is not None and rhr_baseline is not None) else None
+    if resting_hr_delta is not None and resting_hr_delta >= 5:
+        flags.append("rhr_spike")
+
+    sleep_score = today_row.sleep_score if today_row else None
+    sleep_seconds = today_row.sleep_seconds if today_row else None
+    if sleep_seconds is not None and sleep_seconds < 6.5 * 3600:
+        flags.append("sleep_deficit")
+
+    runs = _all_runs(db, "Run", user_id)
+    last7_start = (target - timedelta(days=6)).isoformat()
+    prior28_start = (target - timedelta(days=27)).isoformat()
+    target_str = target.isoformat()
+    last7 = sum(r.distance_mi or 0 for r in runs if r.date and last7_start <= r.date <= target_str)
+    trailing28 = sum(r.distance_mi or 0 for r in runs if r.date and prior28_start <= r.date <= target_str)
+    weekly_avg_28 = trailing28 / 4
+    acute_chronic_ratio = round(last7 / weekly_avg_28, 2) if weekly_avg_28 > 0 else None
+
+    hard_dates = sorted(
+        (r.date for r in runs if r.date and r.date <= target_str and r.suggested_type in _HARD_RUN_TYPES),
+        reverse=True,
+    )
+    days_since_hard = None
+    if hard_dates:
+        days_since_hard = (target - datetime.strptime(hard_dates[0], "%Y-%m-%d").date()).days
+
+    return {
+        "date": target_str,
+        "hrvDeltaMs": hrv_delta_ms,
+        "restingHrDelta": resting_hr_delta,
+        "sleepScore": sleep_score,
+        "acuteChronicRatio": acute_chronic_ratio,
+        "daysSinceHard": days_since_hard,
+        "flags": flags,
+    }
+
+
 def weekly_consistency_streak(db, min_miles: float = 1.0, min_runs: int = None,
                                activity_type="Run", user_id: str = DEFAULT_USER_ID):
     """Consecutive Mon-Sun weeks, walking backward from the current (possibly

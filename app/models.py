@@ -116,6 +116,8 @@ class DailySteps(Base):
     # account's rate-limit sensitivity this session argued for keeping that cost down.
     resting_hr_bpm = Column(Integer, nullable=True)
     vo2max = Column(Float, nullable=True)
+    hrv_last_night_avg_ms = Column(Integer, nullable=True)  # Phase 4.1 — overnight HRV, get_hrv_data()
+    hrv_status = Column(String, nullable=True)  # Garmin's own label verbatim, e.g. "BALANCED"
     sleep_score = Column(Integer, nullable=True)
     sleep_seconds = Column(Integer, nullable=True)
     deep_sleep_seconds = Column(Integer, nullable=True)

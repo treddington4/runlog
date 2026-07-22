@@ -414,6 +414,29 @@ def _extract_vo2max(max_metrics) -> float:
     return None
 
 
+def _extract_hrv(hrv_data) -> tuple:
+    """garminconnect's get_hrv_data() return shape is unverified against this exact
+    0.3.6 pin (no vendored source in this repo to check against) — same situation
+    _extract_vo2max already documents, so the same mitigation applies: try a few
+    plausible nesting paths, and log the actual raw keys once on the first real sync
+    (see _sync_daily_wellness) so any wrong guess here is a quick follow-up fix, not
+    a silent permanent miss. Returns (avg_ms, status) — either may be None."""
+    if not isinstance(hrv_data, dict):
+        return None, None
+    summary = hrv_data.get("hrvSummary") or hrv_data.get("hrvSummaries") or hrv_data
+    if isinstance(summary, list):
+        summary = summary[0] if summary else {}
+    if not isinstance(summary, dict):
+        return None, None
+    avg_ms = (
+        summary.get("lastNightAvg")
+        or summary.get("lastNight5MinHigh")
+        or summary.get("weeklyAvg")
+    )
+    status = summary.get("status") or summary.get("hrvStatus")
+    return avg_ms, status
+
+
 def _first_not_none(*values):
     """Like `a or b or c`, but doesn't treat a legitimate 0 as missing — real fields
     here (awake seconds especially) can genuinely be 0 for a solid night's sleep, and
@@ -469,10 +492,11 @@ def _extract_sleep_stages(raw_sleep: dict) -> list:
 
 
 def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> int:
-    """Resting HR / VO2max / sleep, one row per day in DailySteps — deliberately scoped
-    to just these 3 metrics (not the full 9-field wellness set from the original plan)
-    since each additional metric is another live API call per day, and this account's
-    rate-limit sensitivity argued for keeping that cost down. Dedups via
+    """Resting HR / VO2max / sleep / HRV (added Phase 4.1, for stats.readiness()), one
+    row per day in DailySteps — deliberately scoped to just these 4 metrics (not the
+    full 9-field wellness set from the original plan) since each additional metric is
+    another live API call per day, and this account's rate-limit sensitivity argued
+    for keeping that cost down. Dedups via
     day_needs_wellness_sync (same principle as run_needs_detail_sync) for settled days;
     the trailing GARMIN_WELLNESS_VOLATILE_DAYS window (today's/yesterday's data can
     still change) is re-checked on a GARMIN_WELLNESS_RECHECK_MIN_SEC throttle rather
@@ -532,6 +556,25 @@ def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> i
                 if _is_rate_limit_error(e):
                     raise
                 log.debug(f"garmin wellness sync: get_max_metrics failed for {date_str}: {e}")
+
+            try:
+                raw_hrv = client.get_hrv_data(date_str) or {}
+                avg_ms, status = _extract_hrv(raw_hrv)
+                if avg_ms:
+                    row.hrv_last_night_avg_ms = round(avg_ms)
+                if status:
+                    row.hrv_status = status
+                if raw_hrv and not avg_ms:
+                    # Extraction came up empty against real data — log the actual raw
+                    # keys once so a wrong guess in _extract_hrv is a quick fix, not a
+                    # silent permanent miss (same mitigation as _extract_vo2max's own
+                    # unverified-shape situation).
+                    log.debug(f"garmin wellness sync: get_hrv_data for {date_str} returned no "
+                              f"recognized field — raw keys: {list(raw_hrv.keys())}")
+            except Exception as e:
+                if _is_rate_limit_error(e):
+                    raise
+                log.debug(f"garmin wellness sync: get_hrv_data failed for {date_str}: {e}")
 
             try:
                 raw_sleep = client.get_sleep_data(date_str) or {}

@@ -43,7 +43,7 @@ BUILTIN_TOOLS_BLOCKLIST = [
 # are rebuilt per user.
 _TOOL_NAMES = [
     "get_run_summary", "get_weekly_mileage", "get_monthly_mileage", "get_personal_records",
-    "get_pace_trend", "get_training_load_trend", "get_daily_steps", "query_runs", "get_run_detail",
+    "get_pace_trend", "get_training_load_trend", "get_readiness", "get_daily_steps", "query_runs", "get_run_detail",
     "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
     "get_scheduled_workouts", "schedule_workout", "update_workout", "record_workout_completion",
     "render_chart", "get_goals",
@@ -118,6 +118,15 @@ def _build_tools(user_id: str) -> list:
     })
     async def get_training_load_trend(args):
         result = _db_call(stats.training_load_trend, user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    @tool("get_readiness", "Today's (or a given date's) readiness signal — HRV/resting-HR vs 7-day baseline, sleep score, 7d/28d acute:chronic mileage ratio, days since a hard run, and named flags (hrv_below_baseline/rhr_spike/sleep_deficit). This is what the workout generator's readiness gate uses — check it before suggesting anything more intense than easy if the user hasn't mentioned how they're feeling.", {
+        "type": "object", "properties": {
+            "date": {"type": "string", "description": "YYYY-MM-DD, defaults to today"},
+        },
+    })
+    async def get_readiness(args):
+        result = _db_call(stats.readiness, user_id=user_id, date=args.get("date"))
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
     @tool("get_goals", "The user's active goals with real computed progress (countdown, recent volume, etc — no invented \"on track\" verdict, just the numbers). Returned in priority order — lower priority number is more important. Check this before giving training advice when the user has an active race/consistency/distance goal, so guidance actually serves what they're working toward.", {
@@ -422,7 +431,7 @@ def _build_tools(user_id: str) -> list:
 
     return [
         get_run_summary, get_weekly_mileage, get_monthly_mileage, get_personal_records,
-        get_pace_trend, get_training_load_trend, get_daily_steps, query_runs, get_run_detail,
+        get_pace_trend, get_training_load_trend, get_readiness, get_daily_steps, query_runs, get_run_detail,
         get_health_history, find_related_health_history, log_health_note, update_health_status,
         get_scheduled_workouts, schedule_workout, update_workout, record_workout_completion,
         render_chart, get_goals,

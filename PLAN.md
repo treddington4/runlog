@@ -713,36 +713,33 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 
 ---
 
-## Phase 2 — Telemetry ingest API
-
-### 2.1 Schema
-- [ ] `HealthSample` table: `id (client "{device}:{record_id}" → idempotent), user_id,
-      kind (steps|sleep_session|hrv|resting_hr|heart_rate|blood_glucose), start_ts,
-      end_ts, value_json, device_id, received_at` — raw kept forever
-- [ ] `daily_steps` adds `hrv_last_night_avg_ms`, `glucose_tir_pct`,
-      `field_sources_json` (per-field provenance; precedence garmin > health_connect)
-- [ ] Commit: "Phase 2.1: health_samples schema + wellness provenance columns"
-
-### 2.2 Endpoint
-- [ ] `app/ingest.py` + `POST /api/ingest/health-connect`: batch INSERT OR IGNORE,
-      rollup touched dates into daily wellness respecting precedence; device-token auth
-- [ ] Glucose rollup: link readings to overlapping Run windows → `Run.glucose_json`;
-      daily time-in-range (70–180 default) → `glucose_tir_pct`
-- [ ] Verify: curl a synthetic batch twice → second reports duplicates, rollup correct
-- [ ] Commit: "Phase 2.2: Health Connect ingest endpoint + rollup"
-
----
-
 ## Phase 4 — Workout generator
 
 ### 4.1 Readiness core
-- [ ] `stats.readiness(db, user_id, date)` → hrvDeltaMs (vs 7d baseline),
-      restingHrDelta, sleepScore, acuteChronicRatio (7d/28d mileage until Phase 6
-      swaps in ATL/CTL), daysSinceHard, flags (`hrv_below_baseline` >10ms drop,
-      `rhr_spike` +5bpm, `sleep_deficit` <6.5h) — single computation core, chat tool
-      `get_readiness` added in `assistant.py`
-- [ ] Verify: container probe against real data; chat tool answers with real numbers
-- [ ] Commit: "Phase 4.1: readiness computation + chat tool"
+- [x] **HRV had zero backing at all before this** (no column, no Garmin fetch code
+      anywhere — confirmed by grepping `garmin_sync.py` in full). Added
+      `DailySteps.hrv_last_night_avg_ms`/`hrv_status`, and extended
+      `_sync_daily_wellness` with a 4th independently-wrapped `try/except` calling
+      `client.get_hrv_data()` (`_extract_hrv`, mirrors `_extract_vo2max`'s defensive
+      multi-candidate-key pattern since the exact 0.3.6 response shape isn't vendored
+      anywhere in this repo to check against)
+- [x] `stats.readiness(db, user_id, date)` → hrvDeltaMs (vs 7d baseline),
+      restingHrDelta, sleepScore, acuteChronicRatio (7d/28d mileage — a genuinely new
+      window, not a reuse of `training_load_trend`'s existing 28d-vs-28d comparison),
+      daysSinceHard, flags (`hrv_below_baseline` >10ms drop, `rhr_spike` +5bpm,
+      `sleep_deficit` <6.5h) — single computation core, chat tool `get_readiness`
+      added in `assistant.py`
+- [x] Verify: deployed for real; a live Garmin sync immediately after deploy pulled
+      real HRV on the first attempt with no raw-key mismatch (53ms/BALANCED and
+      49ms/UNBALANCED for two real days — the guessed field names in `_extract_hrv`
+      were correct against the actual account, no fallback debug-log path needed).
+      `stats.readiness()` run directly against live data returned sensible real
+      numbers (correctly `null` for `hrvDeltaMs`/`restingHrDelta` where a 7-day
+      baseline/resting-HR reading doesn't exist yet, rather than fabricating one).
+      Confirmed the chat tool end-to-end via a real `/api/chat/message` call — fired
+      `get_readiness`, cited the exact real numbers back correctly, and combined them
+      naturally with existing health-note context in the same reply
+- [x] Commit: "Phase 4.1: readiness computation + chat tool"
 
 ### 4.2 Structured endurance steps
 - [ ] Extend `coach._validate_steps` with second shape (discriminate on `stepType`):
@@ -804,39 +801,6 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
       `Run.gear_id`; default-gear-per-type rule at sync; `stats.gear_summary`
       (read-time mileage); CRUD + Settings UI + wear on dashboard
 - [ ] Commit: "Phase 6.3: gear lifecycle tracking"
-
----
-
-## Phase 5 — Garmin workout push
-
-- [ ] `app/garmin_push.py`: endurance steps → garminconnect 0.3.6 workout model
-      (hr_zone→HR target via UserTrainingConfig, pace→m/s, repeat blocks); reuse
-      `garmin_sync._login` + cooldown wrapper; `push_workout` (upload + schedule,
-      store `garmin_workout_uuid`), `unpush_workout`; 429 → `Workout.push_error`
-      (new column), never crashes the scheduler. All garminconnect workout types
-      isolated in this one module (FIT-file generation is the documented escape hatch)
-- [ ] `POST /api/workouts/{id}/push`; `User.auto_push_garmin` flag (default false)
-      auto-pushes generator output; "Push to Garmin" button on workout cards
-- [ ] Verify: real push of one workout; confirm on watch/Connect; unpush cleans up
-- [ ] Commit: "Phase 5: Garmin workout push pipeline"
-
----
-
-## Phase 3 — Android client (`android/`, after ingest contract freezes)
-
-- [ ] 3.1 Gradle scaffold: minimal Compose single-activity (server URL, device token,
-      HC permission grant, last-sync status) — headless-first, no dashboards
-- [ ] 3.2 Room: `QueuedSample(id PK, kind, startTs, endTs, valueJson, queuedAt,
-      uploadedAt?)`, `ChangesToken(recordType PK, token)`
-- [ ] 3.3 Health Connect source — **read-only** (READ_STEPS/SLEEP/HRV/RESTING_HR/
-      BLOOD_GLUCOSE, never WRITE): Changes API loop per type, token persisted
-      transactionally with its batch; expired-token fallback = 30-day re-baseline
-- [ ] 3.4 WorkManager: 15-min periodic (network-required, exponential backoff) —
-      drain HC → Room, upload batches ≤500 to `/api/ingest/health-connect`
-      (X-Api-Token), prune uploaded >7d
-- [ ] 3.5 `SensorSource` interface (future BLE) — interface only
-- [ ] Verify: end-to-end real phone → NAS: steps/sleep/HRV land in daily wellness
-- [ ] Commit per sub-task; final: "Phase 3: Android Health Connect client"
 
 ---
 
@@ -1080,6 +1044,59 @@ between requests, not just an always-on one.
       `main`/a version tag. Public demo hosting itself is deliberately unresolved —
       revisit if/when a genuinely reliable free (or cheap) option comes up
 - [x] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
+
+---
+
+## Phase 2 — Telemetry ingest API
+
+### 2.1 Schema
+- [ ] `HealthSample` table: `id (client "{device}:{record_id}" → idempotent), user_id,
+      kind (steps|sleep_session|hrv|resting_hr|heart_rate|blood_glucose), start_ts,
+      end_ts, value_json, device_id, received_at` — raw kept forever
+- [ ] `daily_steps` adds `hrv_last_night_avg_ms`, `glucose_tir_pct`,
+      `field_sources_json` (per-field provenance; precedence garmin > health_connect)
+- [ ] Commit: "Phase 2.1: health_samples schema + wellness provenance columns"
+
+### 2.2 Endpoint
+- [ ] `app/ingest.py` + `POST /api/ingest/health-connect`: batch INSERT OR IGNORE,
+      rollup touched dates into daily wellness respecting precedence; device-token auth
+- [ ] Glucose rollup: link readings to overlapping Run windows → `Run.glucose_json`;
+      daily time-in-range (70–180 default) → `glucose_tir_pct`
+- [ ] Verify: curl a synthetic batch twice → second reports duplicates, rollup correct
+- [ ] Commit: "Phase 2.2: Health Connect ingest endpoint + rollup"
+
+---
+
+## Phase 5 — Garmin workout push
+
+- [ ] `app/garmin_push.py`: endurance steps → garminconnect 0.3.6 workout model
+      (hr_zone→HR target via UserTrainingConfig, pace→m/s, repeat blocks); reuse
+      `garmin_sync._login` + cooldown wrapper; `push_workout` (upload + schedule,
+      store `garmin_workout_uuid`), `unpush_workout`; 429 → `Workout.push_error`
+      (new column), never crashes the scheduler. All garminconnect workout types
+      isolated in this one module (FIT-file generation is the documented escape hatch)
+- [ ] `POST /api/workouts/{id}/push`; `User.auto_push_garmin` flag (default false)
+      auto-pushes generator output; "Push to Garmin" button on workout cards
+- [ ] Verify: real push of one workout; confirm on watch/Connect; unpush cleans up
+- [ ] Commit: "Phase 5: Garmin workout push pipeline"
+
+---
+
+## Phase 3 — Android client (`android/`, after ingest contract freezes)
+
+- [ ] 3.1 Gradle scaffold: minimal Compose single-activity (server URL, device token,
+      HC permission grant, last-sync status) — headless-first, no dashboards
+- [ ] 3.2 Room: `QueuedSample(id PK, kind, startTs, endTs, valueJson, queuedAt,
+      uploadedAt?)`, `ChangesToken(recordType PK, token)`
+- [ ] 3.3 Health Connect source — **read-only** (READ_STEPS/SLEEP/HRV/RESTING_HR/
+      BLOOD_GLUCOSE, never WRITE): Changes API loop per type, token persisted
+      transactionally with its batch; expired-token fallback = 30-day re-baseline
+- [ ] 3.4 WorkManager: 15-min periodic (network-required, exponential backoff) —
+      drain HC → Room, upload batches ≤500 to `/api/ingest/health-connect`
+      (X-Api-Token), prune uploaded >7d
+- [ ] 3.5 `SensorSource` interface (future BLE) — interface only
+- [ ] Verify: end-to-end real phone → NAS: steps/sleep/HRV land in daily wellness
+- [ ] Commit per sub-task; final: "Phase 3: Android Health Connect client"
 
 ---
 

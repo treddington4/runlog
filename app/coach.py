@@ -11,8 +11,14 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import stats
-from models import HealthNote, Workout, Run, RecoveryTool, RecoverySession, DEFAULT_USER_ID, owned_by
+from models import (
+    HealthNote, Workout, Run, RecoveryTool, RecoverySession, UserTrainingConfig,
+    DEFAULT_USER_ID, owned_by,
+)
 from util import local_today
+
+VALID_MESOCYCLE_PATTERNS = ("3:1", "2:1", "4:1")
+VALID_DISTRIBUTIONS = ("pyramidal", "polarized")
 
 VALID_PERSONAS = ("encouraging", "normal", "spicy", "insulting")
 
@@ -47,48 +53,131 @@ def _steps_from_json(steps_json) -> list | None:
         return None
 
 
+# Phase 4.2 — structured endurance steps, discriminated from the original generic
+# step shape (below) by the presence of `stepType`. A step with no `stepType` at all
+# validates exactly as it always has (every already-stored mobility/warmup workout
+# keeps working unchanged) — this is additive, not a migration.
+VALID_ENDURANCE_STEP_TYPES = ("warmup", "active", "rest", "cooldown", "repeat")
+VALID_TARGET_TYPES = ("hr_zone", "hr_custom", "power", "pace", "cadence", "open")
+
+
+def _validate_generic_step(i: int, step: dict) -> dict:
+    """The original shape: {exercise: str, side?, durationSec?: int, reps?: int,
+    notes?: str, howTo?: str}. A step needs at least a duration or a rep count — a
+    bare named exercise with neither isn't actionable."""
+    if not step.get("exercise"):
+        raise ValueError(f"step {i} must be an object with at least an 'exercise' name")
+    side = step.get("side")
+    if side is not None and side not in VALID_STEP_SIDES:
+        raise ValueError(f"step {i}: side must be one of {VALID_STEP_SIDES}")
+    duration_sec = step.get("durationSec")
+    reps = step.get("reps")
+    if duration_sec is None and reps is None:
+        raise ValueError(f"step {i} ({step['exercise']!r}) needs durationSec and/or reps")
+    return {
+        "exercise": str(step["exercise"]), "side": side,
+        "durationSec": duration_sec, "reps": reps, "notes": step.get("notes"),
+        "howTo": step.get("howTo"),
+    }
+
+
+def _validate_endurance_step(i: int, step: dict, allow_repeat: bool = True) -> dict:
+    """{stepType: warmup|active|rest|cooldown|repeat, durationSec? XOR distanceM?
+    (neither = an "open", lap-press-to-end segment), targetType: hr_zone|hr_custom|
+    power|pace|cadence|open, targetZone? XOR targetLow?/targetHigh?, repeatCount?,
+    children?}. Metric units throughout (distanceM in meters, pace targets in
+    sec/km) — converted at display/push edges, not stored here. `repeat` is only
+    one level deep: its children may not themselves be `repeat` steps."""
+    step_type = step["stepType"]
+    if step_type == "repeat":
+        if not allow_repeat:
+            raise ValueError(f"step {i}: a repeat step's children may not themselves repeat (1 level only)")
+        repeat_count = step.get("repeatCount")
+        if not isinstance(repeat_count, int) or repeat_count < 2:
+            raise ValueError(f"step {i}: repeat needs repeatCount (int >= 2)")
+        children = step.get("children")
+        if not isinstance(children, list) or not children:
+            raise ValueError(f"step {i}: repeat needs a non-empty children list")
+        cleaned_children = []
+        for j, child in enumerate(children):
+            if not isinstance(child, dict):
+                raise ValueError(f"step {i} child {j} must be an object")
+            if child.get("stepType"):
+                cleaned_children.append(_validate_endurance_step(j, child, allow_repeat=False))
+            else:
+                cleaned_children.append(_validate_generic_step(j, child))
+        return {"stepType": "repeat", "repeatCount": repeat_count, "children": cleaned_children}
+
+    if step_type not in VALID_ENDURANCE_STEP_TYPES:
+        raise ValueError(f"step {i}: stepType must be one of {VALID_ENDURANCE_STEP_TYPES}")
+
+    duration_sec, distance_m = step.get("durationSec"), step.get("distanceM")
+    if duration_sec is not None and distance_m is not None:
+        raise ValueError(f"step {i}: durationSec and distanceM are mutually exclusive (or neither, for an open segment)")
+
+    target_type = step.get("targetType", "open")
+    if target_type not in VALID_TARGET_TYPES:
+        raise ValueError(f"step {i}: targetType must be one of {VALID_TARGET_TYPES}")
+    target_zone, target_low, target_high = step.get("targetZone"), step.get("targetLow"), step.get("targetHigh")
+    if target_zone is not None and (target_low is not None or target_high is not None):
+        raise ValueError(f"step {i}: targetZone and targetLow/targetHigh are mutually exclusive")
+    if target_type == "hr_zone" and target_zone is None:
+        raise ValueError(f"step {i}: targetType hr_zone needs targetZone")
+    if target_type in ("hr_custom", "power", "pace", "cadence") and (target_low is None or target_high is None):
+        raise ValueError(f"step {i}: targetType {target_type!r} needs targetLow and targetHigh")
+
+    return {
+        "stepType": step_type, "durationSec": duration_sec, "distanceM": distance_m,
+        "targetType": target_type, "targetZone": target_zone,
+        "targetLow": target_low, "targetHigh": target_high,
+    }
+
+
 def _validate_steps(steps):
-    """Each step: {exercise: str, side?: one of VALID_STEP_SIDES, durationSec?: int,
-    reps?: int, notes?: str, howTo?: str}. A step needs at least a duration or a rep
-    count — a bare named exercise with neither isn't actionable. `notes` is short
-    context (why/when, e.g. "optional, skip if fatigued"); `howTo` is longer-form
-    technique/form guidance, rendered as an expandable detail in the Workouts tab
-    rather than inline, since not every step needs it (self-explanatory ones like
-    "easy bike, zone 1" shouldn't get one, but an unfamiliar mobility drill or
-    stretch should). Raises ValueError with a specific reason so a malformed tool
-    call surfaces something the model can actually correct, same discipline as every
-    other coach.py validator."""
+    """Dispatches each step on whether `stepType` is present: absent -> the original
+    generic shape (unchanged); present -> the Phase 4.2 structured-endurance shape
+    (Phase 4.4 adds a third, strength_exercise). Raises ValueError with a specific
+    reason so a malformed tool call surfaces something the model can actually
+    correct, same discipline as every other coach.py validator."""
     if steps is None:
         return None
     if not isinstance(steps, list):
         raise ValueError("steps must be a list")
     cleaned = []
     for i, step in enumerate(steps):
-        if not isinstance(step, dict) or not step.get("exercise"):
-            raise ValueError(f"step {i} must be an object with at least an 'exercise' name")
-        side = step.get("side")
-        if side is not None and side not in VALID_STEP_SIDES:
-            raise ValueError(f"step {i}: side must be one of {VALID_STEP_SIDES}")
-        duration_sec = step.get("durationSec")
-        reps = step.get("reps")
-        if duration_sec is None and reps is None:
-            raise ValueError(f"step {i} ({step['exercise']!r}) needs durationSec and/or reps")
-        cleaned.append({
-            "exercise": str(step["exercise"]), "side": side,
-            "durationSec": duration_sec, "reps": reps, "notes": step.get("notes"),
-            "howTo": step.get("howTo"),
-        })
+        if not isinstance(step, dict):
+            raise ValueError(f"step {i} must be an object")
+        if step.get("stepType"):
+            cleaned.append(_validate_endurance_step(i, step))
+        else:
+            cleaned.append(_validate_generic_step(i, step))
     return cleaned
 
 
+def _step_duration_sec(step):
+    """One step's duration, or None if it doesn't have a reliable one (rep-based,
+    distance-based, open/lap-press, or a strength_exercise — Phase 4.4's rest-of-set
+    timing is naturally variable and not worth reconciling against a stated total).
+    A `repeat` step's duration is its children's total × repeatCount, recursively —
+    only meaningful when every child in the block is itself duration-based."""
+    if step.get("stepType") == "repeat":
+        child_durations = [_step_duration_sec(c) for c in step.get("children", [])]
+        if any(d is None for d in child_durations):
+            return None
+        return sum(child_durations) * step["repeatCount"]
+    if step.get("stepType") == "strength_exercise":
+        return None
+    return step.get("durationSec")
+
+
 def _steps_total_duration_sec(steps):
-    """Sum of every step's durationSec — but only when *every* step actually has one.
-    A session mixing timed and rep-based steps has no reliable total (a set of 12
-    squats has no fixed duration), so this deliberately returns None rather than
-    silently undercounting the rep-based portion and then flagging a false mismatch."""
+    """Sum of every step's duration — but only when *every* step actually has one.
+    A session mixing timed and rep-based/strength steps has no reliable total (a set
+    of 12 squats has no fixed duration), so this deliberately returns None rather than
+    silently undercounting the non-timed portion and then flagging a false mismatch."""
     if not steps:
         return None
-    durations = [s.get("durationSec") for s in steps]
+    durations = [_step_duration_sec(s) for s in steps]
     if any(d is None for d in durations):
         return None
     return sum(durations)
@@ -532,6 +621,51 @@ def delete_workout(db, workout_id: str, user_id: str = DEFAULT_USER_ID):
     if workout:
         db.delete(workout)
         db.commit()
+
+
+def _training_config_to_dict(c: UserTrainingConfig) -> dict:
+    return {
+        "maxHr": c.max_hr, "thresholdHr": c.threshold_hr, "ftpWatts": c.ftp_watts,
+        "zones": json.loads(c.zones_json) if c.zones_json else None,
+        "weeklyRampPct": c.weekly_ramp_pct, "mesocyclePattern": c.mesocycle_pattern,
+        "distribution": c.distribution, "strengthDaysPerWeek": c.strength_days_per_week,
+        "strengthTemplate": c.strength_template,
+    }
+
+
+def get_training_config(db, user_id: str = DEFAULT_USER_ID) -> dict:
+    """Returns the user's row, or the schema's own column defaults if they've never
+    saved one — a fresh account should see sensible defaults, not a 404. Defaults are
+    passed explicitly here rather than relying on the model's Column(default=...):
+    those only apply at INSERT/flush time, not to a plain unflushed Python object, so
+    a throwaway `UserTrainingConfig(user_id=user_id)` alone would come back with every
+    default column still None."""
+    config = db.get(UserTrainingConfig, user_id)
+    if not config:
+        config = UserTrainingConfig(
+            user_id=user_id, weekly_ramp_pct=3.0, mesocycle_pattern="3:1",
+            distribution="pyramidal", strength_days_per_week=2, strength_template="full_body_ab",
+        )
+    return _training_config_to_dict(config)
+
+
+def update_training_config(db, user_id: str = DEFAULT_USER_ID, **fields) -> dict:
+    if "mesocycle_pattern" in fields and fields["mesocycle_pattern"] is not None \
+            and fields["mesocycle_pattern"] not in VALID_MESOCYCLE_PATTERNS:
+        raise ValueError(f"mesocycle_pattern must be one of {VALID_MESOCYCLE_PATTERNS}")
+    if "distribution" in fields and fields["distribution"] is not None \
+            and fields["distribution"] not in VALID_DISTRIBUTIONS:
+        raise ValueError(f"distribution must be one of {VALID_DISTRIBUTIONS}")
+    config = db.get(UserTrainingConfig, user_id)
+    if not config:
+        config = UserTrainingConfig(user_id=user_id)
+        db.add(config)
+    for key in ("max_hr", "threshold_hr", "ftp_watts", "zones_json", "weekly_ramp_pct",
+                "mesocycle_pattern", "distribution", "strength_days_per_week", "strength_template"):
+        if key in fields and fields[key] is not None:
+            setattr(config, key, fields[key])
+    db.commit()
+    return _training_config_to_dict(config)
 
 
 def record_workout_completion(db, workout_id: str, run_id=None, critique_text=None,

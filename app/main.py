@@ -1053,6 +1053,38 @@ def delete_workout_endpoint(workout_id: str, user_id: str = Depends(auth.current
         db.close()
 
 
+@app.get("/api/training-config")
+def get_training_config_endpoint(user_id: str = Depends(auth.current_user_id)):
+    import coach
+    db = SessionLocal()
+    try:
+        return coach.get_training_config(db, user_id)
+    finally:
+        db.close()
+
+
+@app.patch("/api/training-config")
+async def update_training_config_endpoint(request: Request, user_id: str = Depends(auth.current_user_id)):
+    import coach
+    body = await request.json()
+    field_map = {
+        "maxHr": "max_hr", "thresholdHr": "threshold_hr", "ftpWatts": "ftp_watts",
+        "weeklyRampPct": "weekly_ramp_pct", "mesocyclePattern": "mesocycle_pattern",
+        "distribution": "distribution", "strengthDaysPerWeek": "strength_days_per_week",
+        "strengthTemplate": "strength_template",
+    }
+    fields = {py_key: body[api_key] for api_key, py_key in field_map.items() if api_key in body}
+    if "zones" in body:
+        fields["zones_json"] = json.dumps(body["zones"]) if body["zones"] is not None else None
+    db = SessionLocal()
+    try:
+        return coach.update_training_config(db, user_id=user_id, **fields)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        db.close()
+
+
 # ---------- Recovery tools/sessions (read-only tool list + coach-driven session log —
 # no POST here: recommend_recovery_session is chat-tool-driven only, same reasoning as
 # health-notes above; manual creation isn't built yet, see coach.py's RecoveryTool docstring) ----------

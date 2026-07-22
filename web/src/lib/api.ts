@@ -212,7 +212,10 @@ export interface GoalInput {
 export type WorkoutType = "easy" | "tempo" | "interval" | "long" | "rest" | "strength" | "cross_train"
 export type WorkoutStatus = "planned" | "completed" | "skipped" | "modified"
 
-export interface WorkoutStep {
+// The original shape — still used by any step with no `stepType` (every
+// already-scheduled mobility/warmup workout keeps rendering/editing exactly as before).
+export interface LegacyStep {
+  stepType?: undefined
   exercise: string
   side: string | null
   durationSec: number | null
@@ -220,6 +223,24 @@ export interface WorkoutStep {
   notes: string | null
   howTo: string | null
 }
+
+export type EnduranceStepType = "warmup" | "active" | "rest" | "cooldown" | "repeat"
+export type TargetType = "hr_zone" | "hr_custom" | "power" | "pace" | "cadence" | "open"
+
+// Phase 4.2 — structured endurance steps. Metric units (distanceM in meters).
+export interface EnduranceStep {
+  stepType: EnduranceStepType
+  durationSec: number | null
+  distanceM: number | null
+  targetType: TargetType
+  targetZone: number | null
+  targetLow: number | null
+  targetHigh: number | null
+  repeatCount?: number
+  children?: WorkoutStep[]
+}
+
+export type WorkoutStep = LegacyStep | EnduranceStep
 
 export interface Workout {
   id: string
@@ -246,6 +267,19 @@ export interface WorkoutInput {
   targetPaceSecPerMi: number | null
   targetDurationSec: number | null
   notes: string
+  steps?: WorkoutStep[] | null
+}
+
+export interface TrainingConfig {
+  maxHr: number | null
+  thresholdHr: number | null
+  ftpWatts: number | null
+  zones: Record<string, [number, number]> | null
+  weeklyRampPct: number
+  mesocyclePattern: string
+  distribution: string
+  strengthDaysPerWeek: number
+  strengthTemplate: string
 }
 
 export interface RecoveryTool {
@@ -545,6 +579,10 @@ export const api = {
   updateWorkout: (id: string, body: Partial<WorkoutInput & { status: WorkoutStatus }>) =>
     request<Workout>(`/api/workouts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteWorkout: (id: string) => request<{ deleted: true }>(`/api/workouts/${id}`, { method: "DELETE" }),
+
+  trainingConfig: () => request<TrainingConfig>("/api/training-config"),
+  updateTrainingConfig: (body: Partial<TrainingConfig>) =>
+    request<TrainingConfig>("/api/training-config", { method: "PATCH", body: JSON.stringify(body) }),
 
   recoveryTools: () => request<RecoveryTool[]>("/api/recovery-tools"),
   recoverySessions: () => request<RecoverySession[]>("/api/recovery-sessions"),

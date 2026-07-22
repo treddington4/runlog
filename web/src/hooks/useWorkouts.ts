@@ -1,8 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { api, type WorkoutInput, type RecoverySessionStatus } from "@/lib/api"
+import { api, type WorkoutInput, type RecoverySessionStatus, type TrainingConfig } from "@/lib/api"
 
 export function useWorkouts() {
   return useQuery({ queryKey: ["workouts"], queryFn: api.workouts })
+}
+
+export function useTrainingConfig() {
+  return useQuery({ queryKey: ["trainingConfig"], queryFn: api.trainingConfig })
+}
+
+export function useUpdateTrainingConfig() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Partial<TrainingConfig>) => api.updateTrainingConfig(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["trainingConfig"] }),
+  })
 }
 
 export function useRecoveryTools() {

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react"
+import { useState, useEffect, type ReactNode } from "react"
 import {
   useStravaStatus,
   useGarminStatus,
@@ -12,6 +12,7 @@ import {
 import { useCoachPersonality } from "@/hooks/useChat"
 import { useSteps } from "@/hooks/useSteps"
 import { usePush } from "@/hooks/usePush"
+import { useTrainingConfig, useUpdateTrainingConfig } from "@/hooks/useWorkouts"
 import type { CoachPersonality, SyncMetaInfo, ApiTokenCreated } from "@/lib/api"
 import { SyncControls } from "@/components/settings/SyncControls"
 import { Card } from "@/components/ui/card"
@@ -294,6 +295,98 @@ function CoachSection() {
   )
 }
 
+function TrainingSection() {
+  const { data: config } = useTrainingConfig()
+  const updateConfig = useUpdateTrainingConfig()
+  const [maxHr, setMaxHr] = useState("")
+  const [thresholdHr, setThresholdHr] = useState("")
+  const [weeklyRampPct, setWeeklyRampPct] = useState("")
+  const [strengthDaysPerWeek, setStrengthDaysPerWeek] = useState("")
+  const [mesocyclePattern, setMesocyclePattern] = useState("3:1")
+  const [distribution, setDistribution] = useState("pyramidal")
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    if (!config) return
+    setMaxHr(config.maxHr?.toString() ?? "")
+    setThresholdHr(config.thresholdHr?.toString() ?? "")
+    setWeeklyRampPct(config.weeklyRampPct.toString())
+    setStrengthDaysPerWeek(config.strengthDaysPerWeek.toString())
+    setMesocyclePattern(config.mesocyclePattern)
+    setDistribution(config.distribution)
+  }, [config])
+
+  function handleSave() {
+    updateConfig.mutate(
+      {
+        maxHr: maxHr ? Number(maxHr) : null,
+        thresholdHr: thresholdHr ? Number(thresholdHr) : null,
+        weeklyRampPct: Number(weeklyRampPct),
+        strengthDaysPerWeek: Number(strengthDaysPerWeek),
+        mesocyclePattern,
+        distribution,
+      },
+      { onSuccess: () => { setSaved(true); setTimeout(() => setSaved(false), 1500) } },
+    )
+  }
+
+  return (
+    <SettingsSection title="Training">
+      <div className="text-hale-faint pb-2 text-xs">
+        Drives the workout generator's zones, ramp rate, and periodization (Phase 4).
+        Leave max/threshold HR blank to use age-based defaults.
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label>Max HR</Label>
+          <Input type="number" value={maxHr} onChange={(e) => setMaxHr(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Threshold HR</Label>
+          <Input type="number" value={thresholdHr} onChange={(e) => setThresholdHr(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Weekly ramp %</Label>
+          <Input type="number" value={weeklyRampPct} onChange={(e) => setWeeklyRampPct(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Strength days/week</Label>
+          <Input
+            type="number"
+            value={strengthDaysPerWeek}
+            onChange={(e) => setStrengthDaysPerWeek(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Mesocycle pattern</Label>
+          <Select value={mesocyclePattern} onValueChange={setMesocyclePattern}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="3:1">3:1</SelectItem>
+              <SelectItem value="2:1">2:1</SelectItem>
+              <SelectItem value="4:1">4:1</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Distribution</Label>
+          <Select value={distribution} onValueChange={setDistribution}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="pyramidal">Pyramidal</SelectItem>
+              <SelectItem value="polarized">Polarized</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <Button size="sm" className="mt-3" disabled={updateConfig.isPending} onClick={handleSave}>
+        {updateConfig.isPending ? "Saving…" : "Save"}
+      </Button>
+      {saved && <div className="text-hale-good mt-1.5 text-xs">Saved</div>}
+    </SettingsSection>
+  )
+}
+
 function PushSection() {
   const { data: config } = useConfig()
   const push = usePush()
@@ -455,6 +548,7 @@ export function SettingsPage() {
       <ConnectionsSection />
       <TokensSection />
       <CoachSection />
+      <TrainingSection />
       <PushSection />
       <SyncScheduleSection />
       <AboutSection />

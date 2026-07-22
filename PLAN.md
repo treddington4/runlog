@@ -742,17 +742,46 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 - [x] Commit: "Phase 4.1: readiness computation + chat tool"
 
 ### 4.2 Structured endurance steps
-- [ ] Extend `coach._validate_steps` with second shape (discriminate on `stepType`):
+- [x] Extended `coach._validate_steps` into a dispatcher on `stepType` presence —
+      absent = the original generic shape (every already-stored mobility/warmup
+      workout keeps validating unchanged); present =
       `{stepType: warmup|active|rest|cooldown|repeat, durationSec XOR distanceM
       (or neither = lap-press "open"), targetType: hr_zone|hr_custom|power|pace|
-      cadence|open, targetZone XOR targetLow/High, repeatCount+children (1 level)}`
-      — metric units stored, converted at display/push edges
-- [ ] `UserTrainingConfig` table: `user_id PK, max_hr, threshold_hr, ftp_watts?,
-      zones_json (5-zone HR bounds; default max_hr=208−0.7·age), weekly_ramp_pct
-      (default 3.0), mesocycle_pattern ("3:1"), distribution ("pyramidal")` +
-      `GET/PATCH /api/training-config` + Settings UI
-- [ ] Frontend: render endurance steps in workout cards (zones/paces humanized)
-- [ ] Commit: "Phase 4.2: endurance step contract + training config"
+      cadence|open, targetZone XOR targetLow/High, repeatCount+children (1 level —
+      a repeat's children may not themselves repeat, enforced in
+      `_validate_endurance_step`)}` — metric units stored (distanceM in meters).
+      `_steps_total_duration_sec` reworked into a recursive `_step_duration_sec` so a
+      `repeat` block's duration (children's total × repeatCount) is accounted for
+      correctly, and so it can cleanly skip `strength_exercise` steps once 4.4 adds them
+- [x] `UserTrainingConfig` table: `user_id PK, max_hr, threshold_hr, ftp_watts?,
+      zones_json, weekly_ramp_pct (default 3.0), mesocycle_pattern ("3:1"),
+      distribution ("pyramidal")`, plus 2 fields pulled forward from 4.4's design
+      since they belong on the same flat per-user row: `strength_days_per_week`
+      (default 2), `strength_template` (default `"full_body_ab"`) — `GET/PATCH
+      /api/training-config` + a new Settings "Training" section. Caught and fixed a
+      real bug here: `Column(default=...)` only applies at INSERT/flush time, not to
+      a plain unflushed Python object — the original `get_training_config()`'s
+      "return defaults for a fresh account" fallback silently returned `None` for
+      every default field until the defaults were passed explicitly in Python instead
+      of relying on the ORM column default
+- [x] Frontend: endurance steps render in `WorkoutCard` (stepType label, duration/
+      distance, humanized target — `repeat` nests its children one level, matching
+      the backend's own 1-level rule); `WorkoutInput`/`api.ts` gained a `steps` field
+      that didn't exist on the wire type at all before this (a real pre-existing gap,
+      not something 4.2 introduced)
+- [x] Verify: deployed for real; curled a workout create with a nested `repeat` block
+      and confirmed `targetDurationSec` auto-computed correctly (1980s = 600 +
+      4×(180+90) + 300, i.e. the repeat-duration fix above actually works against a
+      real request, not just in theory); confirmed mutual-exclusion and
+      missing-target-field validation both 400 with specific messages; confirmed the
+      original legacy generic-step shape still creates correctly unchanged. Screenshotted
+      Settings' new Training section against live production (all defaults correct:
+      ramp 3%, 2 strength days/week, 3:1, Pyramidal) — one capture caught the
+      pre-existing "Sync schedule"/`Resting HR` rows still loading (a screenshot-
+      timing race, confirmed non-reproducible on a second capture, not a real
+      regression from this work). Cleaned up all test workout rows/training-config
+      values from the real production DB afterward
+- [x] Commit: "Phase 4.2: endurance step contract + training config"
 
 ### 4.3 Generator engine
 - [ ] `weekly_plan` table: `(user_id, week_start) PK, target_tss, actual_tss,

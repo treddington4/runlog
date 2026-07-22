@@ -1,13 +1,64 @@
 import * as React from "react"
-import type { Workout, WorkoutStep } from "@/lib/api"
+import type { Workout, WorkoutStep, EnduranceStep } from "@/lib/api"
 import { WORKOUT_TYPE_LABELS, WORKOUT_STATUS_COLORS } from "@/lib/workouts"
 import { paceStr } from "@/lib/format"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 
+const STEP_TYPE_LABELS: Record<string, string> = {
+  warmup: "Warm-up", active: "Active", rest: "Rest", cooldown: "Cool-down", repeat: "Repeat",
+}
+
+function enduranceTargetLabel(step: EnduranceStep): string | null {
+  switch (step.targetType) {
+    case "hr_zone":
+      return step.targetZone ? `Zone ${step.targetZone}` : null
+    case "hr_custom":
+      return step.targetLow && step.targetHigh ? `${step.targetLow}-${step.targetHigh} bpm` : null
+    case "power":
+      return step.targetLow && step.targetHigh ? `${step.targetLow}-${step.targetHigh}W` : null
+    case "pace":
+      return step.targetLow && step.targetHigh ? `${step.targetLow}-${step.targetHigh} sec/km` : null
+    case "cadence":
+      return step.targetLow && step.targetHigh ? `${step.targetLow}-${step.targetHigh} spm` : null
+    default:
+      return null
+  }
+}
+
+// Phase 4.2 — structured endurance steps (stepType present). `repeat` renders its
+// children nested one level deep, matching the backend's "1 level only" rule.
+function EnduranceStepLine({ step }: { step: EnduranceStep }) {
+  if (step.stepType === "repeat") {
+    return (
+      <li>
+        {step.repeatCount}× repeat:
+        <ol className="list-disc space-y-1 py-1 pl-5">
+          {(step.children ?? []).map((c, i) => (
+            <WorkoutStepLine key={i} step={c} />
+          ))}
+        </ol>
+      </li>
+    )
+  }
+  const amount = []
+  if (step.durationSec) amount.push(`${step.durationSec}s`)
+  if (step.distanceM) amount.push(`${(step.distanceM / 1000).toFixed(2)}km`)
+  const target = enduranceTargetLabel(step)
+  return (
+    <li>
+      {STEP_TYPE_LABELS[step.stepType] ?? step.stepType}
+      {amount.length ? ` — ${amount.join(", ")}` : ""}
+      {target ? ` @ ${target}` : ""}
+    </li>
+  )
+}
+
 // Ports workoutStepLineHTML() — how-to guidance collapses behind <details> by
 // default so a 20+ step routine stays scannable.
 function WorkoutStepLine({ step }: { step: WorkoutStep }) {
+  if (step.stepType) return <EnduranceStepLine step={step} />
+
   const amount = []
   if (step.durationSec) amount.push(`${step.durationSec}s`)
   if (step.reps) amount.push(`${step.reps} reps`)

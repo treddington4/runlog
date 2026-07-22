@@ -346,6 +346,25 @@ class Workout(Base):
                                                             # garmin_sync._fetch_adaptive_plan_workouts)
 
 
+class UserTrainingConfig(Base):
+    """Per-user training parameters the generator (Phase 4.3) and endurance step
+    targets (Phase 4.2) read from — one flat row per user, distinct from
+    ExerciseProgress (Phase 4.4), which tracks per-exercise progression state rather
+    than these fixed configuration values."""
+    __tablename__ = "user_training_config"
+
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    max_hr = Column(Integer, nullable=True)
+    threshold_hr = Column(Integer, nullable=True)
+    ftp_watts = Column(Integer, nullable=True)
+    zones_json = Column(Text, nullable=True)  # 5-zone HR bounds; null = derive from max_hr (208 - 0.7*age default)
+    weekly_ramp_pct = Column(Float, default=3.0)
+    mesocycle_pattern = Column(String, default="3:1")
+    distribution = Column(String, default="pyramidal")
+    strength_days_per_week = Column(Integer, default=2)
+    strength_template = Column(String, default="full_body_ab")  # selects the rotation in generator.py
+
+
 class RecoveryTool(Base):
     """A recovery device the athlete owns that the coach can factor into
     recommendations — e.g. compression boots. Deliberately concrete/narrow for now

@@ -5,15 +5,10 @@ computes real per-mile splits, grade-adjusted pace, and interval structure, look
 historical weather for free via Open-Meteo, and auto-syncs on a schedule — no external
 API tokens burned per sync, and no LLM in the loop.
 
-[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&repository=github.com/treddington4/hale&branch=master&builder=dockerfile&dockerfile=Dockerfile&instance_type=free&ports=8000;http;/&env[ENABLE_DEMO_LOGIN]=true&env[AUTH_MODE]=enabled&env[DEMO_CAPACITY]=5&env[DEMO_SESSION_HOURS]=2&name=hale-demo)
-
-Want to poke around before self-hosting? The button above spins up a live instance
-(Koyeb's free tier — no card required) with a "Try the Demo" login — a throwaway
-account pre-populated with sample data, reset automatically after a couple hours,
-with no real Strava/Garmin/AI credentials ever touched. The demo deployment needs no
-persistent storage (Koyeb's free instances don't support volumes anyway) — demo data
-is disposable by design, so an ephemeral local SQLite file that resets on restart is
-fine here.
+Want to poke around before self-hosting? This repo supports an ephemeral demo mode
+(a throwaway account pre-populated with sample data, reset automatically after a
+couple hours, no real Strava/Garmin/AI credentials ever touched) meant for a free
+cloud deployment — see [Deploying the demo](#deploying-the-demo) below.
 
 ## Setup
 
@@ -99,6 +94,36 @@ docker cp runlog:/data/runlog.db ./runlog-backup.db
 
 No calls to any LLM API happen in this stack — sync, weather lookup, and run
 classification are all deterministic code.
+
+## Deploying the demo
+The app has a built-in ephemeral demo mode (Phase 11): set `ENABLE_DEMO_LOGIN=true`
+and `AUTH_MODE=enabled` and a fresh deployment gets a "Try the Demo" login screen
+instead of going straight in — a throwaway account per visitor, capacity-limited,
+auto-expiring, with real Strava/Garmin syncs and the AI chat both mocked so nothing
+external is ever actually touched.
+
+This is meant for a **separate, disposable** deployment, never your own real data.
+It needs no persistent disk (demo data is disposable by design) and no background
+scheduler (expiry cleanup happens lazily per-request, not on a timer), so it runs
+fine on a free host that sleeps the container when idle.
+
+One option with a genuinely card-free free tier: [SnapDeploy](https://snapdeploy.dev)
+— connect the repo through their dashboard (there's no shareable one-click deploy
+link for it, unlike some other hosts), pick the Docker/custom-container path so it
+builds this repo's own multi-stage `Dockerfile` rather than auto-detecting a
+framework, expose port `8000`, and set these environment variables:
+```
+ENABLE_DEMO_LOGIN=true
+AUTH_MODE=enabled
+DEMO_CAPACITY=5
+DEMO_SESSION_HOURS=2
+```
+(Their docs weren't specific enough to confirm exactly which option guarantees your
+committed `Dockerfile` gets used verbatim rather than a regenerated one — worth
+double-checking in their dashboard before you deploy.) `ghcr.io/treddington4/hale` is
+also published automatically on every push to `main` (see
+`.github/workflows/docker-publish.yml`) if a host you use prefers pulling a
+pre-built image instead of building from source.
 
 ## License
 MIT — see [LICENSE](LICENSE).

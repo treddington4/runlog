@@ -1016,30 +1016,42 @@ between requests, not just an always-on one.
 - [x] `.github/workflows/docker-publish.yml` — checkout → Buildx → GHCR login
       (`GITHUB_TOKEN`) → build root `Dockerfile` → push
       `ghcr.io/treddington4/hale:latest` (+ semver on a version tag)
-- [x] **Host: Koyeb, not Render** — switched after shipping a Render version, on
-      request: no credit card required at all (Render's free tier does), and once
-      11.1/11.3 dropped the background-scheduler dependency, Koyeb's free instance
-      (always-on, no cold-start sleep) became the only remaining differentiator worth
-      picking on — a visitor's first click never eats a wake-up delay, unlike a
-      sleep-on-idle free host. `README.md`'s "Deploy to Koyeb" button (built from
-      Koyeb's documented one-click-deploy URL query params — `type=git`,
-      `builder=dockerfile`, `instance_type=free`, `ports=8000;http;/`, `env[...]`
-      pairs for `ENABLE_DEMO_LOGIN`/`AUTH_MODE`/`DEMO_CAPACITY`/`DEMO_SESSION_HOURS`)
-      replaces the earlier `render.yaml` (deleted — Koyeb has no repo-committed
-      Blueprint-equivalent file, it's purely URL-parameter-driven). Confirmed via
-      Koyeb's own docs that free instances don't support persistent volumes at all —
-      a non-issue here since demo data is disposable by design anyway; an ephemeral
-      local SQLite file that resets on container restart is exactly the right amount
-      of persistence for a throwaway demo
-- [x] Verify (mine): both the workflow YAML and the deploy-link query params were
-      checked against Koyeb's own documented format (fetched directly, not guessed);
-      the exact `docker build` step the workflow runs was independently validated
-      many times over via `docker compose build` on the NAS throughout 11.1-11.3's
-      verification, always succeeding cleanly
+- [x] **Host: went through two picks before landing on SnapDeploy.** Render's free
+      tier requires a card, so tried Koyeb next (no card, always-on free instance —
+      genuinely the better fit once 11.1/11.3 dropped the background-scheduler
+      dependency, since always-on avoided a cold-start wait on a visitor's first
+      click). Built a "Deploy to Koyeb" button from their documented one-click-deploy
+      URL params (`type=git`, `builder=dockerfile`, `instance_type=free`,
+      `ports=8000;http;/`, `env[...]` pairs) — but the user actually clicked it and
+      Koyeb's deploy page came back showing an acquisition banner ("Koyeb is joining
+      Mistral") instead of the real form, a live signal their platform is mid-
+      transition and not something to depend on right now. Switched again, to
+      **SnapDeploy** (also genuinely card-free) — confirmed via their docs that they
+      support deploying an existing Dockerfile ("Custom Docker"), not just framework
+      auto-detection, but **there's no shareable one-click-deploy URL for it** (only
+      a dashboard-driven GitHub connect flow), so `README.md` has manual setup steps
+      instead of a badge. Their docs also weren't specific enough to fully confirm
+      the custom-Docker path guarantees the *committed* multi-stage `Dockerfile` gets
+      used verbatim rather than regenerated from framework detection — flagged
+      explicitly in the README as something to double-check in their dashboard,
+      since I can't verify SnapDeploy's actual runtime UI behavior from public docs
+      alone. `render.yaml` stays deleted (neither Koyeb nor SnapDeploy use a repo-
+      committed Blueprint file)
+- [x] Verify (mine): the GHCR workflow YAML parses correctly and its exact
+      `docker build` step was independently validated many times over via
+      `docker compose build` on the NAS throughout 11.1-11.3's verification. Every
+      specific host-integration claim above (Koyeb's URL param format, the
+      acquisition-banner finding, SnapDeploy's Dockerfile-vs-auto-detect ambiguity)
+      came from directly fetching each platform's own docs/live pages in this
+      session, not assumption — this is exactly the kind of external claim that
+      needed checking rather than guessing, and the checking caught a real, live
+      platform-stability issue (Koyeb) before it became the user's problem to debug
+      after clicking a broken badge
 - [ ] **Verify (yours — real external-account actions, out of reach from here)**:
       confirm the Action actually runs and publishes on your next push to `main`/a
-      version tag; click the Koyeb badge from a clean browser and confirm it
-      provisions and boots to the demo login screen
+      version tag; walk through SnapDeploy's dashboard yourself and confirm it
+      actually builds from this repo's real `Dockerfile` (not a regenerated one)
+      before trusting the deployed demo reflects the real app
 - [x] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
 
 ---

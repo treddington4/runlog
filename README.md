@@ -95,35 +95,23 @@ docker cp runlog:/data/runlog.db ./runlog-backup.db
 No calls to any LLM API happen in this stack — sync, weather lookup, and run
 classification are all deterministic code.
 
-## Deploying the demo
+## Demo mode
 The app has a built-in ephemeral demo mode (Phase 11): set `ENABLE_DEMO_LOGIN=true`
 and `AUTH_MODE=enabled` and a fresh deployment gets a "Try the Demo" login screen
 instead of going straight in — a throwaway account per visitor, capacity-limited,
 auto-expiring, with real Strava/Garmin syncs and the AI chat both mocked so nothing
-external is ever actually touched.
+external is ever actually touched. See [`.env.demo.example`](.env.demo.example) for
+the 4 env vars that actually matter.
 
 This is meant for a **separate, disposable** deployment, never your own real data.
 It needs no persistent disk (demo data is disposable by design) and no background
-scheduler (expiry cleanup happens lazily per-request, not on a timer), so it runs
-fine on a free host that sleeps the container when idle.
+scheduler (expiry cleanup happens lazily per-request, not on a timer).
 
-One option with a genuinely card-free free tier: [SnapDeploy](https://snapdeploy.dev)
-— connect the repo through their dashboard (there's no shareable one-click deploy
-link for it, unlike some other hosts), pick the Docker/custom-container path so it
-builds this repo's own multi-stage `Dockerfile` rather than auto-detecting a
-framework, expose port `8000`, and set these environment variables:
-```
-ENABLE_DEMO_LOGIN=true
-AUTH_MODE=enabled
-DEMO_CAPACITY=5
-DEMO_SESSION_HOURS=2
-```
-(Their docs weren't specific enough to confirm exactly which option guarantees your
-committed `Dockerfile` gets used verbatim rather than a regenerated one — worth
-double-checking in their dashboard before you deploy.) `ghcr.io/treddington4/hale` is
-also published automatically on every push to `main` (see
-`.github/workflows/docker-publish.yml`) if a host you use prefers pulling a
-pre-built image instead of building from source.
+No specific free-hosting recommendation right now — the two card-free options tried
+here both hit real reliability problems (one mid-acquisition, one failing to deploy
+with no diagnostics). `ghcr.io/treddington4/hale` is published automatically on
+every push to `main` (see `.github/workflows/docker-publish.yml`) for whenever a
+solid option turns up, or for self-hosting on your own infrastructure.
 
 ## License
 MIT — see [LICENSE](LICENSE).

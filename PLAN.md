@@ -1037,6 +1037,22 @@ between requests, not just an always-on one.
       since I can't verify SnapDeploy's actual runtime UI behavior from public docs
       alone. `render.yaml` stays deleted (neither Koyeb nor SnapDeploy use a repo-
       committed Blueprint file)
+- [x] **Real deploy attempt surfaced a second SnapDeploy quirk**: its dependency
+      scanner flagged a hard "requires PostgreSQL" gate the app has never used
+      anywhere — traced to a single mention in this very `PLAN.md`'s deferred-scope
+      list (`"PostGIS/PostgreSQL migration (rejected at current scale)"`), read by a
+      naive text scan rather than actual manifest parsing; worked around via
+      SnapDeploy's "external/hosted Postgres" option with a placeholder connection
+      string the app never reads. Separately, its env-var auto-detection reads
+      `.env.example` directly and demanded non-empty values for every credential
+      listed there (Strava/Garmin/Claude/VAPID) despite all of them being genuinely
+      optional/mocked-for-demo in the actual code — added **`.env.demo.example`**
+      (new, minimal — only the 4 vars demo mode actually needs) and an explicit
+      "any placeholder text works for these 8" list in `README.md`'s demo section,
+      rather than editing the primary `.env.example` (which correctly serves real
+      self-hosters and isn't the actual root cause — the two flagged-vs-not-flagged
+      sets don't cleanly map to any single editable property of that file, so
+      chasing SnapDeploy's exact heuristic isn't worth it)
 - [x] Verify (mine): the GHCR workflow YAML parses correctly and its exact
       `docker build` step was independently validated many times over via
       `docker compose build` on the NAS throughout 11.1-11.3's verification. Every
@@ -1047,11 +1063,22 @@ between requests, not just an always-on one.
       needed checking rather than guessing, and the checking caught a real, live
       platform-stability issue (Koyeb) before it became the user's problem to debug
       after clicking a broken badge
+- [x] **Real attempt on SnapDeploy actually failed to deploy** — after clearing both
+      the Postgres false-positive and the env-var gate above, its own deploy step
+      returned a fully opaque `"Deployment failed: Something went wrong on our end"`
+      with zero build log or diagnostic. Combined with Koyeb's acquisition-transition
+      blocker, that's two independent card-free hosts each hitting a real reliability
+      problem in the same session — decided, on request, to **stop recommending a
+      specific free host** rather than keep chasing platform-specific quirks.
+      `README.md`'s "Demo mode" section trimmed to state this plainly: the feature
+      itself is fully built and verified (11.1-11.3), `ghcr.io/treddington4/hale` is
+      published automatically for whenever a solid free option turns up or for
+      self-hosting on your own infra, and no further-hours were spent debugging a
+      third-party platform's own opaque backend error
 - [ ] **Verify (yours — real external-account actions, out of reach from here)**:
-      confirm the Action actually runs and publishes on your next push to `main`/a
-      version tag; walk through SnapDeploy's dashboard yourself and confirm it
-      actually builds from this repo's real `Dockerfile` (not a regenerated one)
-      before trusting the deployed demo reflects the real app
+      confirm the GHCR Action actually runs and publishes on your next push to
+      `main`/a version tag. Public demo hosting itself is deliberately unresolved —
+      revisit if/when a genuinely reliable free (or cheap) option comes up
 - [x] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
 
 ---

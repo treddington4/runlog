@@ -3,6 +3,10 @@ import { cn } from "@/lib/utils"
 import { NAV_ITEMS } from "./nav-config"
 import { RaceCountdown } from "./RaceCountdown"
 import { useOnboardingGate } from "@/hooks/useOnboardingGate"
+import { useConfig } from "@/hooks/useSettings"
+import { useDemoLogout } from "@/hooks/useDemoAuth"
+import { getDemoSession } from "@/lib/demoAuth"
+import { Button } from "@/components/ui/button"
 
 function Wordmark() {
   return (
@@ -55,6 +59,26 @@ function BottomNavLink({ item }: { item: (typeof NAV_ITEMS)[number] }) {
   )
 }
 
+function DemoBanner() {
+  const { data: config } = useConfig()
+  const logout = useDemoLogout()
+  if (!config?.isDemoUser) return null
+
+  const session = getDemoSession()
+  const endsAt = session ? new Date(session.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : null
+
+  return (
+    <div className="border-hale-gold/40 bg-hale-gold/10 flex items-center justify-between gap-3 border-b px-4 py-2 text-xs">
+      <span>
+        Demo session{endsAt ? ` — ends around ${endsAt}` : ""} — data here is synthetic and disappears when it ends.
+      </span>
+      <Button size="sm" variant="outline" disabled={logout.isPending} onClick={() => logout.mutate()}>
+        {logout.isPending ? "Ending…" : "End demo session"}
+      </Button>
+    </div>
+  )
+}
+
 export function Shell() {
   useOnboardingGate()
   return (
@@ -78,6 +102,8 @@ export function Shell() {
           <Wordmark />
           <RaceCountdown />
         </header>
+
+        <DemoBanner />
 
         <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 pb-20 min-[900px]:pb-4">
           <Outlet />

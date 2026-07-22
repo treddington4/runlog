@@ -1,5 +1,8 @@
 """Database models. SQLite file lives at /data/runlog.db (mounted volume)."""
-from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, Text, UniqueConstraint, or_
+from sqlalchemy import (
+    create_engine, event, Column, String, Float, Integer, Boolean, Text, ForeignKey,
+    UniqueConstraint, or_,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime, timezone
 import os
@@ -11,6 +14,20 @@ SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 DEFAULT_USER_ID = "default"
+
+
+@event.listens_for(engine, "connect")
+def _enable_sqlite_fk(dbapi_connection, connection_record):
+    """SQLite ignores FK constraints per-connection unless this pragma is set — needed
+    for the per-user tables' ON DELETE CASCADE (Phase 11, ephemeral demo teardown) to
+    actually fire. Inert for every table that already exists in a real, pre-Phase-11
+    database: SQLite only enforces constraints actually present in a table's own
+    on-disk DDL, and create_all() never retroactively alters an existing table's
+    schema — so this only takes effect for tables created fresh going forward (a new
+    demo deployment's empty volume), never the production data this app already has."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 def owned_by(column, user_id: str):
@@ -30,7 +47,7 @@ class Run(Base):
     __tablename__ = "runs"
 
     id = Column(String, primary_key=True)  # e.g. "strava_19268494216" or "garmin_..."
-    user_id = Column(String, nullable=True)  # see owned_by() — NULL on pre-migration rows, treated as "default"
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # see owned_by() — NULL on pre-migration rows, treated as "default"
     source = Column(String)                # "strava" | "garmin"
     activity_type = Column(String, default="Run")  # raw source activity type: "Run", "Ride", "Walk", "Hike", ...
     date = Column(String)                  # YYYY-MM-DD
@@ -87,7 +104,7 @@ class DailySteps(Base):
     __tablename__ = "daily_steps"
 
     date = Column(String, primary_key=True)  # YYYY-MM-DD
-    user_id = Column(String, primary_key=True, default=DEFAULT_USER_ID)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, default=DEFAULT_USER_ID)
     steps = Column(Integer)
 
     # Wellness metrics (Garmin-only, one row per day) — resting_hr_bpm/vo2max come from
@@ -139,7 +156,7 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String, nullable=True)  # see owned_by()
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # see owned_by()
     role = Column(String)  # "user" | "assistant"
     content = Column(Text)
     tool_calls_json = Column(Text, nullable=True)  # which real tools/queries backed an assistant reply
@@ -156,11 +173,13 @@ class User(Base):
     on a single-tenant assumption."""
     __tablename__ = "users"
 
-    id = Column(String, primary_key=True)  # DEFAULT_USER_ID or f"user_{uuid.uuid4().hex[:12]}"
+    id = Column(String, primary_key=True)  # DEFAULT_USER_ID, f"user_{uuid.uuid4().hex[:12]}", or f"demo_{...}"
     email = Column(String, nullable=True, unique=True)
     password_hash = Column(String, nullable=True)
     oidc_subject = Column(String, nullable=True, unique=True)  # OIDC `sub` claim (Phase 1.3), one IdP per user for now
     coach_personality = Column(String, default="normal")  # "encouraging"|"normal"|"spicy"|"insulting"
+    is_demo = Column(Boolean, default=False)  # Phase 11 — ephemeral demo login (see app/demo.py)
+    expires_at = Column(String, nullable=True)  # ISO timestamp; demo users only, swept by demo.sweep_expired_demo_users()
     created_at = Column(String)
 
 
@@ -176,7 +195,7 @@ class ProviderCredential(Base):
     __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_provider_credentials_user_provider"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"))
     provider = Column(String)  # "strava" | "garmin" | "google_health" | "withings" | ...
     access_token = Column(String, nullable=True)   # Strava OAuth
     refresh_token = Column(String, nullable=True)
@@ -196,7 +215,7 @@ class ApiToken(Base):
     __tablename__ = "api_tokens"
 
     id = Column(String, primary_key=True)  # f"tok_{uuid.uuid4().hex[:12]}"
-    user_id = Column(String, nullable=False)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     token_hash = Column(String, nullable=False, unique=True)  # sha256 hex digest of the raw token
     name = Column(String, nullable=True)  # user-chosen label, e.g. "Pixel 9 Pro"
     created_at = Column(String)
@@ -213,7 +232,7 @@ class PushSubscription(Base):
     __tablename__ = "push_subscriptions"
 
     id = Column(String, primary_key=True)  # f"push_{uuid.uuid4().hex[:12]}"
-    user_id = Column(String, nullable=False)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     endpoint = Column(String, nullable=False, unique=True)  # push service URL, unique per browser subscription
     p256dh = Column(String, nullable=False)
     auth = Column(String, nullable=False)
@@ -227,7 +246,7 @@ class Goal(Base):
     __tablename__ = "goals"
 
     id = Column(String, primary_key=True)  # f"goal_{uuid.uuid4().hex[:12]}"
-    user_id = Column(String, nullable=True)  # see owned_by()
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # see owned_by()
     goal_type = Column(String)             # "race" | "consistency" | "distance_target"
     name = Column(String)
     status = Column(String, default="active")  # "active" | "completed" | "abandoned"
@@ -262,7 +281,7 @@ class HealthNote(Base):
     __tablename__ = "health_notes"
 
     id = Column(String, primary_key=True)  # f"health_{uuid.uuid4().hex[:12]}"
-    user_id = Column(String, nullable=True)  # see owned_by()
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # see owned_by()
     category = Column(String)  # "injury"|"illness"|"chronic_flare"|"procedure"|"other"
     body_area = Column(String, nullable=True)  # only meaningful when category == "injury"
     suspected_type = Column(Text, nullable=True)  # free text, LLM-authored: "COVID", "migraine", "broken finger"
@@ -289,7 +308,7 @@ class Workout(Base):
     __tablename__ = "workouts"
 
     id = Column(String, primary_key=True)  # f"workout_{uuid.uuid4().hex[:12]}"
-    user_id = Column(String, nullable=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     scheduled_date = Column(String)  # YYYY-MM-DD
     workout_type = Column(String)  # "easy"|"tempo"|"interval"|"long"|"rest"|"strength"|"cross_train"
     activity_type = Column(String, default="Run")  # "Run"|"Ride"|"Walk"|... — mirrors Run.activity_type,
@@ -335,7 +354,7 @@ class RecoveryTool(Base):
     __tablename__ = "recovery_tools"
 
     id = Column(String, primary_key=True)  # f"recoverytool_{uuid.uuid4().hex[:12]}"
-    user_id = Column(String, nullable=True)  # see owned_by()
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # see owned_by()
     name = Column(String)  # "Hyperice Normatec Elite"
     category = Column(String)  # "compression_boots" — controlled vocab, coach.VALID_RECOVERY_CATEGORIES
     min_level = Column(Integer, default=1)
@@ -358,7 +377,7 @@ class RecoverySession(Base):
     __tablename__ = "recovery_sessions"
 
     id = Column(String, primary_key=True)  # f"recovery_{uuid.uuid4().hex[:12]}"
-    user_id = Column(String, nullable=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     tool_id = Column(String)  # plain ref to RecoveryTool.id — unenforced FK, same pattern as Goal.linked_run_id
     scheduled_date = Column(String)  # YYYY-MM-DD
     level = Column(Integer)

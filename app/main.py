@@ -77,6 +77,10 @@ def startup():
     init_db()
     scheduler = BackgroundScheduler()
     scheduler.add_job(_auto_sync, "interval", hours=SYNC_INTERVAL_HOURS, next_run_time=_next_auto_sync_time())
+    import demo
+    if demo.is_enabled():
+        scheduler.add_job(demo.sweep_expired_demo_users, "interval", minutes=10)
+        log.info(f"Demo login enabled — capacity {demo.DEMO_CAPACITY}, sessions {demo.DEMO_SESSION_HOURS}h")
     scheduler.start()
     log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
 
@@ -170,6 +174,47 @@ def strava_status(user_id: str = Depends(auth.current_user_id)):
     return {"connected": token is not None}
 
 
+# ---------- Ephemeral demo login (Phase 11) — see app/demo.py. Only meaningful on a
+# deployment with AUTH_MODE=enabled + ENABLE_DEMO_LOGIN=true (Phase 11.4's separate
+# cloud template); a no-op / 404 everywhere else, including this app's own real NAS
+# deployment. auth.current_user_id() itself is completely unchanged — a demo session's
+# ApiToken authenticates via that module's existing X-Api-Token path. ----------
+@app.get("/auth/demo/status")
+def demo_status():
+    import demo
+    return {"enabled": demo.is_enabled()}
+
+
+@app.post("/auth/demo/login")
+async def demo_login(request: Request):
+    import demo
+    if not demo.is_enabled():
+        raise HTTPException(404, "Not found")
+    body = await request.json()
+    if body.get("username") != "demo" or body.get("password") != "demo":
+        raise HTTPException(401, "Invalid credentials")
+    db = SessionLocal()
+    try:
+        try:
+            return demo.create_demo_session(db)
+        except ValueError:
+            raise HTTPException(429, "Demo capacity full — try again in a few minutes")
+    finally:
+        db.close()
+
+
+@app.post("/auth/demo/logout")
+def demo_logout(user_id: str = Depends(auth.current_user_id)):
+    import demo
+    db = SessionLocal()
+    try:
+        if demo.is_demo_user(db, user_id):
+            demo.delete_demo_user(db, user_id)
+        return {"loggedOut": True}
+    finally:
+        db.close()
+
+
 # ---------- Sync ("Sync Now" — runs as a background job with live status, same shape
 # as backlog sync below, since a Garmin quick sync alone (login + wellness + adaptive
 # plan + per-activity detail fetches) can genuinely take long enough that a blocking
@@ -232,6 +277,25 @@ def _run_quick_sync(user_id: str, source: str):
 def manual_sync(source: str, user_id: str = Depends(auth.current_user_id)):
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
+
+    import demo
+    db = SessionLocal()
+    try:
+        is_demo = demo.is_demo_user(db, user_id)
+    finally:
+        db.close()
+    if is_demo:
+        # A demo user never has a real credential — skip straight past those checks
+        # and fake a completed sync (no thread, no outbound call) rather than 400ing
+        # with a confusing "not authenticated" error.
+        with _quick_sync_lock:
+            job = _get_quick_sync_job(user_id, source)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            job.update({"status": "done", "count": 0,
+                        "log": ["Demo mode — sync is simulated, no external calls made."],
+                        "startedAt": now_iso, "finishedAt": now_iso, "error": None})
+        return {"status": "started"}
+
     if source == "strava" and not strava.get_valid_access_token(user_id):
         raise HTTPException(400, "Not authenticated with Strava — visit /auth/strava/login first")
     if source == "garmin" and not _has_credential(user_id, "garmin"):
@@ -265,6 +329,7 @@ async def import_garmin_export(file: UploadFile = File(...), user_id: str = Depe
     sync's own dedup (run_needs_detail_sync) means anything this import already covers
     is automatically skipped on future syncs, so the live API only has to handle activities
     genuinely newer than the export. Safe to re-upload the same or an overlapping export."""
+    _reject_if_demo(user_id)
     import garmin_import
     data = await file.read()
     log.info(f"garmin import: received {file.filename} ({len(data)} bytes)")
@@ -369,10 +434,39 @@ def _has_credential(user_id: str, provider: str) -> bool:
         db.close()
 
 
+def _reject_if_demo(user_id: str):
+    """Blocks a handful of endpoints that are either meaningless for a demo account
+    (fake credentials sync-mocking already prevents from ever being used) or a real
+    parsing operation not worth exposing publicly — see Phase 11.3."""
+    import demo
+    db = SessionLocal()
+    try:
+        if demo.is_demo_user(db, user_id):
+            raise HTTPException(403, "Not available in the demo")
+    finally:
+        db.close()
+
+
 @app.post("/api/sync/{source}/backlog")
 def start_backlog_sync(source: str, user_id: str = Depends(auth.current_user_id)):
     if source not in ("strava", "garmin"):
         raise HTTPException(404, "Unknown source")
+
+    import demo
+    db = SessionLocal()
+    try:
+        is_demo = demo.is_demo_user(db, user_id)
+    finally:
+        db.close()
+    if is_demo:
+        with _backlog_lock:
+            job = _get_backlog_job(user_id, source)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            job.update({"status": "done", "count": 0,
+                        "log": ["Demo mode — sync is simulated, no external calls made."],
+                        "startedAt": now_iso, "finishedAt": now_iso, "error": None})
+        return {"status": "started"}
+
     if source == "strava" and not strava.get_valid_access_token(user_id):
         raise HTTPException(400, "Not authenticated with Strava — visit /auth/strava/login first")
     if source == "garmin" and not _has_credential(user_id, "garmin"):
@@ -424,6 +518,7 @@ def get_connections(user_id: str = Depends(auth.current_user_id)):
 
 @app.post("/api/connections/garmin")
 async def set_garmin_connection(request: Request, user_id: str = Depends(auth.current_user_id)):
+    _reject_if_demo(user_id)
     body = await request.json()
     username, password = body.get("username"), body.get("password")
     if not username or not password:
@@ -445,6 +540,7 @@ async def set_garmin_connection(request: Request, user_id: str = Depends(auth.cu
 
 @app.delete("/api/connections/{provider}")
 def delete_connection(provider: str, user_id: str = Depends(auth.current_user_id)):
+    _reject_if_demo(user_id)
     db = SessionLocal()
     try:
         cred = db.query(ProviderCredential).filter_by(user_id=user_id, provider=provider).first()
@@ -587,9 +683,11 @@ def garmin_route_diagnostics(user_id: str = Depends(auth.current_user_id)):
 @app.get("/api/config")
 def get_config(user_id: str = Depends(auth.current_user_id)):
     import push
+    import demo
     db = SessionLocal()
     try:
         resting_hr = stats.latest_resting_hr_bpm(db, user_id)
+        is_demo_user = demo.is_demo_user(db, user_id)
     finally:
         db.close()
     return {
@@ -597,6 +695,7 @@ def get_config(user_id: str = Depends(auth.current_user_id)):
         "syncActivityLimit": SYNC_LIMIT,
         "restingHrBpm": resting_hr,
         "pushConfigured": push.is_configured(),
+        "isDemoUser": is_demo_user,
     }
 
 
@@ -801,13 +900,29 @@ def chat_history(user_id: str = Depends(auth.current_user_id)):
 
 @app.post("/api/chat/message")
 async def chat_message(request: Request, user_id: str = Depends(auth.current_user_id)):
-    import assistant
-    if not assistant.is_configured():
-        raise HTTPException(400, "AI assistant not configured — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
     body = await request.json()
     message = (body.get("message") or "").strip()
     if not message:
         raise HTTPException(400, "message is required")
+
+    import demo
+    db = SessionLocal()
+    try:
+        if demo.is_demo_user(db, user_id):
+            # Never imports assistant.py for a demo user — no Claude Agent SDK client
+            # is ever constructed, so a demo session can never burn real API credits.
+            reply = demo.mock_chat_reply(message)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            db.add(ChatMessage(user_id=user_id, role="user", content=message, created_at=now_iso))
+            db.add(ChatMessage(user_id=user_id, role="assistant", content=reply, created_at=now_iso))
+            db.commit()
+            return {"reply": reply, "toolCalls": [], "charts": []}
+    finally:
+        db.close()
+
+    import assistant
+    if not assistant.is_configured():
+        raise HTTPException(400, "AI assistant not configured — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
     try:
         return await assistant.send_message(message, user_id)
     except Exception as e:

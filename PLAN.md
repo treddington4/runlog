@@ -912,41 +912,112 @@ This supersedes the "no build step" principle — deliberate, documented in ROAD
 
 ## Phase 11 — Interactive Ephemeral Demo Environment
 
-### 11.1 Ephemeral Auth & Session Lifecycle
-- [ ] `User` schema: Add `is_demo` (boolean, default false) and `expires_at` (nullable timestamp) to the `users` table. Ensure all child tables (`daily_steps`, `runs`, `goals`, `api_tokens`, etc.) have `ON DELETE CASCADE` foreign keys back to `users(id)` to make cleanup a single query.
-- [ ] `POST /auth/demo/login`: New endpoint accepting `demo`/`demo`. 
-  - Validates `SELECT COUNT(*) FROM users WHERE is_demo = 1` is `< 5`. Returns 429 "Demo capacity full" if over limit.
-  - Creates a new `User` with `is_demo=1` and `expires_at = NOW() + 2 hours`.
-  - Returns a standard API token / JWT for this specific temporary user.
-- [ ] Session Teardown: 
-  - `POST /auth/logout` (or demo-specific logout): Executes `DELETE FROM users WHERE id = {current_user_id}` and revokes the token.
-  - Background Sweeper: Add a lightweight startup/periodic task in `main.py` that executes `DELETE FROM users WHERE is_demo = 1 AND expires_at < NOW()` to catch users who simply close their browser tabs without logging out.
-- [ ] Verify: Send login request, confirm DB creates `is_demo=1` user. Hit the capacity limit (generate 5 demo users, confirm 6th gets 429). Log out one user, confirm immediate DB cascade deletion. Simulate time travel on `expires_at`, confirm sweeper deletes abandoned account.
-- [ ] Commit: "Phase 11.1: ephemeral demo auth, capacity limits, and cascade teardown"
+Meant for a separate, disposable cloud deployment (Render/Railway, its own throwaway
+SQLite volume) — `ENABLE_DEMO_LOGIN`/`AUTH_MODE=enabled` are deployment env vars, unset
+on this app's own real NAS instance, which sees zero behavior change throughout.
 
-### 11.2 On-the-Fly Sandbox Seeding
-- [ ] `app/seed_engine.py`: Refactor the seed script from a global DB creator into a user-scoped function `seed_demo_user(db, user_id)`.
-- [ ] Seed Data: Inject 90 days of `DailySteps`, ~50 `Run` rows, pre-calculated `RouteHex` spatial data, an active `Goal`, and a pre-populated `Chat` thread tied strictly to the generated `user_id`.
-- [ ] Async injection: Call `seed_demo_user` as a FastAPI `BackgroundTask` inside the `/auth/demo/login` endpoint so the login request returns immediately, while the UI shows a loading state (or simply populates over the first 2-3 seconds of the user's session).
-- [ ] Verify: Log in via demo route. Confirm the isolated `user_id` instantly populates with runs, goals, and heatmaps. Create a second demo user in an incognito window, confirm zero data cross-talk between the two active demo sessions.
-- [ ] Commit: "Phase 11.2: isolated on-the-fly data seeding per user"
+### 11.1 Ephemeral auth & session lifecycle
+- [x] `User` gains `is_demo`/`expires_at` (already-existing `_MIGRATABLE_TABLES` entry
+      picks them up for free). **Real DB-level `ForeignKey(..., ondelete="CASCADE")`**
+      added to every per-user table's `user_id` column (a first-of-its-kind pattern for
+      this codebase, which otherwise uses zero FK constraints anywhere) plus a
+      `PRAGMA foreign_keys=ON` connect-event listener — verified safe for the existing
+      production DB specifically because `create_all()` never alters an already-
+      existing table's schema: real production tables have no FK clause in their
+      on-disk DDL (confirmed via `PRAGMA foreign_key_list(runs)` → `[]` post-deploy),
+      so the constraint only ever takes effect on a freshly created database. Caught
+      and fixed a real bug this exposed: without any `relationship()` between `User`
+      and `ApiToken` (this codebase declares none), a single flush doesn't guarantee
+      INSERT ordering across the two tables — `demo.create_demo_session()` needs an
+      explicit `db.flush()` after adding the `User` row and before adding the
+      `ApiToken` row, or the FK constraint trips on a genuinely fresh DB
+      (`sqlite3.IntegrityError` reproduced and fixed during verification, not
+      theoretical)
+- [x] `app/demo.py`: `POST /auth/demo/login` (fixed `demo`/`demo` body, not a real
+      credential store), capacity check under a `threading.Lock` (mirrors
+      `_quick_sync_lock`), mints a real `ApiToken` (same `secrets.token_urlsafe(32)` +
+      SHA-256 pattern as `POST /api/tokens`) rather than a JWT — `auth.py`'s existing
+      `X-Api-Token` path authenticates it with **zero changes to `auth.py` itself**;
+      the demo deployment's `AUTH_MODE=enabled` is what activates that path
+- [x] `POST /auth/demo/logout` (deletes only if `is_demo`) + a 10-minute
+      `scheduler.add_job(demo.sweep_expired_demo_users, ...)` registered only when
+      `ENABLE_DEMO_LOGIN` is set
+- [x] Verify: full flow tested against an isolated **throwaway second container**
+      (fresh anonymous volume, port 8001, demo env vars) — never touched the real
+      running container. Two logins succeeded with independent seeded data, a 3rd hit
+      429 at `DEMO_CAPACITY=2`; logout and a manually-backdated-`expires_at` sweep both
+      confirmed via direct SQLite inspection that every child-table row (runs, goals,
+      chat, tokens) was really gone — true FK cascade, not application-level deletes.
+      Redeployed the real production container afterward on the same updated image:
+      clean startup, unchanged 150 runs, `isDemoUser:false`, `/auth/demo/status` →
+      `{"enabled":false}` — zero regression
+- [x] Commit: "Phase 11.1: ephemeral demo auth, capacity limits, and cascade teardown"
 
-### 11.3 Sandbox Guardrails & Mock Overrides
-- [ ] Environment Guardrail: Add `ENABLE_DEMO_LOGIN=true` env var. The `/auth/demo/login` route strictly 404s if this is false, ensuring production instances don't accidentally expose demo generation.
-- [ ] Feature Flags (`config.py` & `main.py`): When `current_user.is_demo == 1`:
-  - **External APIs:** Intercept triggers for Strava/Garmin syncs. Return synthetic `200 OK` "Sync complete" payloads without making outbound HTTP requests.
-  - **LLM Proxy:** Intercept `/api/chat/message`. Bypass the real Anthropic/OpenAI SDK clients to prevent burning your Fable credits on demo users. Return a hardcoded or randomized mock response simulating the coach persona.
-  - **Settings Lock:** Prevent demo users from changing global configs or viewing real system API keys.
-- [ ] Verify: As a demo user, click "Sync Strava" and confirm no network call hits Strava. Send a chat message, confirm mock response returns instantly without hitting the Anthropic API.
-- [ ] Commit: "Phase 11.3: demo guardrails and external API mocks"
+### 11.2 On-the-fly sandbox seeding
+- [x] `app/seed_engine.py` (new — no prior generic seeder existed to refactor;
+      `models.py`'s `_seed_*` functions seed the *real* default user's actual gear/
+      goal and were never touched). `seed_demo_user(db, user_id)` runs **synchronously**
+      inside `create_demo_session` (not a `BackgroundTask` — pure Python, zero external
+      I/O, fast enough that a visitor never sees an empty Home tab) — ~90 days of
+      `DailySteps`, ~50-60 `Run` rows (rotating Easy/Tempo/Interval/Long Run, real
+      `suggested_type` vocabulary), one active race `Goal`, a 4-message seeded `Chat`
+      thread
+- [x] Explicitly **not seeded**: `RouteHex` spatial data — Phase 7 (geospatial
+      pipeline) doesn't exist in this codebase, so there's no real table to populate
+- [x] Verify: two separate demo logins produced fully isolated accounts (58 vs. 38
+      seeded runs, confirmed via direct query by `user_id`) with zero cross-talk.
+      Screenshotted a logged-in demo Home tab against the live throwaway instance —
+      every existing stats computation (goal countdown, 4-week training load, pace
+      trend, longest run, this-month-vs-last) rendered correctly from the synthetic
+      data with no special-casing needed, confirming the seed data integrates
+      cleanly with the real stats engine rather than just superficially existing
+- [x] Commit: "Phase 11.2: isolated on-the-fly data seeding per user"
 
-### 11.4 GitHub CI/CD & 1-Click Cloud Deployment
-- [ ] `.github/workflows/docker-publish.yml`: Create a GitHub Action triggered on push to `main` and release tags.
-  - Steps: Checkout, Set up Docker Buildx, login to GHCR (`ghcr.io`), build the standard `Dockerfile`, and push as `ghcr.io/YOUR_GITHUB_USER/hale:latest`.
-- [ ] Render / Railway `docker-compose` template: Add a `render.yaml` (or `railway.json`) Infrastructure-as-Code file to your repository root targeting the GHCR image, exposing port 8000, setting `ENABLE_DEMO_LOGIN=true`, and provisioning an attached SQLite persistent disk.
-- [ ] `README.md` Hooks: Add standard Markdown badges linking to the 1-click deployment URLs (e.g., `[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=...)`).
-- [ ] Verify: Push to `main`. Confirm GitHub Actions successfully builds and publishes the package to your GitHub repo's "Packages" sidebar. Click the "Deploy" badge in your README from a clean browser, confirm it provisions the cloud container directly from GitHub and boots the login screen.
-- [ ] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
+### 11.3 Sandbox guardrails & mock overrides
+- [x] `ENABLE_DEMO_LOGIN` guardrail — `/auth/demo/login` 404s when unset
+- [x] Sync: `manual_sync`/`start_backlog_sync` short-circuit for a demo user straight
+      to a fake `"done"` job state (no thread, no real HTTP call) before the
+      credential checks even run — a demo user never has a real credential, so this
+      also avoids a confusing "not authenticated" error
+- [x] Chat: `chat_message` never imports `assistant.py` for a demo user (no Claude
+      Agent SDK client ever constructed), writes real `ChatMessage` rows with a
+      randomly-chosen canned reply, returns the same `{reply, toolCalls, charts}`
+      shape the real path does
+- [x] Settings lock: Garmin connection save/delete + Garmin ZIP import 403
+      ("Not available in the demo") via a shared `_reject_if_demo()` helper. **Gap
+      found during visual verification, not in the original plan**: the "Connect
+      Strava" button (a real OAuth redirect, unrelated to the Garmin-connections
+      form) was still live for a demo user — fixed by hiding it client-side when
+      `isDemoUser`; noted as not airtight server-side, since `/auth/strava/login`
+      is pre-existing, deliberately unscoped (no user-identity threading through the
+      OAuth `state` param — a known limitation predating this phase, not fixed here)
+- [x] `GET /api/config` gained `isDemoUser`, threaded to `SettingsPage.tsx`'s
+      `StravaSection`/`ConnectionsSection`/`GarminImportSection`
+- [x] Verify: as a demo user — Sync Now returned an instant fake "done" (confirmed via
+      container logs: zero outbound calls), a chat message got an instant canned reply
+      with no SDK invocation, Garmin connection save/import/Strava-connect all
+      correctly blocked (403 or hidden)
+- [x] Commit: "Phase 11.3: demo guardrails and external API mocks"
+
+### 11.4 GitHub CI/CD & 1-click cloud deployment
+- [x] `.github/workflows/docker-publish.yml` — checkout → Buildx → GHCR login
+      (`GITHUB_TOKEN`) → build root `Dockerfile` → push
+      `ghcr.io/treddington4/hale:latest` (+ semver on a version tag)
+- [x] `render.yaml` — `runtime: docker` building the repo's own `Dockerfile` directly
+      (deliberately not pulling the GHCR image, so this doesn't depend on that
+      package's visibility being public), persistent disk at `/data`,
+      `ENABLE_DEMO_LOGIN=true`/`AUTH_MODE=enabled`/`DEMO_CAPACITY=5`/
+      `DEMO_SESSION_HOURS=2`
+- [x] `README.md` — "Deploy to Render" badge + a one-line demo pointer
+- [x] Verify (mine): both new YAML files parse correctly (`yaml.safe_load`); the exact
+      build step the workflow runs was independently validated many times over via
+      `docker compose build` on the NAS throughout 11.1-11.3's verification, always
+      succeeding cleanly
+- [ ] **Verify (yours — real external-account actions, out of reach from here)**:
+      confirm the Action actually runs and publishes on your next push to `main` or a
+      version tag; click the Render badge from a clean browser and confirm it
+      provisions and boots to the demo login screen
+- [x] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
 
 ---
 

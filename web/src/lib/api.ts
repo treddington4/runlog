@@ -5,6 +5,7 @@
 
 export type { Run } from "./runs"
 import type { Run } from "./runs"
+import { getDemoSession, clearDemoSession } from "./demoAuth"
 
 export interface HeaderStats {
   totalActivityCount: number
@@ -274,7 +275,7 @@ export interface RecoverySession {
   createdAt: string
 }
 
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number
 
   constructor(status: number, message: string) {
@@ -284,11 +285,30 @@ class ApiError extends Error {
   }
 }
 
+// Attaches the demo session's token (if one exists — a no-op on the real NAS
+// deployment, which never has one) so a demo visitor authenticates on every call.
+function demoAuthHeader(): Record<string, string> {
+  const session = getDemoSession()
+  return session ? { "X-Api-Token": session.token } : {}
+}
+
+// A 401 only ever means "the demo session is gone" (expired, swept, or logged out
+// elsewhere) — the real NAS deployment never sends a token in the first place, so it
+// never gets a 401 to begin with. Hard redirect (not client-side navigation) so
+// DemoGate re-evaluates from scratch against the now-cleared session.
+function handleUnauthorized(res: Response) {
+  if (res.status === 401 && getDemoSession()) {
+    clearDemoSession()
+    window.location.href = "/demo-login"
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...demoAuthHeader() },
     ...init,
   })
+  handleUnauthorized(res)
   if (!res.ok) {
     throw new ApiError(res.status, `${init?.method ?? "GET"} ${path} failed: ${res.status}`)
   }
@@ -300,6 +320,17 @@ export interface Config {
   syncActivityLimit: number
   restingHrBpm: number | null
   pushConfigured: boolean
+  isDemoUser: boolean
+}
+
+export interface DemoStatus {
+  enabled: boolean
+}
+
+export interface DemoSessionResponse {
+  token: string
+  userId: string
+  expiresAt: string
 }
 
 export interface PushVapidKey {
@@ -431,7 +462,8 @@ export const api = {
     }),
   manualSync: async (source: SyncSource): Promise<SyncStartResult> => {
     try {
-      const res = await fetch(`/api/sync/${source}`, { method: "POST" })
+      const res = await fetch(`/api/sync/${source}`, { method: "POST", headers: demoAuthHeader() })
+      handleUnauthorized(res)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         return { ok: false, message: data.detail || "Failed to start sync" }
@@ -443,7 +475,8 @@ export const api = {
   },
   backlogSync: async (source: SyncSource): Promise<SyncStartResult> => {
     try {
-      const res = await fetch(`/api/sync/${source}/backlog`, { method: "POST" })
+      const res = await fetch(`/api/sync/${source}/backlog`, { method: "POST", headers: demoAuthHeader() })
+      handleUnauthorized(res)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         return { ok: false, message: data.detail || "Failed to start backlog sync" }
@@ -457,7 +490,8 @@ export const api = {
     try {
       const formData = new FormData()
       formData.append("file", file)
-      const res = await fetch("/api/garmin/import", { method: "POST", body: formData })
+      const res = await fetch("/api/garmin/import", { method: "POST", body: formData, headers: demoAuthHeader() })
+      handleUnauthorized(res)
       const data = await res.json().catch(() => ({}))
       if (!res.ok) return { ok: false, message: data.detail || "Import failed" }
       return { ok: true, summary: data }
@@ -489,9 +523,10 @@ export const api = {
     try {
       const res = await fetch("/api/chat/message", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...demoAuthHeader() },
         body: JSON.stringify({ message }),
       })
+      handleUnauthorized(res)
       const data = await res.json().catch(() => ({}))
       if (!res.ok) return { ok: false, kind: "http", message: data.detail || "something went wrong" }
       return { ok: true, reply: data.reply, toolCalls: data.toolCalls ?? [], charts: data.charts ?? [] }
@@ -527,4 +562,20 @@ export const api = {
       body: JSON.stringify({ endpoint }),
     }),
   pushTest: () => request<{ sent: number }>("/api/push/test", { method: "POST" }),
+
+  // Deliberately a plain, separate fetch — never routed through request()/its
+  // 401-interceptor. This is called before any demo session may exist (it's what
+  // DemoGate uses to decide whether to gate at all), so coupling it to the same
+  // token-clear-and-redirect logic risks a redirect loop on a transient hiccup.
+  demoStatus: async (): Promise<DemoStatus> => {
+    const res = await fetch("/auth/demo/status")
+    if (!res.ok) throw new ApiError(res.status, `GET /auth/demo/status failed: ${res.status}`)
+    return res.json()
+  },
+  demoLogin: () =>
+    request<DemoSessionResponse>("/auth/demo/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "demo", password: "demo" }),
+    }),
+  demoLogout: () => request<{ loggedOut: true }>("/auth/demo/logout", { method: "POST" }),
 }

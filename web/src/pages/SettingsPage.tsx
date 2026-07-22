@@ -48,6 +48,7 @@ function fmtMeta(m: SyncMetaInfo | undefined) {
 }
 
 function StravaSection() {
+  const { data: config } = useConfig()
   const { data: status } = useStravaStatus()
   const { data: syncMeta } = useSyncMeta()
 
@@ -66,7 +67,12 @@ function StravaSection() {
       {syncMeta?.strava.lastError && (
         <SettingsRow label="Last error" value={<span className="text-hale-hot">{syncMeta.strava.lastError}</span>} />
       )}
-      {status && !status.connected && (
+      {status && !status.connected && config?.isDemoUser && (
+        <div className="text-hale-faint mt-2.5 text-xs">
+          Not available in the demo — real Strava OAuth isn't offered here.
+        </div>
+      )}
+      {status && !status.connected && !config?.isDemoUser && (
         // Real gap fixed here (Phase 1.5): the new frontend had no way to actually
         // *connect* Strava if disconnected — legacy had this as a header button
         // (app.js's #connect-btn), never ported when the header was rebuilt in 0.2.
@@ -127,6 +133,7 @@ function GarminSection() {
 }
 
 function GarminImportSection() {
+  const { data: config } = useConfig()
   const { garminImport } = useSettingsMutations()
   const [file, setFile] = useState<File | null>(null)
   const [noFileError, setNoFileError] = useState(false)
@@ -138,6 +145,14 @@ function GarminImportSection() {
     }
     setNoFileError(false)
     garminImport.mutate(file)
+  }
+
+  if (config?.isDemoUser) {
+    return (
+      <SettingsSection title="Garmin data export import">
+        <div className="text-hale-faint text-xs">Not available in the demo.</div>
+      </SettingsSection>
+    )
   }
 
   return (
@@ -187,6 +202,7 @@ function GarminImportSection() {
 }
 
 function ConnectionsSection() {
+  const { data: config } = useConfig()
   const { data: status } = useGarminStatus()
   const { data: connections } = useConnections()
   const { saveGarminConnection, deleteConnection } = useSettingsMutations()
@@ -194,6 +210,14 @@ function ConnectionsSection() {
   const [password, setPassword] = useState("")
 
   const garminConn = connections?.find((c) => c.provider === "garmin")
+
+  if (config?.isDemoUser) {
+    return (
+      <SettingsSection title="Connections">
+        <div className="text-hale-faint text-xs">Not available in the demo.</div>
+      </SettingsSection>
+    )
+  }
 
   return (
     <SettingsSection title="Connections">

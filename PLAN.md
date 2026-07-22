@@ -834,23 +834,78 @@ own `Workout.steps` schema would likely need the same fix eventually).
 - [x] Commit: "Phase 4.4: strength step contract + progression state"
 
 ### 4.3 Generator engine
-- [ ] `weekly_plan` table: `(user_id, week_start) PK, target_tss, actual_tss,
-      is_deload, frozen`
-- [ ] `app/generator.py` — deterministic, no LLM, evaluated strictly in order:
-      (1) phase from goal date (base/build/peak/taper) + mesocycle position (deload
-      week = volume ×0.7–0.8); (2) weekly budget = min(last_week × (1+ramp%), phase
-      ceiling); (3) readiness gate — 1 flag: downgrade one tier (interval→tempo→Z2→
-      recovery); 2+: Z1/rest **and** freeze week (`frozen=1`, next week ramps from
-      frozen base); severe/HealthNote: micro-deload rest of week; (4) distribution
-      audit — refuse a hard day that would break 80/20 (polarized) or pyramid ratio
-      over rolling 7d time-in-zone; (5) two-a-days only build/peak with clean
-      readiness, modality split, `scheduled_time` (new nullable Workout column),
-      second session always recovery-intensity. Idempotent per (user, date). Every
-      cap/downgrade names its trigger in `Workout.notes`
-- [ ] Scheduler: daily 04:00 local per active user + `POST /api/generator/run`
-- [ ] Verify: force-generate across synthetic readiness states (clean/1-flag/2-flag/
-      deload-week) via container probe; inspect prescriptions + notes rationale
-- [ ] Commit: "Phase 4.3: goal-driven daily workout generator"
+- [x] `WeeklyPlan` table: `(user_id, week_start) PK, target_tss, actual_tss,
+      is_deload, frozen` — `target_tss`/`actual_tss` store a mileage-based proxy,
+      not a real Training Stress Score (Phase 6.1's per-activity TSS hasn't shipped
+      yet), same "real number now, real TSS later" tradeoff `stats.readiness()`'s
+      `acuteChronicRatio` already makes
+- [x] `app/generator.py` — deterministic, no LLM, endurance path evaluated in order:
+      (1) phase from the nearest active race goal's date (base/build/peak/taper) +
+      mesocycle position (deload week × 0.75); (2) weekly budget = min(last_week ×
+      (1+ramp%), phase ceiling); (3) readiness gate — 1 flag: downgrade one tier
+      (interval→tempo→easy — "Z2"/"recovery" both map to `easy`, there's no separate
+      workout_type value for either); 2+: rest **and** freeze the week (`frozen=1`);
+      severe HealthNote: rest, re-checked fresh every day so it naturally covers the
+      rest of the week for as long as the note stays active; (4) distribution
+      audit — approximated via a coarse hard/easy day-*type* ratio over the trailing
+      7 days (tempo/interval count as hard), not true time-in-zone (this app doesn't
+      store per-second HR-zone breakdowns at sync time — a documented v1 gap, not a
+      silent one); (5) two-a-days only build/peak with 0 readiness flags, modality
+      split via the new `Workout.scheduled_time` column, second session always
+      `cross_train`/recovery-intensity. Idempotent per (user, date) — reruns
+      recompute/overwrite only this module's own `source="generator"` rows, never a
+      `"coach"`- or `"garmin"`-sourced row for the same date
+- [x] **Strength path** (not in the original 4.3 spec — added when the generator's
+      scope expanded to also prescribe strength sessions, see 4.4's context):
+      `STRENGTH_TEMPLATES["full_body_ab"]` (hardcoded 2-day A/B rotation, ~5
+      exercises/side, explicitly bounded v1 — not a real exercise-library system),
+      scheduled on `UserTrainingConfig.strength_days_per_week`'s configured weekdays,
+      readiness-gated the same way (0 flags: normal progression; 1: hold current
+      targets, pause progression; 2+/severe health: a light bodyweight-only
+      session). `apply_strength_progression()` (double progression, evaluated once a
+      session is marked completed with logged actuals, not at prescription time) is
+      wired into `coach.update_workout` via a lazy import on the "planned →
+      completed" transition for a `workout_type="strength"` row — the same deferred-
+      import convention `main.py` already uses for its own optional subsystems,
+      needed here to avoid a hard circular import (`generator.py` imports `coach.py`
+      for step validation; `coach.py` only needs `generator.py` at this one call site)
+- [x] Scheduler: daily 04:00 `America/New_York` (via `util.APP_TIMEZONE`, not
+      container-UTC — same "local means the configured timezone, not the
+      container's clock" discipline `local_today()` already established) for every
+      non-demo user, skipped entirely on a demo deployment (same reasoning as
+      auto-sync: demo users' accounts are pre-seeded and ephemeral, a real
+      periodization engine running against them would be pure waste) +
+      `POST /api/generator/run` (optional `date` param, for on-demand/verification use)
+- [x] Verify: deployed for real; force-ran the generator against live production data
+      via the REST endpoint and directly via a container probe (bypassing real data
+      with synthetic readiness states to test the downgrade ladder in isolation).
+      **Caught and fixed two real bugs during this pass, not theoretical**:
+      (1) the endurance and strength paths' upsert-matching both keyed on
+      "first generator row for this date," so generating both for the same date
+      silently overwrote the endurance prescription with the strength one — fixed by
+      adding an explicit `domain` (endurance / endurance_second / strength) to the
+      upsert key, confirmed by re-running and seeing two distinct rows; (2) a race
+      goal whose `target_date` had already passed but was still `status="active"`
+      (never marked completed) pinned `_phase_for_date` to a degenerate/negative
+      "weeks until" indefinitely — fixed by filtering to `target_date >= today` in
+      that query. Confirmed idempotency directly (rerunning the same date twice
+      returns the same 2 row ids, no duplicates) and that a pre-existing
+      `"garmin"`-sourced workout for a test date was left completely untouched.
+      Confirmed the full strength-progression loop end-to-end: a hit-all-sets rep
+      exercise with weight tracked bumped weight by its category increment; the same
+      exercise with no weight tracked (bodyweight) correctly did *not* bump (a real,
+      documented v1 gap — bodyweight rep exercises have no progression path yet,
+      only weighted-rep and hold-duration exercises do); a missed-target set
+      correctly held steady; a hold-based exercise correctly bumped duration.
+      **Known v1 limitation surfaced by real data, not hypothetical**: this account
+      has multiple active `race`-type goals (an actual marathon *and* a literally-
+      named "Wedding race" goal nearer in time) — `_phase_for_date` picks the
+      nearest one by design, which in this real case is the wedding, not the
+      marathon being trained for. Not fixed here (the spec doesn't say how to
+      disambiguate multiple active race goals); worth revisiting if it matters in
+      practice. Cleaned up all test workouts/weekly-plan/exercise-progress rows from
+      production afterward and confirmed real data (144 runs, 9 real workouts) unaffected
+- [x] Commit: "Phase 4.3: goal-driven daily workout generator"
 
 ---
 

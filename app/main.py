@@ -89,6 +89,14 @@ def startup():
     else:
         scheduler.add_job(_auto_sync, "interval", hours=SYNC_INTERVAL_HOURS, next_run_time=_next_auto_sync_time())
         log.info(f"Auto-sync scheduled every {SYNC_INTERVAL_HOURS}h")
+
+        def _run_generator():
+            import generator
+            generator.run_for_all_users()
+
+        from util import APP_TIMEZONE
+        scheduler.add_job(_run_generator, "cron", hour=4, minute=0, timezone=APP_TIMEZONE)
+        log.info(f"Workout generator scheduled daily at 04:00 {APP_TIMEZONE}")
     scheduler.start()
 
 
@@ -1081,6 +1089,19 @@ async def update_training_config_endpoint(request: Request, user_id: str = Depen
         return coach.update_training_config(db, user_id=user_id, **fields)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    finally:
+        db.close()
+
+
+@app.post("/api/generator/run")
+def run_generator_endpoint(date: str = None, user_id: str = Depends(auth.current_user_id)):
+    """Force-runs the Phase 4.3 generator for the current user (optionally for a
+    specific past/future date, mainly for verification) instead of waiting for the
+    04:00 local scheduled tick."""
+    import generator
+    db = SessionLocal()
+    try:
+        return generator.run_for_user(db, user_id, date)
     finally:
         db.close()
 

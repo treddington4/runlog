@@ -333,10 +333,9 @@ class Workout(Base):
     linked_run_id = Column(String, nullable=True)  # set once matched/critiqued, mirrors Goal.linked_run_id
     critique_text = Column(Text, nullable=True)
     created_at = Column(String)
-    source = Column(String, default="coach")  # "coach"|"garmin" — a Garmin adaptive-training-plan
-                                                 # suggestion lives in its own row, never overwriting a
-                                                 # Coach-scheduled workout for the same date (and vice
-                                                 # versa); legacy-NULL rows (pre-dating this column) are
+    source = Column(String, default="coach")  # "coach"|"garmin"|"generator" — each source's rows never
+                                                 # overwrite another source's row for the same date (and
+                                                 # vice versa); legacy-NULL rows (pre-dating this column) are
                                                  # treated as "coach" at read time, same pattern as
                                                  # owned_by()'s NULL-user_id handling
     garmin_workout_uuid = Column(String, nullable=True)  # only set when source="garmin" — Garmin's own
@@ -344,6 +343,9 @@ class Workout(Base):
                                                             # resync can detect Garmin silently swapping the
                                                             # suggested workout for a date (see
                                                             # garmin_sync._fetch_adaptive_plan_workouts)
+    scheduled_time = Column(String, nullable=True)  # Phase 4.3 — "HH:MM", only set for the 2nd session on a
+                                                       # generator-scheduled two-a-day; a single daily session
+                                                       # has no need to disambiguate ordering, so stays NULL
 
 
 class UserTrainingConfig(Base):
@@ -377,6 +379,26 @@ class ExerciseProgress(Base):
     current_reps_target = Column(Integer, default=8)
     current_hold_sec = Column(Integer, nullable=True)  # only set for isometric exercises
     last_completed_at = Column(String, nullable=True)
+
+
+class WeeklyPlan(Base):
+    """Phase 4.3 — one row per (user, week). `target_tss`/`actual_tss` are named for
+    the spec's eventual real Training Stress Score (Phase 6.1's per-activity TSS
+    hasn't shipped yet) but store a mileage-based proxy for now — same "real number
+    now, real TSS once Phase 6 exists" tradeoff stats.readiness() already makes for
+    acuteChronicRatio. `frozen` marks a week whose budget didn't ramp because a
+    2+-flag readiness day capped it that week; the next week ramps from the frozen
+    base, not from the (unmet) target, so a bad week doesn't get "made up" all at once."""
+    __tablename__ = "weekly_plan"
+    __table_args__ = (UniqueConstraint("user_id", "week_start", name="uq_weekly_plan_user_week"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    week_start = Column(String, nullable=False)  # YYYY-MM-DD, Monday
+    target_tss = Column(Float, nullable=True)  # mileage proxy until Phase 6
+    actual_tss = Column(Float, nullable=True)
+    is_deload = Column(Boolean, default=False)
+    frozen = Column(Boolean, default=False)
 
 
 class RecoveryTool(Base):

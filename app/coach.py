@@ -555,6 +555,7 @@ def _workout_to_dict(w: Workout) -> dict:
         "notes": w.notes, "steps": _steps_from_json(w.steps_json), "status": w.status,
         "linkedRunId": w.linked_run_id, "critiqueText": w.critique_text, "createdAt": w.created_at,
         "source": w.source or "coach",  # legacy-NULL rows predate this column
+        "scheduledTime": w.scheduled_time,
     }
 
 
@@ -625,7 +626,11 @@ def sync_garmin_suggested_workouts(db, entries: list, user_id: str = DEFAULT_USE
 
 def create_workout(db, scheduled_date, workout_type, activity_type=None, target_distance_mi=None,
                     target_pace_sec_per_mi=None, target_duration_sec=None, notes=None, steps=None,
-                    user_id: str = DEFAULT_USER_ID) -> dict:
+                    user_id: str = DEFAULT_USER_ID, source: str = "coach", scheduled_time=None) -> dict:
+    """`source`/`scheduled_time` default to the manual/chat-scheduled case — the
+    Phase 4.3 generator is the only other caller that passes `source="generator"`
+    (and `scheduled_time`, for the 2nd session of a two-a-day), reusing this same
+    validation path rather than constructing Workout rows itself."""
     if workout_type not in VALID_WORKOUT_TYPES:
         raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
     cleaned_steps = _validate_steps(steps)
@@ -636,7 +641,7 @@ def create_workout(db, scheduled_date, workout_type, activity_type=None, target_
         target_distance_mi=target_distance_mi, target_pace_sec_per_mi=target_pace_sec_per_mi,
         target_duration_sec=target_duration_sec, notes=notes,
         steps_json=json.dumps(cleaned_steps) if cleaned_steps else None, status="planned",
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(timezone.utc).isoformat(), source=source, scheduled_time=scheduled_time,
     )
     db.add(workout)
     db.commit()
@@ -657,11 +662,20 @@ def update_workout(db, workout_id: str, user_id: str = DEFAULT_USER_ID, **fields
         final_steps = _steps_from_json(fields.get("steps_json", workout.steps_json))
         final_target = fields["target_duration_sec"] if fields.get("target_duration_sec") is not None else workout.target_duration_sec
         fields["target_duration_sec"] = _reconcile_target_duration(final_steps, final_target)
+    became_completed = fields.get("status") == "completed" and workout.status != "completed"
     for key in ("scheduled_date", "workout_type", "activity_type", "target_distance_mi",
-                "target_pace_sec_per_mi", "target_duration_sec", "notes", "steps_json", "status"):
+                "target_pace_sec_per_mi", "target_duration_sec", "notes", "steps_json", "status",
+                "scheduled_time"):
         if key in fields and fields[key] is not None:
             setattr(workout, key, fields[key])
     db.commit()
+    if became_completed and workout.workout_type == "strength":
+        # Lazy import — generator.py imports coach.py itself (for _validate_steps via
+        # create_workout/get_exercise_progress), so importing it back here at module
+        # load time would be circular. Deferred to call time, same convention
+        # main.py already uses for its own optional/heavy subsystem imports.
+        import generator
+        generator.apply_strength_progression(db, workout)
     return _workout_to_dict(workout)
 
 

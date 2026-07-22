@@ -10,12 +10,12 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import stats
-from models import (
+from . import stats
+from .models import (
     HealthNote, Workout, Run, RecoveryTool, RecoverySession, UserTrainingConfig,
     ExerciseProgress, DEFAULT_USER_ID, owned_by,
 )
-from util import local_today
+from .util import local_today
 
 VALID_MESOCYCLE_PATTERNS = ("3:1", "2:1", "4:1")
 VALID_DISTRIBUTIONS = ("pyramidal", "polarized")
@@ -674,7 +674,7 @@ def update_workout(db, workout_id: str, user_id: str = DEFAULT_USER_ID, **fields
         # create_workout/get_exercise_progress), so importing it back here at module
         # load time would be circular. Deferred to call time, same convention
         # main.py already uses for its own optional/heavy subsystem imports.
-        import generator
+        from . import generator
         generator.apply_strength_progression(db, workout)
     return _workout_to_dict(workout)
 

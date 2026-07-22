@@ -1234,6 +1234,60 @@ between requests, not just an always-on one.
 
 ---
 
+## Infra: `app/` restructured into a real installable package
+
+Not tied to a numbered phase — triggered while trying to deploy the Phase 11 demo
+container on a third-party free-tier PaaS (SnapDeploy). Its build pipeline kept
+misbehaving against this app's original flat-directory `app/` layout in ways that
+had nothing to do with this app's own code: a false "requires PostgreSQL" gate (a
+naive text scan matched a *rejected*-migration mention in this very file), an
+over-eager env-var gate treating every optional credential in `.env.example` as
+required, and — the one that prompted this restructuring — its dependency
+auto-detection inventing a phantom pip package called `garmin_sync` from a plain
+`import garmin_sync` statement in the source, overriding the real, correct
+`requirements.txt` it was supposedly building from.
+
+- [x] `app/__init__.py` + root `pyproject.toml` (mirrors `requirements.txt`'s pins
+      as `dependencies`, `[tool.setuptools] packages = ["app"]`) — makes `app` a
+      real installable package, `pip install .` registers it in site-packages
+      rather than relying on implicit CWD-based top-level-module resolution
+- [x] Every internal cross-module reference across all 12 backend modules
+      converted from a bare `import coach`/`from models import X` to a relative
+      `from . import coach`/`from .models import X` — including the many
+      function-local lazy imports scattered through `main.py` (dozens of them, at
+      varying indentation levels). Done via a small regex script rather than by
+      hand, given the volume — verified afterward that zero bare internal-module
+      imports remained anywhere in `app/*.py`
+- [x] Caught and fixed a **real latent bug** this surfaced, independent of the
+      restructuring's own correctness: `main.py` mixed `__file__`-relative
+      (`WEB_DIST_DIR`) and CWD-relative (`directory="static"`, twice) path
+      resolution for its two static-file mounts. This only ever worked by
+      coincidence, because the old Dockerfile's `WORKDIR`/`COPY` structure happened
+      to keep CWD and the module's own directory identical — a latent fragility,
+      not something this restructuring introduced. Fixed by making both
+      `__file__`-relative (`STATIC_DIR`), which is correct regardless of process CWD
+- [x] `Dockerfile`: Python stage `WORKDIR`s at `/srv` (the package's parent, not the
+      package itself), copies `requirements.txt`+`pyproject.toml`+`app/` in,
+      installs deps then `pip install --no-deps .`; `web-dist` now copies to
+      `./app/web-dist` (a sibling of `main.py` *inside* the package, matching its
+      `__file__`-relative resolution). `docker-entrypoint.sh`'s uvicorn target
+      changed from `main:app` to `app.main:app`
+- [x] Verify: **never touched the real running production container until fully
+      verified separately** — built the image (build-only, doesn't restart the
+      live container), ran a throwaway container from it on a different port,
+      confirmed clean startup, home/legacy/SPA-fallback routes all 200, and the
+      deep `main → generator → coach → stats → models` relative-import chain
+      resolving correctly end-to-end (a real `POST /api/generator/run` call
+      against the throwaway instance). Only after that passed was the real
+      production container recreated with the same verified image — confirmed
+      real data untouched (144 runs, 5 goals, correct `/api/config`) and a Home
+      tab screenshot rendering exactly as before
+- [ ] **Not yet confirmed**: whether this actually fixes SnapDeploy's specific
+      build pipeline — that requires an actual redeploy attempt there, which is
+      the user's own next step, not something verifiable from this environment
+
+---
+
 ## Cross-cutting features (slot in any time after the listed dependency)
 
 - [ ] **Daily AI insight card** (after 0.3): Sonnet one-shot (separate short-lived SDK

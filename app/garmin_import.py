@@ -31,10 +31,10 @@ import re
 import zipfile
 from datetime import datetime, timezone
 
-from models import SessionLocal, Run, DailySteps, run_needs_detail_sync
-from weather import get_historical_weather
-from util import classify_run_type
-from garmin_sync import METERS_PER_MILE
+from .models import SessionLocal, Run, DailySteps, run_needs_detail_sync
+from .weather import get_historical_weather
+from .util import classify_run_type
+from .garmin_sync import METERS_PER_MILE
 
 log = logging.getLogger("runlog")
 

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
-from models import (
+from .models import (
     SessionLocal,
     Run,
     DailySteps,
@@ -28,8 +28,8 @@ from models import (
     resolve_run_id,
     user_key,
 )
-from weather import get_historical_weather
-from util import classify_run_type, detect_intervals, local_today
+from .weather import get_historical_weather
+from .util import classify_run_type, detect_intervals, local_today
 
 log = logging.getLogger("runlog")
 
@@ -843,7 +843,7 @@ def _fetch_adaptive_plan_workouts(client, start_date: str, end_date: str) -> lis
     coach.sync_garmin_suggested_workouts). Non-fatal on any failure: not every account
     has an active adaptive plan, and this should never block the rest of a sync over it.
     """
-    import coach
+    from . import coach
     try:
         plans = client.get_training_plans()
     except Exception as e:
@@ -1194,7 +1194,7 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
             plan_entries = _fetch_adaptive_plan_workouts(client, today.isoformat(), window_end)
             set_sync_meta(user_key(user_id, GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY), datetime.now(timezone.utc).isoformat())
             if plan_entries:
-                import coach
+                from . import coach
                 db = SessionLocal()
                 try:
                     n = coach.sync_garmin_suggested_workouts(db, plan_entries, user_id)

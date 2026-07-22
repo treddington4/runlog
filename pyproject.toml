@@ -1,0 +1,32 @@
+[project]
+name = "hale"
+version = "0.1.0"
+description = "HALE — HALE's Adaptive Life Engine, a self-hosted fitness tracker"
+requires-python = ">=3.12"
+# Mirrors requirements.txt exactly — that file stays the source of truth installed
+# first in the Dockerfile (RUN pip install -r requirements.txt); this list exists so
+# `pip install .` also works standalone (e.g. a host that only understands
+# pyproject.toml-based builds, not a bare requirements.txt) without needing to
+# resolve dependencies a second time in the common case (see Dockerfile's --no-deps
+# on the second install step).
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.1",
+    "requests==2.32.3",
+    "APScheduler==3.10.4",
+    "python-dotenv==1.0.1",
+    "SQLAlchemy==2.0.35",
+    "garminconnect==0.3.6",
+    "fitparse==1.2.0",
+    "claude-agent-sdk==0.2.116",
+    "PyJWT==2.10.1",
+    "cryptography==43.0.3",
+    "pywebpush==2.3.0",
+]
+
+[tool.setuptools]
+packages = ["app"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

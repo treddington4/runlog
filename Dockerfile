@@ -10,20 +10,32 @@ RUN npm run build
 
 FROM python:3.12-slim
 
-WORKDIR /app
+# WORKDIR is the package's *parent* directory — `app/` is a real installable
+# package now (pyproject.toml + app/__init__.py, every internal cross-module import
+# converted to relative `from . import x`), not a flat directory of top-level
+# modules living directly at the working directory the way it used to.
+WORKDIR /srv
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt pyproject.toml ./
+COPY app ./app
 
-COPY app/ .
+# requirements.txt stays the source of truth for third-party dependency versions;
+# the second install just registers `app` itself as an importable package
+# (--no-deps: pyproject.toml's own dependency list mirrors requirements.txt, so this
+# skips redundantly re-resolving what the first install already satisfied).
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps .
+
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-COPY --from=web-builder /web/dist ./web-dist
+# web-dist must land as a *sibling of main.py inside the package* — main.py resolves
+# it via os.path.dirname(__file__), not the process's CWD (see main.py's WEB_DIST_DIR).
+COPY --from=web-builder /web/dist ./app/web-dist
 
 RUN mkdir -p /data \
-    && groupadd -r runlog && useradd -r -g runlog -d /app runlog \
-    && chown -R runlog:runlog /app /data
+    && groupadd -r runlog && useradd -r -g runlog -d /srv runlog \
+    && chown -R runlog:runlog /srv /data
 
 EXPOSE 8000
 

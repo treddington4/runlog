@@ -6,9 +6,9 @@ import bisect
 import requests
 from datetime import datetime, timezone
 
-from models import SessionLocal, Run, ProviderCredential, run_needs_detail_sync, resolve_run_id
-from weather import get_historical_weather
-from util import gap_sec_per_mi, classify_run_type, detect_intervals, decode_polyline
+from .models import SessionLocal, Run, ProviderCredential, run_needs_detail_sync, resolve_run_id
+from .weather import get_historical_weather
+from .util import gap_sec_per_mi, classify_run_type, detect_intervals, decode_polyline
 
 # STRAVA_CLIENT_ID/SECRET are the OAuth *application's* credentials (registered once per
 # self-hosted deployment at strava.com) — infrastructure config, not a per-user secret.

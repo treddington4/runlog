@@ -29,9 +29,9 @@ from claude_agent_sdk import (
     tool,
 )
 
-import coach
-import stats
-from models import SessionLocal, Run, ChatMessage, User, DEFAULT_USER_ID, owned_by
+from . import coach
+from . import stats
+from .models import SessionLocal, Run, ChatMessage, User, DEFAULT_USER_ID, owned_by
 
 BUILTIN_TOOLS_BLOCKLIST = [
     "Bash", "Read", "Write", "Edit", "NotebookEdit", "Task", "WebFetch", "WebSearch",

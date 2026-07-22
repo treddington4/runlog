@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from pywebpush import webpush, WebPushException
 
-from models import PushSubscription
+from .models import PushSubscription
 
 log = logging.getLogger("runlog")
 

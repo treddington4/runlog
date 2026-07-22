@@ -15,8 +15,8 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func
 
-from models import Run, DailySteps, Goal, DEFAULT_USER_ID, owned_by
-from util import local_today
+from .models import Run, DailySteps, Goal, DEFAULT_USER_ID, owned_by
+from .util import local_today
 
 # Strava's activity_type is a single PascalCase word ("Run","Ride","Walk"); Garmin's raw
 # types are lowercase and sometimes multi-word ("running","trail_running",

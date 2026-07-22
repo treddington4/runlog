@@ -6,3 +6,10 @@ data/
 .verify.sh
 .screenshots/
 .claude/
+
+# Frontend (Node / Vite)
+web/node_modules/
+web/dist/
+node_modules/
+dist/
+.vite/

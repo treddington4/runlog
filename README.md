@@ -96,3 +96,9 @@ docker cp runlog:/data/runlog.db ./runlog-backup.db
 
 No calls to any LLM API happen in this stack — sync, weather lookup, and run
 classification are all deterministic code.
+
+## License
+MIT — see [LICENSE](LICENSE).
+
+## Support
+If RunLog is useful to you, consider [buying me a coffee](https://buymeacoffee.com/treddington4).

@@ -16,7 +16,9 @@ WORKDIR /app
 COPY requirements.txt .
 COPY app/ ./app/
 
-RUN pip install --no-cache-dir -r requirements.txt
+# Added --no-build-isolation to stop pip from spinning up an isolated 
+# environment that trips over local workspace module resolution
+RUN pip install --no-cache-dir --no-build-isolation -r requirements.txt
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

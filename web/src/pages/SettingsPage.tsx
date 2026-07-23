@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
 function SettingsSection({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
@@ -303,6 +304,7 @@ function CoachSection() {
 function CoachFeedbackSection() {
   const { data: draft, isPending } = useCoachIssue()
   const clearIssue = useClearCoachIssue()
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   if (isPending || !draft) return null
 
@@ -324,6 +326,11 @@ function CoachFeedbackSection() {
         {new Date(draft.updatedAt).toLocaleString()}. Draft only; nothing here is posted to GitHub automatically.
       </div>
       <div className="flex gap-2">
+        {/* Downloading a .md just triggers a save on most mobile browsers with no easy
+            way to actually read it — this reads the same content in place instead. */}
+        <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}>
+          Preview
+        </Button>
         <Button size="sm" onClick={handleDownload}>
           Download as .md
         </Button>
@@ -331,6 +338,17 @@ function CoachFeedbackSection() {
           {clearIssue.isPending ? "Clearing…" : "Clear"}
         </Button>
       </div>
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{draft.title}</DialogTitle>
+          </DialogHeader>
+          <div className="text-muted-foreground max-h-[60vh] overflow-y-auto text-xs whitespace-pre-wrap">
+            {draft.body}
+          </div>
+        </DialogContent>
+      </Dialog>
     </SettingsSection>
   )
 }

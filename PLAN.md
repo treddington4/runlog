@@ -1535,7 +1535,7 @@ genuinely new HALE user with zero synced running history hits the same fallback
 today. `_week_mileage` also hardcodes `Run.activity_type == "Run"`, so it can't
 currently distinguish "no run last week but a real running history" from "no history
 in this activity at all."
-- [ ] Distinguish those two cases explicitly: an *established athlete with just no
+- [x] Distinguish those two cases explicitly: an *established athlete with just no
       mileage last week* (real history exists in this activity_type over a longer
       lookback) keeps today's ceiling-multiplier behavior, based off the most recent
       *nonzero* week instead of a hardcoded 20; a *genuine cold start* (near-zero
@@ -1546,17 +1546,22 @@ in this activity at all."
       strength challenge-safety logic already established, just as deterministic
       generator math instead of chat/LLM-driven) rather than multiplying off zero.
       Benefits Run and Ride equally and is a prerequisite for Ride even existing as
-      a sane quick-generate option.
+      a sane quick-generate option. Shipped as `_last_nonzero_week_mileage`/
+      `_compute_weekly_budget` in `app/coach/generator.py`. A second real bug was
+      caught during live verification of this fix: `day_share`'s weekly-total-slice
+      math (`budget * share`) silently produced 0.3mi "first runs" when applied to a
+      cold-start budget that's already a single-session distance — fixed by
+      branching on `is_cold_start` to use `budget` directly in that case.
 
-### 14.1 Backend: `run_quick_generate` + cold-start fix + endpoint
-- [ ] Generalize `_week_mileage`/`_get_or_create_weekly_plan` to take `activity_type`,
+### 14.1 Backend: `run_quick_generate` + cold-start fix + endpoint — done
+- [x] Generalize `_week_mileage`/`_get_or_create_weekly_plan` to take `activity_type`,
       implementing the cold-start-vs-established distinction from 14.0.
-- [ ] Thread `activity_type` consistently through the `stats.py` functions the
+- [x] Thread `activity_type` consistently through the `stats.py` functions the
       endurance path leans on — `weekly_mileage`/`monthly_mileage`/`personal_records`/
       `run_summary` already accept it; `rolling_pace_trend` and `training_load_trend`
       currently don't (confirmed via direct read, not assumed) and need it added so a
       per-activity pace/load baseline is actually possible.
-- [ ] New `run_quick_generate(db, user_id, domain, date=None) -> dict`, `domain` in
+- [x] New `run_quick_generate(db, user_id, domain, date=None) -> dict`, `domain` in
       `{"run", "ride", "strength", "recovery"}`:
       - `"run"`/`"ride"`: calls `_generate_endurance` (generalized to accept
         `activity_type`, using the fixed cold-start-aware budget logic) forcing
@@ -1575,8 +1580,15 @@ in this activity at all."
         `RECOVERY_GUIDANCE_PROMPT`'s existing escalation logic for the coach itself.
       - Idempotent per (user, date, domain) via the existing
         `_upsert_generator_workout`/domain-keyed pattern — pressing a button twice in
-        one day regenerates that domain's entry rather than duplicating it.
-- [ ] New endpoint `POST /api/generator/quick/{domain}` (`routes/workouts.py`) — no
+        one day regenerates that domain's entry rather than duplicating it. A real
+        bug was caught here too during verification: Run and Ride both used the same
+        internal `domain="endurance"` upsert key, so quick-generating Ride right
+        after Run silently overwrote the Run row instead of creating a separate one
+        — fixed by giving non-Run activities their own suffixed key
+        (`endurance_<activity>`) and teaching `_existing_generator_workout` to match
+        on `activity_type` for that family, while Run keeps the original unsuffixed
+        `"endurance"` key for backward compatibility with the nightly auto-generator.
+- [x] New endpoint `POST /api/generator/quick/{domain}` (`routes/workouts.py`) — no
       date param exposed; always today, matching "I don't want to future-schedule it."
 
 ### 14.2 Strength targeting — activity-complementary default + explicit override
@@ -1584,17 +1596,20 @@ in this activity at all."
 by a target area, each exercise already tagged with a `category` (squat/push/pull/
 core/hinge, which the existing progression-increment logic already keys off) — this
 extends that same, already-bounded-v1 pattern rather than building a new system.
-- [ ] Add 2–3 more named templates reusing the existing categories (no new increment
+- [x] Add 2–3 more named templates reusing the existing categories (no new increment
       logic needed) — e.g. a runner/rider-complementary template (glute/hip/core/
       hinge-heavy, supporting running/cycling economy and injury prevention) and a
       "back and legs" template (pull + hinge + squat-focused). Exact exercise picks
       are a content decision at implementation time, same as how `full_body_ab`'s
-      original 10 exercises were chosen.
-- [ ] `run_quick_generate`'s `"strength"` domain accepts an optional
+      original 10 exercises were chosen. Shipped as `runner_focus` and
+      `back_and_legs` in `STRENGTH_TEMPLATES`.
+- [x] `run_quick_generate`'s `"strength"` domain accepts an optional
       `template_override` — when omitted, auto-picks based on the user's recent
       Run/Ride volume (real cardio history in the trailing few weeks → the
       complementary template; otherwise the existing `full_body_ab` default) rather
-      than always defaulting to full-body.
+      than always defaulting to full-body. Shipped as `_auto_pick_strength_template`;
+      verified against both a zero-cardio-history account (falls through to
+      `full_body_ab`) and a real ~25mi/week runner (auto-picks `runner_focus`).
 - [ ] Frontend: the Strength quick-generate button offers a lightweight target
       picker (a small chip/dropdown row — Full Body / Runner Focus / Back & Legs /
       …) shown right after tapping it, pre-selected to the auto-picked default, so

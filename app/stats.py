@@ -193,16 +193,19 @@ def personal_records(db, activity_type: str = "Run", user_id: str = DEFAULT_USER
     }
 
 
-def rolling_pace_trend(db, days: int = 90, window_days: int = 7, user_id: str = DEFAULT_USER_ID):
+def rolling_pace_trend(db, days: int = 90, window_days: int = 7, user_id: str = DEFAULT_USER_ID,
+                        activity_type: str = "Run"):
     """Port of app.js's rollingPaceData — for each run in the trailing `days`, a
     distance-weighted average pace over the `window_days` ending on that run's date,
     looking back across ALL running history (not just the `days` window) so early
-    points in a narrow window aren't computed from an artificially thin lookback."""
+    points in a narrow window aren't computed from an artificially thin lookback.
+    `activity_type` (Phase 14) lets a per-activity baseline (e.g. "Ride") be computed
+    the same way, rather than always assuming Run."""
     today = local_today(user_id)
     cutoff = (today - timedelta(days=days)).isoformat()
 
     all_history = [
-        r for r in _all_runs(db, "Run", user_id)
+        r for r in _all_runs(db, activity_type, user_id)
         if r.date and is_plausible_pace(r.avg_pace_sec_per_mi, r.distance_mi)
     ]
     recent = [r for r in all_history if r.date >= cutoff]
@@ -224,17 +227,18 @@ def rolling_pace_trend(db, days: int = 90, window_days: int = 7, user_id: str = 
     return out
 
 
-def training_load_trend(db, weeks: int = 8, user_id: str = DEFAULT_USER_ID):
+def training_load_trend(db, weeks: int = 8, user_id: str = DEFAULT_USER_ID, activity_type: str = "Run"):
     """Trailing 4 weeks vs. prior 4 weeks total mileage, using rolling 28-day windows
     (not calendar-week buckets) so the current in-progress week doesn't bias the
     comparison. Deliberately mileage-based, not an invented HR-based load score
-    presented as a real physiological measurement."""
+    presented as a real physiological measurement. `activity_type` (Phase 14) lets
+    this be computed per-activity (e.g. "Ride") rather than always assuming Run."""
     today = local_today(user_id)
     last28_start = (today - timedelta(days=27)).isoformat()
     prior28_start = (today - timedelta(days=55)).isoformat()
     prior28_end = (today - timedelta(days=28)).isoformat()
 
-    runs = _all_runs(db, "Run", user_id)
+    runs = _all_runs(db, activity_type, user_id)
     last28 = sum(r.distance_mi or 0 for r in runs if r.date and last28_start <= r.date <= today.isoformat())
     prior28 = sum(r.distance_mi or 0 for r in runs if r.date and prior28_start <= r.date <= prior28_end)
 

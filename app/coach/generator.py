@@ -32,7 +32,7 @@ from sqlalchemy import or_
 
 from ..models import (
     SessionLocal, Workout, Goal, User, UserTrainingConfig, HealthNote,
-    Run, WeeklyPlan, DEFAULT_USER_ID, owned_by,
+    Run, WeeklyPlan, RecoverySession, DEFAULT_USER_ID, owned_by,
 )
 from .. import stats
 from . import core as coach
@@ -81,6 +81,21 @@ def _existing_generator_workout(db, user_id, date_str, domain: str):
         q = q.filter(Workout.scheduled_time.isnot(None))
     elif domain == "strength":
         q = q.filter(Workout.scheduled_time.is_(None), Workout.workout_type == "strength")
+    elif domain == "endurance":
+        # Run (the nightly auto-generator's only activity, or Run via quick-generate) —
+        # also matches an existing cross-train/"Other" row from this same slot, since
+        # WEEKDAY_SKELETON's cross_train day is produced by this exact path.
+        q = q.filter(Workout.scheduled_time.is_(None), Workout.workout_type != "strength",
+                      Workout.activity_type.in_(("Run", "Other")))
+    elif domain.startswith("endurance_"):
+        # "endurance_<activity>" — quick-generate only (e.g. "endurance_ride"), never
+        # produces cross_train (quick-generate always forces easy), so match exactly.
+        # Without this, a same-day Ride quick-generate would match/overwrite an
+        # already-generated Run row instead of getting its own slot (a real bug
+        # caught during verification).
+        expected_activity = domain.split("_", 1)[1].capitalize()
+        q = q.filter(Workout.scheduled_time.is_(None), Workout.workout_type != "strength",
+                      Workout.activity_type == expected_activity)
     else:
         q = q.filter(Workout.scheduled_time.is_(None), Workout.workout_type != "strength")
     return q.first()
@@ -104,6 +119,15 @@ def _upsert_generator_workout(db, user_id, date_str, domain: str, **fields) -> d
 
 PHASE_CEILING_MULTIPLIER = {"base": 1.15, "build": 1.30, "peak": 1.10, "taper": 0.70}
 MESOCYCLE_LENGTHS = {"3:1": 4, "2:1": 3, "4:1": 5}
+
+# Phase 14 — cold-start ramp for an activity with no real history at all (a brand-new
+# runner, or any user's first-ever ride via the Quick Generate button). Deliberately
+# small and linear, same "start conservative, ramp by a fixed amount" philosophy
+# Phase 12.3's strength challenge-safety logic already established for a different
+# domain — see the real bug this fixes, below.
+COLD_START_INITIAL_MILES = 3.0
+COLD_START_WEEKLY_INCREMENT_MILES = 1.5
+COLD_START_LOOKBACK_WEEKS = 8  # weeks checked before concluding "no experience in this activity at all"
 _EPOCH_MONDAY = datetime(2020, 1, 6).date()  # any fixed Monday — used only to derive a stable week index
 
 # 1-flag readiness downgrade ladder: interval -> tempo -> easy (stands in for "Z2",
@@ -147,18 +171,66 @@ def _is_deload_week(config, week_start) -> bool:
     return weeks_since_epoch % cycle_len == cycle_len - 1
 
 
-def _week_mileage(db, user_id, week_start) -> float:
+def _week_mileage(db, user_id, week_start, activity_type="Run") -> float:
     week_end = week_start + timedelta(days=6)
     rows = (
         db.query(Run)
-        .filter(Run.activity_type == "Run", Run.date >= week_start.isoformat(), Run.date <= week_end.isoformat(),
+        .filter(Run.activity_type == activity_type, Run.date >= week_start.isoformat(), Run.date <= week_end.isoformat(),
                 owned_by(Run.user_id, user_id))
         .all()
     )
     return sum(r.distance_mi or 0 for r in rows)
 
 
+def _last_nonzero_week_mileage(db, user_id, before_week_start, activity_type, lookback_weeks=COLD_START_LOOKBACK_WEEKS):
+    """Real bug fix (Phase 14): distinguishes "an established athlete who just didn't
+    run/ride last week" (real history exists further back — that week's mileage
+    becomes the ramp base) from "genuinely never done this activity" (no nonzero
+    week anywhere in the lookback — a true cold start). The previous code only ever
+    checked the immediately preceding week, so a quiet week for an established
+    athlete and a brand-new activity looked identical (both `0`) and both fell
+    through to the same flat-20-mile fallback. Returns (mileage, is_cold_start)."""
+    for i in range(1, lookback_weeks + 1):
+        wk_start = before_week_start - timedelta(days=7 * i)
+        mileage = _week_mileage(db, user_id, wk_start, activity_type)
+        if mileage > 0:
+            return mileage, False
+    return 0.0, True
+
+
+def _weeks_active_in_activity(db, user_id, before_week_start, activity_type, max_weeks=20) -> int:
+    """How many of the trailing max_weeks had any mileage in this activity — a simple
+    proxy for "how many weeks into this activity's cold-start ramp am I," used to
+    size the linear increment. Only meaningful once _last_nonzero_week_mileage has
+    already concluded this is a cold start."""
+    count = 0
+    for i in range(1, max_weeks + 1):
+        wk_start = before_week_start - timedelta(days=7 * i)
+        if _week_mileage(db, user_id, wk_start, activity_type) > 0:
+            count += 1
+    return count
+
+
+def _compute_weekly_budget(last_nonzero_mileage, is_cold_start, ramp_pct, phase, is_deload, weeks_active=0) -> float:
+    """Pure budget-math core, shared by the persisted Run path (_get_or_create_weekly_plan)
+    and Ride's lighter-weight direct path (_generate_endurance) — see the real bug
+    this fixes in _last_nonzero_week_mileage's docstring above."""
+    if is_cold_start:
+        budget = COLD_START_INITIAL_MILES + COLD_START_WEEKLY_INCREMENT_MILES * weeks_active
+    else:
+        uncapped = last_nonzero_mileage * (1 + ramp_pct / 100)
+        ceiling = last_nonzero_mileage * PHASE_CEILING_MULTIPLIER.get(phase, 1.15)
+        budget = min(uncapped, ceiling)
+    if is_deload:
+        budget *= 0.75
+    return budget
+
+
 def _get_or_create_weekly_plan(db, user_id, week_start, phase, config):
+    """Run-specific and persisted (via WeeklyPlan) — carries deload/frozen state
+    across the nightly periodization loop. Ride has no equivalent persisted plan
+    (see _generate_endurance): it's quick-generate-only in this v1, with no two-a-day/
+    deload cycle to track, so a direct _compute_weekly_budget call is enough there."""
     plan = (
         db.query(WeeklyPlan)
         .filter(WeeklyPlan.user_id == user_id, WeeklyPlan.week_start == week_start.isoformat())
@@ -167,13 +239,10 @@ def _get_or_create_weekly_plan(db, user_id, week_start, phase, config):
     if plan:
         return plan
     is_deload = _is_deload_week(config, week_start)
-    last_week_mileage = _week_mileage(db, user_id, week_start - timedelta(days=7))
+    last_nonzero, is_cold_start = _last_nonzero_week_mileage(db, user_id, week_start, "Run")
+    weeks_active = _weeks_active_in_activity(db, user_id, week_start, "Run") if is_cold_start else 0
     ramp_pct = config.weekly_ramp_pct or 3.0
-    uncapped = last_week_mileage * (1 + ramp_pct / 100)
-    ceiling = last_week_mileage * PHASE_CEILING_MULTIPLIER.get(phase, 1.15) if last_week_mileage > 0 else 20.0
-    budget = min(uncapped, ceiling) if last_week_mileage > 0 else ceiling
-    if is_deload:
-        budget *= 0.75
+    budget = _compute_weekly_budget(last_nonzero, is_cold_start, ramp_pct, phase, is_deload, weeks_active)
     plan = WeeklyPlan(
         user_id=user_id, week_start=week_start.isoformat(), target_tss=round(budget, 1),
         actual_tss=0.0, is_deload=is_deload, frozen=False,
@@ -202,23 +271,56 @@ def _distribution_would_break(db, user_id, date, candidate_hard: bool) -> bool:
     return ratio > 0.2  # polarized/pyramidal both cap hard-day share at ~20% in this v1 approximation
 
 
-def _generate_endurance(db, user_id, date, readiness_result, config) -> dict | None:
+def _generate_endurance(db, user_id, date, readiness_result, config, activity_type: str = "Run",
+                         ignore_schedule: bool = False) -> dict | None:
+    """`activity_type="Run"` is the original nightly-periodization path (persisted
+    WeeklyPlan, real deload/frozen/two-a-day semantics). Any other activity_type
+    (currently only "Ride", via Phase 14's Quick Generate button) uses the same
+    phase/readiness-gate/distribution logic but a lighter-weight, non-persisted
+    budget computation — no deload-week or two-a-day cycle to track for an
+    on-demand quick-generate action that isn't part of the nightly weekly skeleton.
+
+    `ignore_schedule` (Quick Generate) skips the WEEKDAY_SKELETON lookup entirely —
+    without it, pressing "Run" on a skeleton rest/cross_train day would generate a
+    rest/cross_train "session" instead of an actual run, defeating the whole point
+    of an explicit "give me one now" button. Forces a plain "easy" base type instead,
+    still subject to every real readiness/distribution gate below unchanged."""
     date_str = date.isoformat()
     week_start = _week_start(date)
     phase = _phase_for_date(db, user_id, date)
-    plan = _get_or_create_weekly_plan(db, user_id, week_start, phase, config)
     flags = readiness_result["flags"]
     severe_health = _has_severe_health_note(db, user_id)
 
-    skeleton_type = WEEKDAY_SKELETON[date.weekday()]
-    if skeleton_type == "quality":
-        base_type = "interval" if phase == "peak" else "tempo"
-    elif skeleton_type == "rest":
-        base_type = "rest"
-    elif skeleton_type == "cross_train":
-        base_type = "cross_train"
+    # Computed regardless of which branch below actually sources the budget — needed
+    # by both (Run's persisted WeeklyPlan doesn't record whether *it* used the
+    # cold-start branch internally) for the day_share decision further down.
+    _, is_cold_start = _last_nonzero_week_mileage(db, user_id, week_start, activity_type)
+
+    if activity_type == "Run":
+        plan = _get_or_create_weekly_plan(db, user_id, week_start, phase, config)
+        budget = plan.target_tss or 20.0
+        is_deload = plan.is_deload
     else:
-        base_type = skeleton_type  # "easy" | "long"
+        last_nonzero, _ = _last_nonzero_week_mileage(db, user_id, week_start, activity_type)
+        weeks_active = _weeks_active_in_activity(db, user_id, week_start, activity_type) if is_cold_start else 0
+        is_deload = _is_deload_week(config, week_start)
+        budget = _compute_weekly_budget(
+            last_nonzero, is_cold_start, config.weekly_ramp_pct or 3.0, phase, is_deload, weeks_active,
+        )
+        plan = None
+
+    if ignore_schedule:
+        base_type = "easy"
+    else:
+        skeleton_type = WEEKDAY_SKELETON[date.weekday()]
+        if skeleton_type == "quality":
+            base_type = "interval" if phase == "peak" else "tempo"
+        elif skeleton_type == "rest":
+            base_type = "rest"
+        elif skeleton_type == "cross_train":
+            base_type = "cross_train"
+        else:
+            base_type = skeleton_type  # "easy" | "long"
 
     trigger_notes = []
     workout_type = base_type
@@ -229,7 +331,7 @@ def _generate_endurance(db, user_id, date, readiness_result, config) -> dict | N
     elif len(flags) >= 2:
         workout_type = "rest"
         trigger_notes.append(f"Readiness flags {flags} — rest day, week's budget frozen.")
-        if not plan.frozen:
+        if plan is not None and not plan.frozen:
             plan.frozen = True
             db.commit()
     elif len(flags) == 1 and workout_type in DOWNGRADE_LADDER:
@@ -241,26 +343,41 @@ def _generate_endurance(db, user_id, date, readiness_result, config) -> dict | N
         trigger_notes.append(f"Distribution audit ({config.distribution}) — downgraded {workout_type} -> easy to keep hard-day share in check.")
         workout_type = "easy"
 
-    if plan.is_deload and workout_type == "long":
+    if is_deload and workout_type == "long":
         trigger_notes.append("Deload week — trimmed long run.")
 
     day_share = {"long": 0.30, "tempo": 0.18, "interval": 0.15, "easy": 0.10, "cross_train": 0.10, "rest": 0}
     target_distance_mi = None
-    if workout_type not in ("rest",):
-        share = day_share.get(workout_type, 0.10)
-        target_distance_mi = round((plan.target_tss or 20.0) * share, 1) if workout_type != "cross_train" else None
+    if workout_type not in ("rest",) and workout_type != "cross_train":
+        if is_cold_start:
+            # Real bug caught in testing: a cold-start `budget` already represents a
+            # sensible single-session distance (see COLD_START_INITIAL_MILES), not a
+            # weekly total to slice up — running it through day_share produced an
+            # absurd "first run" (3mi budget * 10% easy-day share = 0.3mi).
+            target_distance_mi = round(budget, 1)
+        else:
+            share = day_share.get(workout_type, 0.10)
+            target_distance_mi = round(budget * share, 1)
 
-    activity_type = "Run" if workout_type != "cross_train" else "Other"
+    result_activity_type = activity_type if workout_type != "cross_train" else "Other"
     notes = " ".join(trigger_notes) or None
 
+    # "endurance" stays the key for Run (the nightly auto-generator's only activity,
+    # unchanged for backward compat with rows it already created); other activities
+    # (currently just Ride, via quick-generate) get their own suffixed key so a same-day
+    # Ride quick-generate can't silently overwrite an already-generated Run, and vice versa.
+    endurance_domain = "endurance" if activity_type == "Run" else f"endurance_{activity_type.lower()}"
+
     result = _upsert_generator_workout(
-        db, user_id, date_str, domain="endurance",
-        workout_type=workout_type, activity_type=activity_type,
+        db, user_id, date_str, domain=endurance_domain,
+        workout_type=workout_type, activity_type=result_activity_type,
         target_distance_mi=target_distance_mi, notes=notes,
     )
 
     # Two-a-days: build/peak, clean readiness, on the day's quality/long session only.
-    if phase in ("build", "peak") and not flags and not severe_health and workout_type in ("tempo", "interval", "long"):
+    # Run-only — an ad-hoc Ride quick-generate never gets a second session appended.
+    if (activity_type == "Run" and phase in ("build", "peak") and not flags and not severe_health
+            and workout_type in ("tempo", "interval", "long")):
         second = _upsert_generator_workout(
             db, user_id, date_str, domain="endurance_second",
             workout_type="cross_train", activity_type="Other",
@@ -291,7 +408,51 @@ STRENGTH_TEMPLATES = {
             {"exercise": "Dead Bug", "targetType": "reps", "category": "core"},
         ],
     },
+    # Phase 14 — glute/hip/core/hinge-heavy, supporting running/cycling economy and
+    # injury prevention rather than general full-body strength. Reuses the exact
+    # same categories as full_body_ab (no new progression-increment logic needed) —
+    # an explicitly bounded v1 exercise pick, same discipline as full_body_ab's own.
+    "runner_focus": {
+        "A": [
+            {"exercise": "Bulgarian Split Squat", "targetType": "reps", "category": "squat"},
+            {"exercise": "Single-leg Romanian Deadlift", "targetType": "reps", "category": "hinge"},
+            {"exercise": "Clamshell", "targetType": "reps", "category": "hinge"},
+            {"exercise": "Side Plank", "targetType": "hold_sec", "category": "core"},
+            {"exercise": "Calf Raise", "targetType": "reps", "category": "squat"},
+        ],
+        "B": [
+            {"exercise": "Glute Bridge", "targetType": "reps", "category": "hinge"},
+            {"exercise": "Lateral Band Walk", "targetType": "reps", "category": "hinge"},
+            {"exercise": "Step-up", "targetType": "reps", "category": "squat"},
+            {"exercise": "Plank", "targetType": "hold_sec", "category": "core"},
+            {"exercise": "Dead Bug", "targetType": "reps", "category": "core"},
+        ],
+    },
+    # Phase 14 — the "back and legs" target area requested directly (pull + hinge +
+    # squat-focused), for whenever the user wants to explicitly pick a focus rather
+    # than the auto-picked default.
+    "back_and_legs": {
+        "A": [
+            {"exercise": "Romanian Deadlift", "targetType": "reps", "category": "hinge"},
+            {"exercise": "Bent-over Row", "targetType": "reps", "category": "pull"},
+            {"exercise": "Goblet Squat", "targetType": "reps", "category": "squat"},
+            {"exercise": "Pull-up", "targetType": "reps", "category": "pull"},
+            {"exercise": "Glute Bridge", "targetType": "reps", "category": "hinge"},
+        ],
+        "B": [
+            {"exercise": "Deadlift", "targetType": "reps", "category": "hinge"},
+            {"exercise": "Bulgarian Split Squat", "targetType": "reps", "category": "squat"},
+            {"exercise": "Lat Pulldown", "targetType": "reps", "category": "pull"},
+            {"exercise": "Side Plank", "targetType": "hold_sec", "category": "core"},
+            {"exercise": "Back Extension", "targetType": "reps", "category": "hinge"},
+        ],
+    },
 }
+# Weeks of trailing Run/Ride mileage checked before auto-picking runner_focus over
+# full_body_ab as the quick-generate default (see run_quick_generate) — a real
+# recent cardio habit, not just one lucky week.
+STRENGTH_AUTO_TARGET_LOOKBACK_WEEKS = 4
+STRENGTH_AUTO_TARGET_MIN_MILES = 8.0
 WEIGHT_INCREMENT_LB = {"squat": 10, "hinge": 10, "push": 5, "pull": 5, "core": 0}
 HOLD_INCREMENT_SEC = 5
 HOLD_CAP_SEC = 60
@@ -322,14 +483,38 @@ def _build_exercise_step(ex: dict, progress: dict, light: bool) -> dict:
     return {"stepType": "strength_exercise", "exercise": ex["exercise"], "restSeconds": rest_seconds, "sets": sets}
 
 
-def _generate_strength(db, user_id, date, readiness_result, config) -> dict | None:
+def _auto_pick_strength_template(db, user_id, date) -> str:
+    """Phase 14 — quick-generate default when the user hasn't explicitly chosen a
+    target: complement real recent cardio training (runner_focus) rather than
+    always defaulting to the generic full-body rotation. Checked against a real
+    trailing-weeks lookback, not just one lucky week, to avoid flip-flopping."""
+    week_start = _week_start(date)
+    total = 0.0
+    for i in range(STRENGTH_AUTO_TARGET_LOOKBACK_WEEKS):
+        wk_start = week_start - timedelta(days=7 * i)
+        total += _week_mileage(db, user_id, wk_start, "Run") + _week_mileage(db, user_id, wk_start, "Ride")
+    return "runner_focus" if total >= STRENGTH_AUTO_TARGET_MIN_MILES else "full_body_ab"
+
+
+def _generate_strength(db, user_id, date, readiness_result, config, template_override: str = None,
+                        ignore_schedule: bool = False) -> dict | None:
+    """`ignore_schedule` (Phase 14's Quick Generate button) forces today's occurrence
+    regardless of WEEKDAY_STRENGTH_SLOTS — the button is an explicit "give me one
+    now" action, not bound to the nightly rotation's day assignment."""
     days_per_week = config.strength_days_per_week or 2
     slots = WEEKDAY_STRENGTH_SLOTS.get(days_per_week, WEEKDAY_STRENGTH_SLOTS[2])
-    if date.weekday() not in slots:
+    if not ignore_schedule and date.weekday() not in slots:
         return None
 
-    template = STRENGTH_TEMPLATES.get(config.strength_template, STRENGTH_TEMPLATES["full_body_ab"])
-    slot_index = slots.index(date.weekday())
+    template_name = template_override or config.strength_template
+    template = STRENGTH_TEMPLATES.get(template_name, STRENGTH_TEMPLATES["full_body_ab"])
+    # A/B rotation: use the schedule-slot position when today really is a scheduled
+    # day; otherwise (an off-schedule quick-generate) fall back to ISO day-of-year
+    # parity so it still alternates sensibly across repeated presses on other days.
+    if date.weekday() in slots:
+        slot_index = slots.index(date.weekday())
+    else:
+        slot_index = date.timetuple().tm_yday
     half = "A" if slot_index % 2 == 0 else "B"
     exercises = template[half]
 
@@ -346,7 +531,7 @@ def _generate_strength(db, user_id, date, readiness_result, config) -> dict | No
     elif len(flags) == 1:
         notes = "Holding at current weights/targets — readiness flagged, pausing progression this session."
     else:
-        notes = f"Full body {half} — prescribed from current progression."
+        notes = f"{template_name.replace('_', ' ').title()} {half} — prescribed from current progression."
 
     return _upsert_generator_workout(
         db, user_id, date.isoformat(), domain="strength",
@@ -392,7 +577,105 @@ def apply_strength_progression(db, workout: Workout) -> None:
                 coach.upsert_exercise_progress(db, step["exercise"], workout.user_id or DEFAULT_USER_ID, last_completed_at=now_iso)
 
 
+# ---------- Recovery quick-generate (Phase 14) ----------
+
+
+def _pick_recovery_tool(db, user_id) -> dict | None:
+    """Auto-picks a tool for the Quick Generate button — the user's only tool if
+    there's just one (the common case; create_recovery_tool isn't even chat-exposed
+    yet), otherwise whichever was used in the most recent RecoverySession."""
+    tools = coach.list_recovery_tools(db, user_id)
+    if not tools:
+        return None
+    if len(tools) == 1:
+        return tools[0]
+    sessions = coach.list_recovery_sessions(db, user_id=user_id)
+    if sessions:
+        last_tool_id = sorted(sessions, key=lambda s: s["createdAt"])[-1]["toolId"]
+        match = next((t for t in tools if t["id"] == last_tool_id), None)
+        if match:
+            return match
+    return tools[0]
+
+
+def _generate_recovery(db, user_id, date, readiness_result) -> dict | None:
+    """Level/duration scale with the current readiness flag count, within the
+    tool's own supported range/increment — mirrors RECOVERY_GUIDANCE_PROMPT's
+    existing escalation logic for the coach itself. Idempotent per (user, date),
+    matching the Workout quick-generate domains — a second press the same day
+    updates the existing planned session in place rather than creating a duplicate
+    (recommend_recovery_session itself always creates fresh, since its other caller,
+    the chat tool, has no such day-collision concern)."""
+    tool = _pick_recovery_tool(db, user_id)
+    if not tool:
+        return None
+    date_str = date.isoformat()
+    flag_count = len(readiness_result["flags"])
+    scale = min(flag_count, 2) / 2  # 0 flags -> 0.0, 1 -> 0.5, 2+ -> 1.0
+    level = round(tool["minLevel"] + (tool["maxLevel"] - tool["minLevel"]) * scale)
+    level = max(tool["minLevel"], min(tool["maxLevel"], level))
+    increment = tool["durationIncrementMin"] or 15
+    raw_duration = tool["minDurationMin"] + (tool["maxDurationMin"] - tool["minDurationMin"]) * scale
+    duration = tool["minDurationMin"] + round((raw_duration - tool["minDurationMin"]) / increment) * increment
+    duration = max(tool["minDurationMin"], min(tool["maxDurationMin"], duration))
+    rationale = (
+        f"Quick-generated — {flag_count} readiness flag{'s' if flag_count != 1 else ''}, scaled level/duration accordingly."
+        if flag_count else "Quick-generated — readiness looks clean, moderate session."
+    )
+
+    existing = (
+        db.query(RecoverySession)
+        .filter(RecoverySession.scheduled_date == date_str, RecoverySession.status == "planned",
+                owned_by(RecoverySession.user_id, user_id))
+        .first()
+    )
+    if existing:
+        existing.tool_id = tool["id"]
+        existing.level = level
+        existing.duration_min = duration
+        existing.rationale = rationale
+        db.commit()
+        return coach._recovery_session_to_dict(existing)
+    return coach.recommend_recovery_session(
+        db, tool["id"], date_str, level, duration, zone_boost=False, rationale=rationale, user_id=user_id,
+    )
+
+
 # ---------- Orchestration ----------
+
+QUICK_GENERATE_DOMAINS = ("run", "ride", "strength", "recovery")
+
+
+def run_quick_generate(db, user_id: str, domain: str, date=None, template_override: str = None) -> dict:
+    """Phase 14 — the Quick Generate button's entry point. Forces generation of
+    exactly the requested domain for `date` (defaults to today), overriding whatever
+    the day-of-week/strength schedule would otherwise decide for that day — the
+    button is an explicit "give me one right now" action, not a scheduling action.
+    Still uses the real phase/budget/readiness-gate (and, for run/ride, cold-start-
+    aware) logic underneath; only *which* day gets a session is overridden, not how
+    it's computed."""
+    if domain not in QUICK_GENERATE_DOMAINS:
+        raise ValueError(f"domain must be one of {QUICK_GENERATE_DOMAINS}")
+    target = date or local_today(user_id)
+    if isinstance(target, str):
+        target = datetime.strptime(target, "%Y-%m-%d").date()
+    config = _get_training_config(db, user_id)
+    readiness_result = stats.readiness(db, user_id, target)
+
+    if domain == "run":
+        result = _generate_endurance(db, user_id, target, readiness_result, config,
+                                      activity_type="Run", ignore_schedule=True)
+    elif domain == "ride":
+        result = _generate_endurance(db, user_id, target, readiness_result, config,
+                                      activity_type="Ride", ignore_schedule=True)
+    elif domain == "strength":
+        chosen_template = template_override or _auto_pick_strength_template(db, user_id, target)
+        result = _generate_strength(db, user_id, target, readiness_result, config,
+                                     template_override=chosen_template, ignore_schedule=True)
+    else:  # "recovery"
+        result = _generate_recovery(db, user_id, target, readiness_result)
+
+    return {"date": target.isoformat(), "domain": domain, "readiness": readiness_result, "result": result}
 
 
 def run_for_user(db, user_id: str = DEFAULT_USER_ID, date=None) -> dict:

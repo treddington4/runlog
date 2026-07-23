@@ -112,3 +112,18 @@ def run_generator_endpoint(date: str = None, user_id: str = Depends(auth.current
         return generator.run_for_user(db, user_id, date)
     finally:
         db.close()
+
+
+@router.post("/api/generator/quick/{domain}")
+def run_quick_generate_endpoint(domain: str, user_id: str = Depends(auth.current_user_id)):
+    """Phase 14 — the Quick Generate button's entry point. Always today — no date
+    param exposed here, unlike /api/generator/run above (that one's a verification/
+    backfill tool; this one is deliberately "give me one right now, never future")."""
+    from ..coach import generator
+    db = SessionLocal()
+    try:
+        return generator.run_quick_generate(db, user_id, domain)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        db.close()

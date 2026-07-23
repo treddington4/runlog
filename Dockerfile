@@ -39,4 +39,10 @@ RUN mkdir -p /data \
 
 EXPOSE 8000
 
+# curl isn't installed in python:3.12-slim, so use urllib instead of adding a
+# dependency just for this. /healthz has no auth/DB dependency (see app/main.py) so
+# this only ever reflects whether uvicorn itself is up and serving.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)" || exit 1
+
 ENTRYPOINT ["docker-entrypoint.sh"]

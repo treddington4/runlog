@@ -29,6 +29,18 @@ app.include_router(goals.router)
 app.include_router(dashboard.router)
 
 
+@app.get("/healthz")
+def healthz():
+    """Container/orchestrator liveness check — deliberately no auth dependency and no
+    DB round-trip (a transient DB hiccup shouldn't look like a dead container and
+    trigger a restart loop). Exists because the app previously had no real health
+    signal: '/' only 200s via the SPA catch-all below, which only gets registered
+    when web-dist was actually built, so any host whose health check hits a
+    different path (or hits during a broken frontend build) saw a 404 with no way
+    to tell startup succeeded."""
+    return {"status": "ok"}
+
+
 @app.middleware("http")
 async def _no_cache_static(request: Request, call_next):
     """Force browsers to revalidate (not blindly reuse a heuristically-cached copy) on

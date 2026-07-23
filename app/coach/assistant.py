@@ -46,6 +46,7 @@ _TOOL_NAMES = [
     "get_pace_trend", "get_training_load_trend", "get_readiness", "get_daily_steps", "query_runs", "get_run_detail",
     "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
     "get_scheduled_workouts", "schedule_workout", "update_workout", "record_workout_completion",
+    "get_exercise_progress",
     "render_chart", "get_goals",
     "get_recovery_tools", "recommend_recovery_session", "get_recovery_sessions",
 ]
@@ -271,20 +272,69 @@ def _build_tools(user_id: str, is_test: bool = False) -> list:
         result = _db_call(coach.list_workouts, args.get("startDate"), args.get("endDate"), args.get("status"), user_id=user_id)
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
+    @tool("get_exercise_progress", "Current progression state for a strength exercise (current weight/reps target/hold duration, last completed) — or sensible fresh-start defaults if it's never been prescribed before. Read-only: this is derived state the generator's double-progression rule owns; check it before proposing a challenge/ramp involving this exercise so you know whether it's already progressing.", {
+        "type": "object",
+        "properties": {"exercise": {"type": "string", "description": "e.g. 'Push-up', 'Plank'"}},
+        "required": ["exercise"],
+    })
+    async def get_exercise_progress(args):
+        result = _db_call(coach.get_exercise_progress, args["exercise"], user_id=user_id)
+        return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+    # Phase 12.3 found a real pre-existing gap during testing: this schema only ever
+    # described the legacy generic shape, even though coach._validate_steps has
+    # accepted the Phase 4.4 strength_exercise shape (stepType/restSeconds/sets) for
+    # a while now — the chat tool just never exposed it, so the model could never
+    # actually construct one, meaning every chat-scheduled strength session used the
+    # generic shape and could never show a workout-runner "Start" button or feed real
+    # ExerciseProgress double-progression. oneOf lets both shapes coexist in one field
+    # without changing schedule_workout/update_workout's own top-level signature.
     STEPS_SCHEMA = {
         "type": "array",
-        "description": "Structured step-by-step breakdown, in order. Use this instead of (or alongside) notes whenever the session has distinct exercises/segments — e.g. a mobility circuit or a strength session. Split a unilateral movement (leg swings, single-leg work, side plank) into two separate steps, one per side, rather than one step covering both.",
+        "description": "Structured step-by-step breakdown, in order. Use the generic shape for mobility/warmup/general circuits. Use the strength_exercise shape (stepType='strength_exercise') for any real strength/weight-training exercise with sets — this is required for it to show up in the workout runner (rest-timer + weight/rep logging UI) and to feed the exercise-progression system; the generic shape's plain 'reps' field does neither. Split a unilateral movement (leg swings, single-leg work, side plank) into two separate steps, one per side, rather than one step covering both.",
         "items": {
-            "type": "object",
-            "properties": {
-                "exercise": {"type": "string", "description": "e.g. 'Leg swings', 'Side plank', 'Bird dog', '800m repeat'"},
-                "side": {"type": "string", "enum": list(coach.VALID_STEP_SIDES), "description": "Only for unilateral movements — omit for bilateral/whole-body steps."},
-                "durationSec": {"type": "integer", "description": "For time-based steps (holds, circuits, intervals)"},
-                "reps": {"type": "integer", "description": "For rep-based steps"},
-                "notes": {"type": "string", "description": "Short context for this step — why/when/conditional (e.g. 'optional, skip if fatigued', 'start of core circuit, repeat 2 rounds'). Not a how-to."},
-                "howTo": {"type": "string", "description": "Technique/form cues for actually performing this step — how to set up, what to feel, common mistakes to avoid. Include it for anything the user might not already know how to do correctly (stretches, mobility drills, unfamiliar exercises, foam-rolling). Skip it for self-explanatory steps (e.g. 'easy bike, zone 1 pace'). Rendered as an expandable detail in the Workouts tab, not shown inline, so don't hold back on length here."},
-            },
-            "required": ["exercise"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "description": "Generic step — mobility/warmup/general circuit work.",
+                    "properties": {
+                        "exercise": {"type": "string", "description": "e.g. 'Leg swings', 'Side plank', 'Bird dog', '800m repeat'"},
+                        "side": {"type": "string", "enum": list(coach.VALID_STEP_SIDES), "description": "Only for unilateral movements — omit for bilateral/whole-body steps."},
+                        "durationSec": {"type": "integer", "description": "For time-based steps (holds, circuits, intervals)"},
+                        "reps": {"type": "integer", "description": "For rep-based steps"},
+                        "notes": {"type": "string", "description": "Short context for this step — why/when/conditional (e.g. 'optional, skip if fatigued', 'start of core circuit, repeat 2 rounds'). Not a how-to."},
+                        "howTo": {"type": "string", "description": "Technique/form cues for actually performing this step — how to set up, what to feel, common mistakes to avoid. Include it for anything the user might not already know how to do correctly (stretches, mobility drills, unfamiliar exercises, foam-rolling). Skip it for self-explanatory steps (e.g. 'easy bike, zone 1 pace'). Rendered as an expandable detail in the Workouts tab, not shown inline, so don't hold back on length here."},
+                    },
+                    "required": ["exercise"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "description": "Strength exercise with real sets — required for the workout runner and exercise-progression tracking. restSeconds lives on the exercise (rest after each set), not per-set.",
+                    "properties": {
+                        "stepType": {"type": "string", "enum": ["strength_exercise"]},
+                        "exercise": {"type": "string", "description": "e.g. 'Push-up', 'Plank', 'Goblet Squat'"},
+                        "restSeconds": {"type": "integer", "description": "Rest after each set, in seconds"},
+                        "sets": {
+                            "type": "array",
+                            "description": "One entry per set, in order.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "index": {"type": "integer", "description": "0-based set number"},
+                                    "targetType": {"type": "string", "enum": ["reps", "hold_sec"]},
+                                    "targetReps": {"type": "integer", "description": "Required when targetType is 'reps'"},
+                                    "targetHoldSec": {"type": "integer", "description": "Required when targetType is 'hold_sec'"},
+                                    "targetWeightLb": {"type": "number", "description": "Omit for bodyweight-only sets"},
+                                },
+                                "required": ["targetType"],
+                            },
+                        },
+                    },
+                    "required": ["stepType", "exercise", "restSeconds", "sets"],
+                    "additionalProperties": False,
+                },
+            ],
         },
     }
 
@@ -437,6 +487,7 @@ def _build_tools(user_id: str, is_test: bool = False) -> list:
         get_pace_trend, get_training_load_trend, get_readiness, get_daily_steps, query_runs, get_run_detail,
         get_health_history, find_related_health_history, log_health_note, update_health_status,
         get_scheduled_workouts, schedule_workout, update_workout, record_workout_completion,
+        get_exercise_progress,
         render_chart, get_goals,
         get_recovery_tools, recommend_recovery_session, get_recovery_sessions,
     ]

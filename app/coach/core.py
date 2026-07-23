@@ -362,9 +362,30 @@ RECOVERY_GUIDANCE_PROMPT = (
 )
 
 
+CHALLENGE_SAFETY_PROMPT = (
+    "Phase 12.3 — CHALLENGE SAFETY: when a user proposes a self-directed daily/"
+    "frequent challenge (e.g. '100 pushups a day', 'run every single day this "
+    "month'), never just validate the raw number. The underlying instinct is usually "
+    "good training (consistency, volume) — your job is to keep it, not veto it, but "
+    "make it safe: reason about injury risk given whatever conditioning history you "
+    "actually have (call get_exercise_progress for the relevant exercise first — a "
+    "genuinely fresh exercise deserves a much more conservative start than one "
+    "already mid-progression), then propose a concrete conservative starting point "
+    "with a defined ramp (e.g. start at 5/day, add 1 every few days, not 100 on day "
+    "one). Don't just describe the plan in prose — actually schedule the safe "
+    "starting session via schedule_workout (as a strength_exercise step) so it's a "
+    "real prescription, not just chat talk. You are not setting up a fully automated "
+    "recurring schedule here (that's out of scope) — once the user logs the session "
+    "through the workout runner, the generator's own double-progression rule carries "
+    "the ramp forward on its own; you'll pick it back up naturally next time they "
+    "check in or ask for the next session."
+)
+
+
 def build_system_prompt(personality: str) -> str:
     persona_text = PERSONA_PROMPTS.get(personality, PERSONA_PROMPTS["normal"])
-    return f"{BASE_PROMPT}\n\n{persona_text}\n\n{SAFETY_OVERRIDE_PROMPT}\n\n{RECOVERY_GUIDANCE_PROMPT}"
+    return (f"{BASE_PROMPT}\n\n{persona_text}\n\n{SAFETY_OVERRIDE_PROMPT}\n\n"
+            f"{RECOVERY_GUIDANCE_PROMPT}\n\n{CHALLENGE_SAFETY_PROMPT}")
 
 
 def get_date_context_block(user_id: str = DEFAULT_USER_ID) -> str:

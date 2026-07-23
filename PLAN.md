@@ -1332,13 +1332,55 @@ tied to where the user actually is.
 - [x] Commit (12.1 + 12.2 together, same deploy): "Phase 12.1-12.2: test-data
       isolation + browser-detected timezone"
 
-### 12.3-12.5 (not started)
-Challenge safety-vetting (inline, reuses existing `schedule_workout`/
-`get_exercise_progress` rather than a new mutation path), article/file evaluation
-(bounded `fetch_article_text` tool + a new file-upload chat endpoint), and the
-periodic self-review job that maintains one rolling draft GitHub issue per user — see
-the approved plan for full design. Video scheduling/casting stays a backlog-only
-bullet, not designed this phase.
+### 12.3 Challenge safety-vetting
+- [x] New read-only `get_exercise_progress` assistant tool (exposes the already-
+      existing `coach.get_exercise_progress`) so the coach can check whether an
+      exercise already has real progression history before deciding how conservative
+      a fresh start needs to be — deliberately read-only, respecting
+      `upsert_exercise_progress`'s existing "never directly by a chat tool" boundary.
+- [x] New `CHALLENGE_SAFETY_PROMPT` (`coach/core.py`, appended in
+      `build_system_prompt`): when a user proposes a self-directed daily/frequent
+      challenge, don't validate the raw number — check `get_exercise_progress` first,
+      propose a conservative starting point with a defined ramp, and actually
+      schedule the safe starting session via `schedule_workout` as a
+      `strength_exercise` step (not just describe it) so it's a real prescription
+      that later feeds the generator's existing double-progression rule once logged
+      through the workout runner.
+- [x] **Real gap found and fixed during testing, not theoretical**: `schedule_workout`/
+      `update_workout`'s `STEPS_SCHEMA` (in `assistant.py`) only ever described the
+      legacy generic step shape — even though `coach._validate_steps` has accepted
+      the Phase 4.4 `strength_exercise` shape for a while, the chat tool never
+      exposed it to the model, so every chat-scheduled strength session used the
+      generic shape and could never show a workout-runner "Start" button or feed
+      real `ExerciseProgress` tracking. Fixed with a `oneOf` union covering both
+      shapes. That first fix had its own bug, also caught live: neither `oneOf`
+      branch restricted `additionalProperties`, so a `strength_exercise`-shaped
+      object satisfied the generic branch's only requirement (`exercise` present)
+      too, violating `oneOf`'s "exactly one match" rule — every real attempt failed
+      tool-input validation with no server-side traceback (the rejection happens
+      before it reaches Python), and the model's own retry-with-a-different-shape
+      recovery masked the failure in its reply text ("Done, scheduled...") even
+      though nothing was actually created. Fixed by adding
+      `"additionalProperties": false` to both branches, making them mutually
+      exclusive.
+- [x] Verify: live-tested against a throwaway container with real
+      `--env-file .env` credentials (not a mock) — a "100 pushups a day" prompt
+      before the `oneOf` fix silently created nothing (confirmed via
+      `GET /api/workouts` returning `[]` despite the model's confident-sounding
+      reply); after the fix, a fresh identical prompt produced one clean
+      `schedule_workout` call, correctly shaped
+      (`stepType: "strength_exercise"`, conservative starting reps, real
+      `restSeconds`/`sets`), confirmed via direct `GET /api/workouts` inspection.
+      Separately confirmed the legacy generic-step path still works unchanged (a
+      real mobility-warmup request produced a correctly-shaped generic-step
+      workout) — no regression from the schema change.
+- [x] Commit: "Phase 12.3: challenge safety-vetting + strength_exercise chat-tool gap"
+
+### 12.4-12.5 (not started)
+Article/file evaluation (bounded `fetch_article_text` tool + a new file-upload chat
+endpoint), and the periodic self-review job that maintains one rolling draft GitHub
+issue per user — see the approved plan for full design. Video scheduling/casting
+stays a backlog-only bullet, not designed this phase.
 
 ---
 

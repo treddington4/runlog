@@ -21,6 +21,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { renderMarkdownLite } from "@/lib/markdownLite"
+import { copyToClipboard } from "@/lib/clipboard"
 
 function SettingsSection({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
@@ -305,12 +307,14 @@ function CoachFeedbackSection() {
   const { data: draft, isPending } = useCoachIssue()
   const clearIssue = useClearCoachIssue()
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   if (isPending || !draft) return null
 
+  const fullText = `# ${draft.title}\n\n${draft.body}`
+
   function handleDownload() {
-    if (!draft) return
-    const blob = new Blob([`# ${draft.title}\n\n${draft.body}`], { type: "text/markdown" })
+    const blob = new Blob([fullText], { type: "text/markdown" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
@@ -319,13 +323,21 @@ function CoachFeedbackSection() {
     URL.revokeObjectURL(url)
   }
 
+  function handleCopy() {
+    copyToClipboard(fullText).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
   return (
     <SettingsSection title="Coach Feedback">
       <div className="text-hale-faint pb-2 text-xs">
         {draft.frustrationCount} item{draft.frustrationCount === 1 ? "" : "s"} logged — last updated{" "}
         {new Date(draft.updatedAt).toLocaleString()}. Draft only; nothing here is posted to GitHub automatically.
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {/* Downloading a .md just triggers a save on most mobile browsers with no easy
             way to actually read it — this reads the same content in place instead. */}
         <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}>
@@ -344,8 +356,11 @@ function CoachFeedbackSection() {
           <DialogHeader>
             <DialogTitle>{draft.title}</DialogTitle>
           </DialogHeader>
-          <div className="text-muted-foreground max-h-[60vh] overflow-y-auto text-xs whitespace-pre-wrap">
-            {draft.body}
+          <div className="max-h-[60vh] overflow-y-auto text-xs">
+            <div className="text-muted-foreground">{renderMarkdownLite(draft.body)}</div>
+            <Button size="sm" variant="outline" className="mt-3" onClick={handleCopy}>
+              {copied ? "Copied!" : "Copy all"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

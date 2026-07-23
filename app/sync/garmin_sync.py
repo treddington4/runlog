@@ -333,7 +333,7 @@ def _sync_daily_steps(client, user_id: str, days: int = 30) -> int:
     (as this used to) cost ~14 API calls for data that's almost entirely already stored
     and never changes. Assumes no historical gaps in what's already stored, which holds
     by construction — every DailySteps row only ever comes from this same function."""
-    end = local_today()
+    end = local_today(user_id)
     volatile_start = end - timedelta(days=GARMIN_STEPS_VOLATILE_DAYS - 1)
     requested_start = end - timedelta(days=days - 1)
 
@@ -507,7 +507,7 @@ def _sync_daily_wellness(client, user_id: str, days: int, progress_cb=None) -> i
     blocks the others — same discipline as _fetch_running_dynamics. A genuine
     rate-limit hit propagates up unchanged so the caller's existing
     GarminMidSyncRateLimitError/cooldown handling applies uniformly."""
-    end = local_today()
+    end = local_today(user_id)
     volatile_start = end - timedelta(days=GARMIN_WELLNESS_VOLATILE_DAYS - 1)
     start = end - timedelta(days=days - 1)
 
@@ -1189,7 +1189,7 @@ def sync_garmin_activities(user_id: str, limit: int = 10, progress_cb=None):
     last_plan_check = get_sync_meta(user_key(user_id, GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY))
     if not last_plan_check or _seconds_since(last_plan_check) >= GARMIN_ADAPTIVE_PLAN_RECHECK_MIN_SEC:
         try:
-            today = local_today()
+            today = local_today(user_id)
             window_end = (today + timedelta(days=6)).isoformat()
             plan_entries = _fetch_adaptive_plan_workouts(client, today.isoformat(), window_end)
             set_sync_meta(user_key(user_id, GARMIN_ADAPTIVE_PLAN_LAST_CHECKED_KEY), datetime.now(timezone.utc).isoformat())

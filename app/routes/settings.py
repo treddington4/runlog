@@ -9,9 +9,10 @@ from datetime import datetime, timezone
 import requests
 from fastapi import APIRouter, HTTPException, Request, Depends
 
-from ..models import SessionLocal, ApiToken, get_sync_meta, set_sync_meta
+from ..models import SessionLocal, ApiToken, User, get_sync_meta, set_sync_meta
 from ..accounts import auth
 from .. import stats
+from ..util import APP_TIMEZONE
 from .sync import SYNC_INTERVAL_HOURS, SYNC_LIMIT
 
 router = APIRouter()
@@ -130,6 +131,8 @@ def get_config(user_id: str = Depends(auth.current_user_id)):
     try:
         resting_hr = stats.latest_resting_hr_bpm(db, user_id)
         is_demo_user = demo.is_demo_user(db, user_id)
+        user = db.get(User, user_id)
+        tz = (user.timezone if user else None) or APP_TIMEZONE
     finally:
         db.close()
     return {
@@ -138,7 +141,31 @@ def get_config(user_id: str = Depends(auth.current_user_id)):
         "restingHrBpm": resting_hr,
         "pushConfigured": push.is_configured(),
         "isDemoUser": is_demo_user,
+        "timezone": tz,
     }
+
+
+@router.patch("/api/config")
+async def update_config(request: Request, user_id: str = Depends(auth.current_user_id)):
+    """Only `timezone` is writable here (Phase 12.2) — everything else GET /api/config
+    returns is either a read-only env-derived value (syncIntervalHours/syncActivityLimit/
+    pushConfigured) or computed (restingHrBpm/isDemoUser), not user-settable config."""
+    body = await request.json()
+    if "timezone" not in body:
+        raise HTTPException(400, "timezone is required")
+    tz_name = body["timezone"]
+    import zoneinfo
+    if tz_name not in zoneinfo.available_timezones():
+        raise HTTPException(400, f"unknown timezone: {tz_name!r}")
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if user:
+            user.timezone = tz_name
+            db.commit()
+        return {"timezone": tz_name}
+    finally:
+        db.close()
 
 
 # ---------- Geocoding (for the Map tab's location labels) ----------

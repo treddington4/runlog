@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { queryClient } from "@/lib/queryClient"
 import { getDemoSession } from "@/lib/demoAuth"
 import { useDemoStatus } from "@/hooks/useDemoAuth"
+import { useTimezoneSync } from "@/hooks/useTimezoneSync"
 import { Shell } from "@/components/layout/Shell"
 import { HomePage } from "@/pages/HomePage"
 import { WorkoutsPage } from "@/pages/WorkoutsPage"
@@ -37,10 +38,18 @@ function DemoGate({ children }: { children: ReactNode }) {
   return <Navigate to="/demo-login" replace />
 }
 
+// Applies regardless of route/demo-gating state — mounted once, at the top of the
+// router tree, purely for its useEffect side effect (see useTimezoneSync).
+function TimezoneSync() {
+  useTimezoneSync()
+  return null
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
+        <TimezoneSync />
         <DemoGate>
           <Routes>
             <Route path="/demo-login" element={<DemoLoginPage />} />

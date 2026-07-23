@@ -111,7 +111,7 @@ def get_runs(start: str | None = None, end: str | None = None, all_time: bool = 
         q = db.query(Run).filter(owned_by(Run.user_id, user_id))
         if not all_time:
             if not start and not end:
-                start = (local_today() - timedelta(days=DEFAULT_RUNS_WINDOW_DAYS - 1)).isoformat()
+                start = (local_today(user_id) - timedelta(days=DEFAULT_RUNS_WINDOW_DAYS - 1)).isoformat()
             if start:
                 q = q.filter(Run.date >= start)
             if end:

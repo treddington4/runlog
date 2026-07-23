@@ -367,14 +367,14 @@ def build_system_prompt(personality: str) -> str:
     return f"{BASE_PROMPT}\n\n{persona_text}\n\n{SAFETY_OVERRIDE_PROMPT}\n\n{RECOVERY_GUIDANCE_PROMPT}"
 
 
-def get_date_context_block() -> str:
+def get_date_context_block(user_id: str = DEFAULT_USER_ID) -> str:
     """Injected per-message (like get_health_context_block below), not baked into the
     system prompt — a session can span midnight, and this must never go stale mid-
     conversation. Without this, the model had no explicit ground truth for "today" and
     could only infer it indirectly from tool output, which silently ran a day ahead of
     the user's actual local day whenever the container's UTC clock had rolled past
     midnight before the user's local calendar day had (see GitHub issue #2)."""
-    today = local_today()
+    today = local_today(user_id)
     return f"[Today's date is {today.isoformat()} ({today.strftime('%A')}).]\n\n"
 
 
@@ -402,13 +402,14 @@ def get_health_context_block(db, user_id: str = DEFAULT_USER_ID) -> str:
     day, regardless of whether the model actually asks it that turn."""
     notes = (
         db.query(HealthNote)
-        .filter(HealthNote.status.in_(("active", "monitoring")), owned_by(HealthNote.user_id, user_id))
+        .filter(HealthNote.status.in_(("active", "monitoring")), owned_by(HealthNote.user_id, user_id),
+                HealthNote.is_test.isnot(True))
         .all()
     )
     if not notes:
         return ""
 
-    today = local_today().isoformat()
+    today = local_today(user_id).isoformat()
     now_iso = datetime.now(timezone.utc).isoformat()
     lines = []
     dirty = False
@@ -478,7 +479,8 @@ def find_related_health_history(db, body_area: str, user_id: str = DEFAULT_USER_
     rows = (
         db.query(HealthNote)
         .filter(HealthNote.category == "injury", HealthNote.body_area == body_area,
-                HealthNote.status == "resolved", owned_by(HealthNote.user_id, user_id))
+                HealthNote.status == "resolved", owned_by(HealthNote.user_id, user_id),
+                HealthNote.is_test.isnot(True))
         .order_by(HealthNote.resolved_at.desc())
         .all()
     )
@@ -498,7 +500,8 @@ def _health_note_to_dict(n: HealthNote) -> dict:
 
 def log_health_note(db, category, suspected_type=None, suspected_severity=None,
                      training_impact=None, expected_clear_date=None, notes=None,
-                     body_area=None, related_note_id=None, user_id: str = DEFAULT_USER_ID) -> dict:
+                     body_area=None, related_note_id=None, user_id: str = DEFAULT_USER_ID,
+                     is_test: bool = False) -> dict:
     if category not in VALID_HEALTH_CATEGORIES:
         raise ValueError(f"category must be one of {VALID_HEALTH_CATEGORIES}")
     if body_area is not None:
@@ -514,9 +517,9 @@ def log_health_note(db, category, suspected_type=None, suspected_severity=None,
     note = HealthNote(
         id=f"health_{uuid.uuid4().hex[:12]}", user_id=user_id, category=category,
         body_area=body_area, suspected_type=suspected_type, suspected_severity=suspected_severity,
-        training_impact=training_impact, date_reported=local_today().isoformat(),
+        training_impact=training_impact, date_reported=local_today(user_id).isoformat(),
         expected_clear_date=expected_clear_date, status="active", related_note_id=related_note_id,
-        notes=notes, created_at=datetime.now(timezone.utc).isoformat(),
+        notes=notes, created_at=datetime.now(timezone.utc).isoformat(), is_test=is_test,
     )
     db.add(note)
     db.commit()
@@ -539,7 +542,7 @@ def update_health_status(db, note_id: str, status: str, notes=None, user_id: str
 
 
 def list_health_notes(db, status=None, category=None, user_id: str = DEFAULT_USER_ID) -> list:
-    q = db.query(HealthNote).filter(owned_by(HealthNote.user_id, user_id))
+    q = db.query(HealthNote).filter(owned_by(HealthNote.user_id, user_id), HealthNote.is_test.isnot(True))
     if status:
         q = q.filter(HealthNote.status == status)
     if category:
@@ -599,7 +602,7 @@ def sync_garmin_suggested_workouts(db, entries: list, user_id: str = DEFAULT_USE
             continue  # unchanged since last sync
         if existing:
             change_note = (
-                f"[Garmin revised this suggestion on {local_today().isoformat()} — was: "
+                f"[Garmin revised this suggestion on {local_today(user_id).isoformat()} — was: "
                 f"{existing.workout_type}"
                 f"{f', {existing.target_distance_mi}mi' if existing.target_distance_mi else ''}"
                 f"{f', {round(existing.target_duration_sec / 60)}min' if existing.target_duration_sec else ''}]"
@@ -626,11 +629,14 @@ def sync_garmin_suggested_workouts(db, entries: list, user_id: str = DEFAULT_USE
 
 def create_workout(db, scheduled_date, workout_type, activity_type=None, target_distance_mi=None,
                     target_pace_sec_per_mi=None, target_duration_sec=None, notes=None, steps=None,
-                    user_id: str = DEFAULT_USER_ID, source: str = "coach", scheduled_time=None) -> dict:
+                    user_id: str = DEFAULT_USER_ID, source: str = "coach", scheduled_time=None,
+                    is_test: bool = False) -> dict:
     """`source`/`scheduled_time` default to the manual/chat-scheduled case — the
     Phase 4.3 generator is the only other caller that passes `source="generator"`
     (and `scheduled_time`, for the 2nd session of a two-a-day), reusing this same
-    validation path rather than constructing Workout rows itself."""
+    validation path rather than constructing Workout rows itself. `is_test` (Phase
+    12.1) is set only by a chat session tagged with the X-Hale-Test header — never by
+    the generator or a real manual/API create."""
     if workout_type not in VALID_WORKOUT_TYPES:
         raise ValueError(f"workout_type must be one of {VALID_WORKOUT_TYPES}")
     cleaned_steps = _validate_steps(steps)
@@ -642,6 +648,7 @@ def create_workout(db, scheduled_date, workout_type, activity_type=None, target_
         target_duration_sec=target_duration_sec, notes=notes,
         steps_json=json.dumps(cleaned_steps) if cleaned_steps else None, status="planned",
         created_at=datetime.now(timezone.utc).isoformat(), source=source, scheduled_time=scheduled_time,
+        is_test=is_test,
     )
     db.add(workout)
     db.commit()
@@ -831,7 +838,7 @@ def _find_and_link_workout_run(db, workout: Workout, user_id: str = DEFAULT_USER
 
 
 def list_workouts(db, start_date=None, end_date=None, status=None, user_id: str = DEFAULT_USER_ID) -> list:
-    q = db.query(Workout).filter(owned_by(Workout.user_id, user_id))
+    q = db.query(Workout).filter(owned_by(Workout.user_id, user_id), Workout.is_test.isnot(True))
     if start_date:
         q = q.filter(Workout.scheduled_date >= start_date)
     if end_date:
@@ -846,7 +853,7 @@ def list_workouts(db, start_date=None, end_date=None, status=None, user_id: str 
     # can flip a row's status out from under the `status` filter applied above (a
     # `status=planned` query can trigger a row to become "completed" mid-call) — re-
     # apply the filter after linking so the response always matches what was asked for.
-    today = local_today().isoformat()
+    today = local_today(user_id).isoformat()
     for w in workouts:
         if w.status == "planned" and w.scheduled_date <= today and not w.linked_run_id:
             _find_and_link_workout_run(db, w, user_id)

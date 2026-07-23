@@ -21,7 +21,8 @@ def chat_status():
 def chat_history(user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        rows = (db.query(ChatMessage).filter(owned_by(ChatMessage.user_id, user_id))
+        rows = (db.query(ChatMessage)
+                .filter(owned_by(ChatMessage.user_id, user_id), ChatMessage.is_test.isnot(True))
                 .order_by(ChatMessage.id).all())
         return [{
             "role": r.role, "content": r.content,
@@ -33,12 +34,22 @@ def chat_history(user_id: str = Depends(auth.current_user_id)):
         db.close()
 
 
+def _is_test_request(request: Request) -> bool:
+    """Phase 12.1 — set only by my own manual verification traffic against a real
+    deployment (X-Hale-Test: 1), never sent by the real browser app. See CLAUDE.md for
+    the convention this enforces: any manual chat-endpoint test against production must
+    send this header, or it risks polluting real health-note/workout history exactly
+    the way an untagged test message once did (see PLAN.md Phase 12's context)."""
+    return request.headers.get("x-hale-test") == "1"
+
+
 @router.post("/api/chat/message")
 async def chat_message(request: Request, user_id: str = Depends(auth.current_user_id)):
     body = await request.json()
     message = (body.get("message") or "").strip()
     if not message:
         raise HTTPException(400, "message is required")
+    is_test = _is_test_request(request)
 
     from ..accounts import demo
     db = SessionLocal()
@@ -59,7 +70,7 @@ async def chat_message(request: Request, user_id: str = Depends(auth.current_use
     if not assistant.is_configured():
         raise HTTPException(400, "AI assistant not configured — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
     try:
-        return await assistant.send_message(message, user_id)
+        return await assistant.send_message(message, user_id, is_test=is_test)
     except Exception as e:
         raise HTTPException(500, str(e))
 

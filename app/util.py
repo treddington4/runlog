@@ -3,22 +3,39 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# Single-user app, no per-user timezone column yet (see CLAUDE.md — no real login/
-# multi-user session layer exists), so one env var is the right scope for now —
-# matches the existing SYNC_INTERVAL_HOURS pattern rather than a DB migration for a
-# feature (real multi-user) that isn't built yet.
+# Global fallback only (Phase 12.2 made this per-user via User.timezone, browser-
+# detected — see local_today() below) — still the right default for a user who's
+# never opened the app since that column was added, or any background job with no
+# real user_id in scope.
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "America/New_York")
 
 
-def local_today():
+def local_today(user_id: str = None):
     """The user's local calendar date — never the container's own (UTC) clock.
     Docker containers default to UTC; once UTC has rolled past midnight but the
     user's local calendar day hasn't yet (any evening/night west of UTC), a naive
     datetime.now().date() silently runs a day ahead of the user's actual "today" —
     every "today"/"days ago" calculation in this app (stats.py's weekly/monthly
     summaries, goal countdowns, the Coach's notion of "today") must go through this
-    instead. See GitHub issue #2."""
-    return datetime.now(ZoneInfo(APP_TIMEZONE)).date()
+    instead. See GitHub issue #2.
+
+    Phase 12.2: real date confusion in production chat logs traced partly to
+    APP_TIMEZONE being a single global env var rather than tied to where the user
+    actually is. Now looks up that user's browser-detected User.timezone (see
+    routes/settings.py's PATCH /api/config) when a user_id is given, falling back to
+    APP_TIMEZONE if they have none set yet (pre-upgrade accounts) or none was passed
+    (background/global-scope callers)."""
+    tz_name = APP_TIMEZONE
+    if user_id is not None:
+        from .models import SessionLocal, User
+        db = SessionLocal()
+        try:
+            user = db.get(User, user_id)
+            if user and user.timezone:
+                tz_name = user.timezone
+        finally:
+            db.close()
+    return datetime.now(ZoneInfo(tz_name)).date()
 
 
 def decode_polyline(encoded: str):

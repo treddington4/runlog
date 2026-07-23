@@ -396,7 +396,7 @@ def apply_strength_progression(db, workout: Workout) -> None:
 
 
 def run_for_user(db, user_id: str = DEFAULT_USER_ID, date=None) -> dict:
-    target = date or local_today()
+    target = date or local_today(user_id)
     if isinstance(target, str):
         target = datetime.strptime(target, "%Y-%m-%d").date()
     config = _get_training_config(db, user_id)

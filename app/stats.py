@@ -120,7 +120,7 @@ def _week_start(d):
 
 
 def weekly_mileage(db, weeks: int = 12, activity_type: str = "Run", user_id: str = DEFAULT_USER_ID):
-    today = local_today()
+    today = local_today(user_id)
     this_week_start = _week_start(today)
     earliest = this_week_start - timedelta(weeks=weeks - 1)
     runs = [
@@ -142,7 +142,7 @@ def weekly_mileage(db, weeks: int = 12, activity_type: str = "Run", user_id: str
 
 
 def monthly_mileage(db, months: int = 12, activity_type: str = "Run", user_id: str = DEFAULT_USER_ID):
-    today = local_today()
+    today = local_today(user_id)
     months_list = []
     y, m = today.year, today.month
     for _ in range(months):
@@ -198,7 +198,7 @@ def rolling_pace_trend(db, days: int = 90, window_days: int = 7, user_id: str = 
     distance-weighted average pace over the `window_days` ending on that run's date,
     looking back across ALL running history (not just the `days` window) so early
     points in a narrow window aren't computed from an artificially thin lookback."""
-    today = local_today()
+    today = local_today(user_id)
     cutoff = (today - timedelta(days=days)).isoformat()
 
     all_history = [
@@ -229,7 +229,7 @@ def training_load_trend(db, weeks: int = 8, user_id: str = DEFAULT_USER_ID):
     (not calendar-week buckets) so the current in-progress week doesn't bias the
     comparison. Deliberately mileage-based, not an invented HR-based load score
     presented as a real physiological measurement."""
-    today = local_today()
+    today = local_today(user_id)
     last28_start = (today - timedelta(days=27)).isoformat()
     prior28_start = (today - timedelta(days=55)).isoformat()
     prior28_end = (today - timedelta(days=28)).isoformat()
@@ -263,7 +263,7 @@ def readiness(db, user_id: str = DEFAULT_USER_ID, date=None) -> dict:
     (garmin_sync._sync_daily_wellness) plus real Run history — no invented composite
     "readiness score", just real numbers and named flags, same "don't fabricate a
     judgment" principle as goal_progress()."""
-    target = date or local_today()
+    target = date or local_today(user_id)
     if isinstance(target, str):
         target = datetime.strptime(target, "%Y-%m-%d").date()
 
@@ -339,7 +339,7 @@ def weekly_consistency_streak(db, min_miles: float = 1.0, min_runs: int = None,
     consistency goal), a week must have that many runs; otherwise it must meet
     min_miles. Stops at the first week below threshold or at the earliest run on
     record."""
-    today = local_today()
+    today = local_today(user_id)
     runs = _all_runs(db, activity_type, user_id)
     if not runs:
         return {"streakWeeks": 0, "minMiles": min_miles, "minRuns": min_runs}
@@ -376,7 +376,7 @@ def days_since_longest_run(db, user_id: str = DEFAULT_USER_ID):
     longest = pr["longestRun"]
     if not longest:
         return None
-    days = (local_today() - datetime.strptime(longest["date"], "%Y-%m-%d").date()).days
+    days = (local_today(user_id) - datetime.strptime(longest["date"], "%Y-%m-%d").date()).days
     return {"days": days, "date": longest["date"], "distanceMi": longest["value"], "runId": longest["runId"]}
 
 
@@ -385,7 +385,7 @@ def days_since_last_run(db, activity_type: str = "Run", user_id: str = DEFAULT_U
     if not runs:
         return None
     latest = max(runs, key=lambda r: r.date)
-    days = (local_today() - datetime.strptime(latest.date, "%Y-%m-%d").date()).days
+    days = (local_today(user_id) - datetime.strptime(latest.date, "%Y-%m-%d").date()).days
     return {"days": days, "date": latest.date, "runId": latest.id, "name": latest.name}
 
 
@@ -406,7 +406,7 @@ def _header_stats(db, user_id: str = DEFAULT_USER_ID) -> dict:
     matching logic — not worth it for a display that's only visible for a second or two.
     app.js simply leaves the breakdown line blank until the exact, already-merged data
     replaces this approximation."""
-    week_ago = (local_today() - timedelta(days=7)).isoformat()
+    week_ago = (local_today(user_id) - timedelta(days=7)).isoformat()
     all_time = run_summary(db, activity_type="Run", user_id=user_id)
     this_week = run_summary(db, start_date=week_ago, activity_type="Run", user_id=user_id)
     return {
@@ -495,7 +495,7 @@ def query_runs(db, start_date=None, end_date=None, activity_type=None,
 
 
 def daily_steps_summary(db, days: int = 30, user_id: str = DEFAULT_USER_ID):
-    cutoff = (local_today() - timedelta(days=days)).isoformat()
+    cutoff = (local_today(user_id) - timedelta(days=days)).isoformat()
     rows = (db.query(DailySteps).filter(DailySteps.date >= cutoff)
             .filter(owned_by(DailySteps.user_id, user_id)).order_by(DailySteps.date).all())
     steps = [r.steps for r in rows if r.steps is not None]
@@ -544,7 +544,7 @@ def goal_progress(db, goal, user_id: str = DEFAULT_USER_ID):
 
 
 def _race_goal_progress(db, goal, types, user_id):
-    today = local_today()
+    today = local_today(user_id)
     days_until = None
     if goal.target_date:
         days_until = (datetime.strptime(goal.target_date, "%Y-%m-%d").date() - today).days
@@ -632,7 +632,7 @@ def _distance_target_progress(db, goal, types, user_id):
     pct = round(summary["totalDistanceMi"] / goal.target_value * 100, 1) if goal.target_value else None
     days_remaining = None
     if goal.target_date:
-        days_remaining = (datetime.strptime(goal.target_date, "%Y-%m-%d").date() - local_today()).days
+        days_remaining = (datetime.strptime(goal.target_date, "%Y-%m-%d").date() - local_today(user_id)).days
     return {
         "goalType": "distance_target", "targetMi": goal.target_value,
         "completedMi": summary["totalDistanceMi"], "pctComplete": pct,

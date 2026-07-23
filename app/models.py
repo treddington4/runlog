@@ -164,6 +164,12 @@ class ChatMessage(Base):
     tool_calls_json = Column(Text, nullable=True)  # which real tools/queries backed an assistant reply
     charts_json = Column(Text, nullable=True)  # structured chart specs from render_chart tool calls, or NULL
     created_at = Column(String)  # ISO timestamp
+    is_test = Column(Boolean, default=False)  # Phase 12.1 — set when the request carried the
+                                                # X-Hale-Test header (verification traffic against a
+                                                # real deployment, never real browser usage). Filtered
+                                                # out of chat_history, the self-review job, and — more
+                                                # importantly — any HealthNote/Workout a test session's
+                                                # tool calls create (see coach.create_workout/log_health_note)
 
 
 class User(Base):
@@ -183,6 +189,10 @@ class User(Base):
     is_demo = Column(Boolean, default=False)  # Phase 11 — ephemeral demo login (see app/demo.py)
     expires_at = Column(String, nullable=True)  # ISO timestamp; demo users only, swept by demo.sweep_expired_demo_users()
     created_at = Column(String)
+    timezone = Column(String, nullable=True)  # Phase 12.2 — IANA name (e.g. "America/New_York"),
+                                                # auto-detected browser-side and PATCHed up once via
+                                                # /api/config; NULL means "fall back to the global
+                                                # APP_TIMEZONE env var," see util.local_today()
 
 
 class ProviderCredential(Base):
@@ -300,6 +310,9 @@ class HealthNote(Base):
                                                        # set for category == "injury"
     notes = Column(Text, nullable=True)
     created_at = Column(String)
+    is_test = Column(Boolean, default=False)  # Phase 12.1 — see ChatMessage.is_test's comment;
+                                                # excluded from list_health_notes and therefore from
+                                                # every real chat session's context
 
 
 class Workout(Base):
@@ -346,6 +359,9 @@ class Workout(Base):
     scheduled_time = Column(String, nullable=True)  # Phase 4.3 — "HH:MM", only set for the 2nd session on a
                                                        # generator-scheduled two-a-day; a single daily session
                                                        # has no need to disambiguate ordering, so stays NULL
+    is_test = Column(Boolean, default=False)  # Phase 12.1 — see ChatMessage.is_test's comment;
+                                                # excluded from list_workouts and therefore from every
+                                                # real chat session's context
 
 
 class UserTrainingConfig(Base):
@@ -516,12 +532,17 @@ def init_db():
 
 
 # Tables that have grown columns since their first release and need the ALTER TABLE
-# patch below. Whole NEW tables (ProviderCredential, HealthNote, Workout) don't need
-# this — create_all() already creates them from scratch with every current column.
-# User WAS a whole-new-table exception too, but it's grown a column since
-# (coach_personality) so it has to be here now like any other existing table.
+# patch below. Whole NEW tables (ProviderCredential) don't need this — create_all()
+# already creates them from scratch with every current column. User/Workout WERE
+# whole-new-table exceptions too, but have each grown a column since (coach_personality;
+# scheduled_time/source) so they have to be here now like any other existing table.
+# HealthNote was the same kind of exception until Phase 12.1's is_test column — it was
+# missing from this list even though it should have been added the moment Workout was
+# (a stale gap, not a deliberate choice), so its own real production table would
+# otherwise never have gained is_test via ALTER TABLE.
 _MIGRATABLE_TABLES = [("runs", Run), ("daily_steps", DailySteps), ("chat_messages", ChatMessage),
-                       ("goals", Goal), ("users", User), ("workouts", Workout)]
+                       ("goals", Goal), ("users", User), ("workouts", Workout),
+                       ("health_notes", HealthNote)]
 
 
 def _migrate_add_missing_columns():

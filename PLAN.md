@@ -1257,6 +1257,91 @@ between requests, not just an always-on one.
 
 ---
 
+## Phase 12 — Coach iteration: test-data isolation, timezone, safety-vetting, evaluation, self-review
+
+Triggered by reading the real production chat history (90 messages, pulled directly
+from `/api/chat/history`) at the user's request, to ground this in actual frustrations
+rather than guessed ones. Two concrete real bugs surfaced immediately: (1) a chat
+message I sent during earlier Phase 4 verification caused the coach to log a fake
+"shin splint" `HealthNote` that resurfaced as real context days later in a genuine
+conversation, and (2) real date/context confusion (the coach contradicted the user
+about whether a workout was already done; misattributed a run's date by 2 days) traced
+partly to `local_today()` being a single hardcoded `APP_TIMEZONE` env var rather than
+tied to where the user actually is.
+
+### 12.1 Test-data isolation
+- [x] Header-tagged at the source (confirmed with the user): `X-Hale-Test: 1` on
+      `/api/chat/message` threads an `is_test` bool through `assistant.send_message` ->
+      `_persist`/`_build_tools` -> `coach.log_health_note`/`coach.create_workout`. New
+      `ChatMessage`/`HealthNote`/`Workout.is_test` columns (`Boolean, default=False`).
+      `list_health_notes`/`list_workouts`/`find_related_health_history`/
+      `get_health_context_block`/`chat_history` all filter `.is_test.isnot(True))`
+      (legacy-NULL rows read as "not test," same convention as `owned_by()`) — this is
+      what actually stops pollution, not just the tagging itself.
+- [x] **Real design catch**: `_get_client`'s SDK-session cache was keyed only by
+      `user_id`. Since `_build_tools`' tool closures capture `is_test` at client-
+      creation time, a session built once as real and reused for a later test message
+      (or vice versa) would silently stamp every row with the wrong value for the rest
+      of that session. Fixed by keying `_clients` on `(user_id, is_test)` instead — as
+      a side effect, this also keeps test traffic from ever polluting the real
+      conversation's own live in-SDK memory, not just the persisted rows.
+- [x] **Migration gap found and fixed**: `models.py`'s `_MIGRATABLE_TABLES` was
+      missing `health_notes` entirely (a stale gap predating this list, not a
+      deliberate choice) — without adding it, `is_test` would never have reached the
+      real production `health_notes` table via `ALTER TABLE`. Corrected the stale
+      comment above the list at the same time (it claimed `HealthNote`/`Workout` were
+      both "whole new tables" not needing migration, while `Workout` was already
+      contradicting that by being in the list below it).
+- [x] **One-time cleanup, real data**: found and deleted **5** pre-existing test
+      `HealthNote` rows already sitting in real production, each self-identifying in
+      its own `notes` field ("Test data from build-verification session…" /
+      "Test data from workout-subsystem verification…") — created via direct
+      `docker exec ... python3 -c "coach.log_health_note(...)"` testing during earlier
+      phases, bypassing the HTTP endpoint entirely (so the header fix alone wouldn't
+      have caught them — `CLAUDE.md` now calls this out explicitly as its own risk).
+      Verified against a real *copy* of the production DB (mounted into a throwaway
+      container, never the live file) before touching anything — confirmed the
+      migration path adds the new columns correctly to already-existing tables, not
+      just fresh ones, then identified the exact 5 IDs before deleting them for real.
+- [x] `CLAUDE.md`: new bullet establishing the convention going forward — any manual
+      test of the chat endpoint *or* any direct `coach.log_health_note`/
+      `coach.create_workout` call against a real deployment must pass
+      `X-Hale-Test: 1` / `is_test=True`.
+
+### 12.2 Browser-detected per-user timezone
+- [x] New `User.timezone` column (nullable — `None` means "fall back to the global
+      `APP_TIMEZONE`," preserving today's behavior for any pre-upgrade account).
+      `util.local_today()` signature changed to `local_today(user_id=None)`, looking up
+      that user's stored timezone with the same fallback. All ~21 real call sites
+      across `coach/core.py`, `coach/generator.py`, `stats.py`, `sync/garmin_sync.py`,
+      `routes/wellness.py` updated to pass `user_id` — enumerated via grep, not
+      guessed; every one already had `user_id` in scope as a parameter of its
+      enclosing function.
+- [x] `GET /api/config` gained a `timezone` field; new `PATCH /api/config` (validated
+      against `zoneinfo.available_timezones()`) updates `User.timezone`.
+- [x] Frontend: new `useTimezoneSync` hook — on app load, reads
+      `Intl.DateTimeFormat().resolvedOptions().timeZone` and PATCHes once only if it
+      differs from the already-cached `/api/config` value, mounted via a small
+      `<TimezoneSync/>` component at the top of `App.tsx`'s router tree (applies
+      regardless of route/demo-gating state).
+- [x] Verify: confirmed a real invalid timezone 400s, a real valid one round-trips
+      through `GET /api/config`; a live Playwright check against production confirmed
+      exactly one `GET /api/config` request and zero `PATCH`es fire on a normal page
+      load (the dev browser's own zone already matched the stored value) — no
+      unwanted PATCH loop, no console errors.
+- [x] Commit (12.1 + 12.2 together, same deploy): "Phase 12.1-12.2: test-data
+      isolation + browser-detected timezone"
+
+### 12.3-12.5 (not started)
+Challenge safety-vetting (inline, reuses existing `schedule_workout`/
+`get_exercise_progress` rather than a new mutation path), article/file evaluation
+(bounded `fetch_article_text` tool + a new file-upload chat endpoint), and the
+periodic self-review job that maintains one rolling draft GitHub issue per user — see
+the approved plan for full design. Video scheduling/casting stays a backlog-only
+bullet, not designed this phase.
+
+---
+
 ## Phase 2 — Telemetry ingest API
 
 ### 2.1 Schema

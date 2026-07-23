@@ -60,11 +60,14 @@ def _db_call(fn, *args, **kwargs):
         db.close()
 
 
-def _build_tools(user_id: str) -> list:
+def _build_tools(user_id: str, is_test: bool = False) -> list:
     """Returns a fresh set of tool closures bound to one user's id, so every DB
     read/write a tool makes is actually scoped to that user — not just the SDK session
-    wrapper around them (see _get_client). Called once per user, when that user's
-    client is first created, not per message."""
+    wrapper around them (see _get_client). Called once per (user, is_test), when that
+    session's client is first created, not per message. `is_test` (Phase 12.1) is
+    stamped onto every row the two write-capable tools below (log_health_note,
+    schedule_workout) create, so a verification session's tool calls never pollute a
+    real user's health/workout history."""
 
     @tool("get_run_summary", "Totals/averages (count, distance, pace, elevation, time) over an optional date range", {
         "type": "object",
@@ -234,7 +237,7 @@ def _build_tools(user_id: str) -> list:
                 coach.log_health_note, args["category"],
                 args.get("suspectedType"), args.get("suspectedSeverity"), args.get("trainingImpact"),
                 args.get("expectedClearDate"), args.get("notes"), args.get("bodyArea"), args.get("relatedNoteId"),
-                user_id=user_id,
+                user_id=user_id, is_test=is_test,
             )
         except ValueError as e:
             return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
@@ -305,7 +308,7 @@ def _build_tools(user_id: str) -> list:
                 coach.create_workout, args["scheduledDate"], args["workoutType"],
                 args.get("activityType"), args.get("targetDistanceMi"),
                 args.get("targetPaceSecPerMi"), args.get("targetDurationSec"), args.get("notes"),
-                args.get("steps"), user_id=user_id,
+                args.get("steps"), user_id=user_id, is_test=is_test,
             )
         except ValueError as e:
             return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
@@ -439,7 +442,7 @@ def _build_tools(user_id: str) -> list:
     ]
 
 
-_clients: dict[str, ClaudeSDKClient] = {}
+_clients: dict[tuple[str, bool], ClaudeSDKClient] = {}  # (user_id, is_test) -> client
 
 
 def is_configured() -> bool:
@@ -455,19 +458,26 @@ def _current_personality(user_id: str = DEFAULT_USER_ID) -> str:
         db.close()
 
 
-async def _get_client(user_id: str = DEFAULT_USER_ID) -> ClaudeSDKClient:
-    """One SDK session per user, not one shared session for the whole app — otherwise
-    two real users' conversations would bleed into each other's live SDK-side context
-    (the turn-by-turn memory the SDK keeps internally, separate from the ChatMessage
-    history in SQLite, which was already correctly scoped per-user via owned_by()), and
-    resetting one user's session (e.g. on a persona change) would silently blow away
-    every other user's conversation too. Options are built fresh per client rather than
-    once at import time, since the system prompt depends on that user's
-    coach_personality. reset_client() (below) forces a rebuild for one user only — the
-    next message from that user rebuilds with the new tone; other users' sessions are
-    untouched."""
-    if user_id not in _clients:
-        server = create_sdk_mcp_server(name="runlog", version="0.1.0", tools=_build_tools(user_id))
+async def _get_client(user_id: str = DEFAULT_USER_ID, is_test: bool = False) -> ClaudeSDKClient:
+    """One SDK session per (user, is_test), not one shared session for the whole app —
+    otherwise two real users' conversations would bleed into each other's live SDK-side
+    context (the turn-by-turn memory the SDK keeps internally, separate from the
+    ChatMessage history in SQLite, which was already correctly scoped per-user via
+    owned_by()), and resetting one user's session (e.g. on a persona change) would
+    silently blow away every other user's conversation too. `is_test` (Phase 12.1) is
+    part of the cache key for the same reason, not just a tool-construction flag: since
+    _build_tools' closures capture is_test at creation time, a session built once as
+    real and reused for a later test message (or vice versa) would silently stamp every
+    row with the WRONG value for the rest of that session's lifetime — keeping test
+    traffic on a fully separate session also means it never pollutes the real
+    conversation's own live in-SDK memory, not just the persisted rows. Options are
+    built fresh per client rather than once at import time, since the system prompt
+    depends on that user's coach_personality. reset_client() (below) forces a rebuild
+    for one user (both variants) only — the next message from that user rebuilds with
+    the new tone; other users' sessions are untouched."""
+    key = (user_id, is_test)
+    if key not in _clients:
+        server = create_sdk_mcp_server(name="runlog", version="0.1.0", tools=_build_tools(user_id, is_test))
         options = ClaudeAgentOptions(
             mcp_servers={"runlog": server},
             allowed_tools=ALLOWED_TOOL_NAMES,
@@ -483,40 +493,44 @@ async def _get_client(user_id: str = DEFAULT_USER_ID) -> ClaudeSDKClient:
         )
         client = ClaudeSDKClient(options=options)
         await client.connect()
-        _clients[user_id] = client
-    return _clients[user_id]
+        _clients[key] = client
+    return _clients[key]
 
 
 async def reset_client(user_id: str = DEFAULT_USER_ID):
-    client = _clients.pop(user_id, None)
-    if client is not None:
-        await client.disconnect()
+    for is_test in (False, True):
+        client = _clients.pop((user_id, is_test), None)
+        if client is not None:
+            await client.disconnect()
 
 
-def _persist(role: str, content: str, tool_calls=None, charts=None, user_id: str = DEFAULT_USER_ID):
+def _persist(role: str, content: str, tool_calls=None, charts=None, user_id: str = DEFAULT_USER_ID,
+             is_test: bool = False):
     db = SessionLocal()
     try:
         db.add(ChatMessage(
             user_id=user_id, role=role, content=content,
             tool_calls_json=json.dumps(tool_calls) if tool_calls else None,
             charts_json=json.dumps(charts) if charts else None,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(timezone.utc).isoformat(), is_test=is_test,
         ))
         db.commit()
     finally:
         db.close()
 
 
-async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID) -> dict:
+async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID, is_test: bool = False) -> dict:
     """Non-streaming: blocks for the full response, persists both sides, returns
     {reply, toolCalls}. toolCalls records which real queries backed the answer, for
-    UI transparency — directly serving the "grounded, not hallucinated" requirement."""
+    UI transparency — directly serving the "grounded, not hallucinated" requirement.
+    `is_test` (Phase 12.1) is set from the X-Hale-Test header on the incoming request —
+    routes/chat.py is the only caller that ever passes it True."""
     if not is_configured():
         raise RuntimeError("AI assistant not configured — set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY")
 
-    _persist("user", user_text, user_id=user_id)  # persist the ORIGINAL text only — the
-                                  # health context block below is injected into what the
-                                  # model sees, never into chat history or the UI
+    _persist("user", user_text, user_id=user_id, is_test=is_test)  # persist the ORIGINAL text
+                                  # only — the health context block below is injected into what
+                                  # the model sees, never into chat history or the UI
     db = SessionLocal()
     try:
         health_context = coach.get_health_context_block(db, user_id)
@@ -524,8 +538,8 @@ async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID) -> dict:
     finally:
         db.close()
 
-    client = await _get_client(user_id)
-    await client.query(coach.get_date_context_block() + health_context + recovery_context + user_text)
+    client = await _get_client(user_id, is_test)
+    await client.query(coach.get_date_context_block(user_id) + health_context + recovery_context + user_text)
 
     reply_text = ""
     tool_calls = []
@@ -547,5 +561,5 @@ async def send_message(user_text: str, user_id: str = DEFAULT_USER_ID) -> dict:
     # pass over the SDK's tool-result message stream.
     charts = [tc["input"] for tc in tool_calls if tc["tool"] == "render_chart"]
 
-    _persist("assistant", reply_text, tool_calls, charts, user_id=user_id)
+    _persist("assistant", reply_text, tool_calls, charts, user_id=user_id, is_test=is_test)
     return {"reply": reply_text, "toolCalls": tool_calls, "charts": charts}

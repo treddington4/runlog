@@ -378,6 +378,7 @@ export interface Config {
   restingHrBpm: number | null
   pushConfigured: boolean
   isDemoUser: boolean
+  timezone: string
 }
 
 export interface DemoStatus {
@@ -492,6 +493,8 @@ export interface ApiTokenCreated extends ApiTokenSummary {
 export const api = {
   dashboardSummary: () => request<DashboardSummary>("/api/dashboard/summary"),
   config: () => request<Config>("/api/config"),
+  updateConfig: (body: { timezone: string }) =>
+    request<{ timezone: string }>("/api/config", { method: "PATCH", body: JSON.stringify(body) }),
   goals: () => request<Goal[]>("/api/goals"),
   createGoal: (body: GoalInput) => request<Goal>("/api/goals", { method: "POST", body: JSON.stringify(body) }),
   updateGoal: (id: string, body: Partial<GoalInput> & { status?: GoalStatus }) =>

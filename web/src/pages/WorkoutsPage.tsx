@@ -5,6 +5,7 @@ import { todayLocalDateString } from "@/lib/format"
 import { WorkoutCard } from "@/components/workouts/WorkoutCard"
 import { RecoverySessionCard } from "@/components/workouts/RecoverySessionCard"
 import { WorkoutFormDialog } from "@/components/workouts/WorkoutFormDialog"
+import { QuickGenerateBar } from "@/components/workouts/QuickGenerateBar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -74,8 +75,11 @@ export function WorkoutsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <QuickGenerateBar />
+
       <div>
         <Button
+          variant="outline"
           onClick={() => {
             setEditingWorkout(null)
             setDialogOpen(true)

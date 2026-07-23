@@ -1610,20 +1610,29 @@ extends that same, already-bounded-v1 pattern rather than building a new system.
       than always defaulting to full-body. Shipped as `_auto_pick_strength_template`;
       verified against both a zero-cardio-history account (falls through to
       `full_body_ab`) and a real ~25mi/week runner (auto-picks `runner_focus`).
-- [ ] Frontend: the Strength quick-generate button offers a lightweight target
+- [x] Frontend: the Strength quick-generate button offers a lightweight target
       picker (a small chip/dropdown row — Full Body / Runner Focus / Back & Legs /
       …) shown right after tapping it, pre-selected to the auto-picked default, so
       the common case is still nearly one-tap while explicit choice stays available.
+      Shipped in `QuickGenerateBar.tsx`; a real gap was caught during live click-
+      through verification: the endpoint didn't expose `template_override` as a
+      query param yet (an uncommitted edit hadn't been deployed), so every chip
+      click silently kept re-generating the same auto-picked template — fixed by
+      redeploying, then re-verified live that "Back & Legs" actually changes the
+      persisted workout.
 
-### 14.3 Frontend: `QuickGenerateBar`
-- [ ] New `web/src/components/workouts/QuickGenerateBar.tsx` — icon+label buttons
+### 14.3 Frontend: `QuickGenerateBar` — done
+- [x] New `web/src/components/workouts/QuickGenerateBar.tsx` — icon+label buttons
       (lucide-react, already in use elsewhere: `Footprints` Run, `Bike` Ride,
       `Dumbbell` Strength, an icon for Recovery), each POSTs to the new endpoint for
       today and invalidates the workouts/recovery-sessions queries on success.
       Per-button loading state. No second manual "which type" step for Run/Ride —
       the backend already picks easy/tempo/interval/long via the real periodization
       logic; overriding the result still goes through the existing
-      `WorkoutFormDialog` edit flow.
+      `WorkoutFormDialog` edit flow. Verified live against production (via the
+      NAS-hosted Vite dev server, port 5173, since the sandboxed browser tool can't
+      reach the LAN): auto-pick, explicit override, and idempotent re-press all
+      confirmed correct on real account data.
 
 ### 14.4 Frontend: `WorkoutsCalendar` + List/Calendar toggle
 - [ ] New `web/src/components/workouts/WorkoutsCalendar.tsx` — month-grid view, each

@@ -342,6 +342,17 @@ export interface RecoverySession {
   createdAt: string
 }
 
+// Phase 14 — Quick Generate buttons. "run"/"ride" resolve to a Workout in the
+// response, "recovery" to a RecoverySession — QuickGenerateBar just invalidates
+// both query keys after any of these rather than branching on the shape.
+export type QuickGenerateDomain = "run" | "ride" | "strength" | "recovery"
+
+export interface QuickGenerateResult {
+  date: string
+  domain: QuickGenerateDomain
+  result: Workout | RecoverySession
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -622,6 +633,12 @@ export const api = {
   trainingConfig: () => request<TrainingConfig>("/api/training-config"),
   updateTrainingConfig: (body: Partial<TrainingConfig>) =>
     request<TrainingConfig>("/api/training-config", { method: "PATCH", body: JSON.stringify(body) }),
+
+  quickGenerate: (domain: QuickGenerateDomain, templateOverride?: string) =>
+    request<QuickGenerateResult>(
+      `/api/generator/quick/${domain}${templateOverride ? `?template_override=${encodeURIComponent(templateOverride)}` : ""}`,
+      { method: "POST" },
+    ),
 
   recoveryTools: () => request<RecoveryTool[]>("/api/recovery-tools"),
   recoverySessions: () => request<RecoverySession[]>("/api/recovery-sessions"),

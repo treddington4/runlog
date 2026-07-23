@@ -1,5 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { api, type WorkoutInput, type WorkoutStatus, type RecoverySessionStatus, type TrainingConfig } from "@/lib/api"
+import {
+  api,
+  type WorkoutInput,
+  type WorkoutStatus,
+  type RecoverySessionStatus,
+  type TrainingConfig,
+  type QuickGenerateDomain,
+} from "@/lib/api"
 
 export function useWorkouts() {
   return useQuery({ queryKey: ["workouts"], queryFn: api.workouts })
@@ -57,4 +64,19 @@ export function useWorkoutMutations() {
   })
 
   return { createWorkout, updateWorkout, deleteWorkout, updateRecoveryStatus, deleteRecoverySession }
+}
+
+// Phase 14 — Quick Generate. Invalidates both lists unconditionally rather than
+// branching on domain, since "recovery" touches recoverySessions and the other
+// three touch workouts, and running both invalidations is cheap.
+export function useQuickGenerate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ domain, templateOverride }: { domain: QuickGenerateDomain; templateOverride?: string }) =>
+      api.quickGenerate(domain, templateOverride),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["workouts"] })
+      qc.invalidateQueries({ queryKey: ["recoverySessions"] })
+    },
+  })
 }

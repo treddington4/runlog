@@ -2108,6 +2108,51 @@ shouldnt rely on it").
 
 ---
 
+## Phase 16 — AI Endpoint Architecture (Gateway Model)
+
+**Goal:** Decouple HALE from proprietary LLM SDKs (Anthropic). Convert HALE's coach into a standard OpenAI-compatible client that gracefully degrades when offline, or points to an optional local AI Gateway (LiteLLM) to handle advanced routing, local GPU execution, and cloud fallbacks without complicating HALE's codebase.
+
+### 16.1 Client Abstraction & Graceful Degradation
+- [ ] **Dependency Swap:** Remove `claude-agent-sdk==0.2.116` from `requirements.txt` and `pyproject.toml`. Add the official `openai` Python package.
+- [ ] **Database & Config Update:** Update `app/models.py` (`User` or `ProviderCredential` tables) and the `/api/config` endpoints to replace Anthropic-specific keys with generic fields: `ai_endpoint_url`, `ai_model_name`, and `ai_api_key`. Provide sensible defaults (e.g., empty/disabled).
+- [ ] **UI Graceful State:** In the frontend (`web/src/components/chat/...`), check if the AI endpoint is configured. If not, disable the chat input and display a clean "Coach Offline: Configure an AI endpoint in Settings to enable chat" placeholder.
+- [ ] **Verify:** `pip install -r requirements.txt` passes without the old SDK. The UI cleanly handles the missing AI configuration without crashing.
+
+### 16.2 Standardized Tool Calling Loop
+- [ ] **Tool Schema Definition:** In `app/coach/assistant.py`, remove all `@tool` decorators from `stats.py` imports. Explicitly define the available tools using the standard OpenAI JSON schema array format (`[{"type": "function", "function": {"name": "...", "description": "..."}}]`).
+- [ ] **Function Dispatcher:** Create a Python dictionary mapping the string tool names directly to their target Python functions.
+- [ ] **The Generic Loop:** Rewrite the `send_message` function using `openai.OpenAI(base_url=..., api_key=...)`. Implement a standard `while` loop (max 8 turns):
+  1. Call `client.chat.completions.create(..., tools=TOOLS)`.
+  2. If a `tool_calls` array is returned, parse the JSON, execute the mapped dispatcher function, append a `tool_result` message to the history, and loop.
+  3. **Local Fallback Defense:** Wrap the JSON argument parsing in a `try/except json.JSONDecodeError` block. If a local model hallucinates bad JSON, append a system prompt asking it to fix the format, preventing a hard crash.
+  4. Break and return when standard text content is generated.
+- [ ] **Verify:** Hardcode an OpenAI or Anthropic (via compatibility URL) key temporarily to verify the standard loop successfully executes a tool and returns a response.
+
+### 16.3 Settings UI Expansion
+- [ ] **Universal AI Config:** Update `web/src/components/settings/SettingsPage.tsx` to feature an "AI Endpoint Configuration" section.
+- [ ] **Fields:** Include inputs for "Endpoint URL" (defaulting to a placeholder like `http://localhost:4000/v1` or `https://api.openai.com/v1`), "Model Name" (e.g., `hale-coach`), and "API Key / Auth Token". Ensure saving `PATCH`es the backend.
+- [ ] **Verify:** `npm run build` passes. The settings successfully persist to the backend and activate the Chat UI.
+
+### 16.4 The Gateway Tier (Docker Sidecar)
+- [ ] **Create `docker-compose.ai.yml`:** Add an optional sidecar stack file in the repository root containing a `lite-llm-proxy` service (exposing port `4000`) and an optional `ollama` service (exposing port `11434`) for local GPU inference.
+- [ ] **Gateway Routing Config:** Create `litellm_config.yaml` to define the model alias and fallback routing:
+  ```yaml
+  model_list:
+    - model_name: hale-coach
+      litellm_params:
+        model: ollama/llama3.1
+        api_base: [http://host.docker.internal:11434](http://host.docker.internal:11434)
+    - model_name: hale-coach-fallback
+      litellm_params:
+        model: anthropic/claude-3-5-sonnet-20240620
+        api_key: os.environ/ANTHROPIC_API_KEY
+  router_settings:
+    routing_strategy: latency-based-routing
+    fallbacks:
+      - {"hale-coach": ["hale-coach-fallback"]}
+
+---
+
 ## Deferred / explicitly out of scope
 
 - PostGIS/PostgreSQL migration (rejected at current scale — see ROADMAP)

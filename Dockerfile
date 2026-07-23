@@ -1,36 +1,38 @@
-# Build stage: the new React frontend (Phase 0 rewrite, see PLAN.md 0.10). Pinned
-# to node:22-slim (not a floating tag) to match the dev workflow documented in
-# .RUNBOOK.md — Vite 8 needs ^20.19 || >=22.12, confirmed by that same pin there.
 FROM node:22-slim AS web-builder
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+
+# DEBUG: Check available memory before npm install
+RUN echo "--- MEMORY BEFORE NPM CI ---" && free -m || cat /proc/meminfo
+
+# DEBUG: Run npm ci with verbose logging to see exactly where it hangs
+RUN echo "--- STARTING NPM CI ---"
+RUN npm ci --loglevel verbose
+
 COPY web/ .
+
+# DEBUG: Check memory before React build
+RUN echo "--- MEMORY BEFORE NPM BUILD ---" && free -m || cat /proc/meminfo
+RUN echo "--- STARTING NPM BUILD ---"
 RUN npm run build
 
 FROM python:3.12-slim
-
-# WORKDIR is the package's *parent* directory — `app/` is a real installable
-# package now (pyproject.toml + app/__init__.py, every internal cross-module import
-# converted to relative `from . import x`), not a flat directory of top-level
-# modules living directly at the working directory the way it used to.
 WORKDIR /srv
 
 COPY requirements.txt pyproject.toml ./
 COPY app ./app
 
-# requirements.txt stays the source of truth for third-party dependency versions;
-# the second install just registers `app` itself as an importable package
-# (--no-deps: pyproject.toml's own dependency list mirrors requirements.txt, so this
-# skips redundantly re-resolving what the first install already satisfied).
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --no-deps .
+# DEBUG: Check memory before Python pip install
+RUN echo "--- MEMORY BEFORE PIP INSTALL ---" && free -m || cat /proc/meminfo
+RUN echo "--- STARTING PIP INSTALL ---"
+
+# DEBUG: Added -v (verbose) to pip install
+RUN pip install -v --no-cache-dir -r requirements.txt \
+    && pip install -v --no-cache-dir --no-deps .
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# web-dist must land as a *sibling of main.py inside the package* — main.py resolves
-# it via os.path.dirname(__file__), not the process's CWD (see main.py's WEB_DIST_DIR).
 COPY --from=web-builder /web/dist ./app/web-dist
 
 RUN mkdir -p /data \
@@ -38,5 +40,9 @@ RUN mkdir -p /data \
     && chown -R runlog:runlog /srv /data
 
 EXPOSE 8000
+USER runlog
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]

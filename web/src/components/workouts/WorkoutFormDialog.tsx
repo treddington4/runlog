@@ -9,13 +9,64 @@ import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 
+// Phase 14.5 — activityType used to be free text; a small fixed category now
+// drives both which workoutType options make sense and how the pace/speed field
+// is labeled/parsed. "Strength" and "Recovery" aren't real activityType values
+// the backend stores (strength workouts persist activityType="Other", matching
+// the existing generator convention — see generator.py's _generate_strength),
+// so this category is a UI-only concept, mapped to/from the raw field at the
+// form's edges (deriveCategory / categoryToActivityType).
+type ActivityCategory = "Run" | "Ride" | "Strength" | "Recovery" | "Other"
+const ACTIVITY_CATEGORIES: ActivityCategory[] = ["Run", "Ride", "Strength", "Recovery", "Other"]
+
+const WORKOUT_TYPES_BY_CATEGORY: Record<ActivityCategory, WorkoutType[]> = {
+  Run: ["easy", "tempo", "interval", "long"],
+  Ride: ["easy", "tempo", "interval", "long"],
+  Strength: ["strength"],
+  Recovery: ["rest", "cross_train"],
+  Other: ["rest", "cross_train"],
+}
+
+function deriveCategory(workout: Workout | null): ActivityCategory {
+  if (!workout) return "Run"
+  if (workout.workoutType === "strength") return "Strength"
+  if (workout.activityType === "Run") return "Run"
+  if (workout.activityType === "Ride") return "Ride"
+  if (workout.activityType === "Recovery") return "Recovery"
+  return "Other"
+}
+
+function categoryToActivityType(category: ActivityCategory): string | null {
+  if (category === "Strength") return "Other"
+  return category
+}
+
+// Ride's target is entered/displayed as mph, but stored the same way Run's is
+// (sec/mi) so the backend only ever deals with one unit — matches this app's
+// existing "keep one consistent internal unit, make only entry/display
+// activity-aware" pattern (see CLAUDE.md on GAP/Minetti duplication avoidance).
+function paceFieldDisplay(category: ActivityCategory, sec: number | null | undefined): string {
+  if (!sec) return ""
+  if (category === "Ride") return (3600 / sec).toFixed(1)
+  return paceStr(sec)
+}
+
+function paceFieldToSec(category: ActivityCategory, text: string): number | null {
+  if (category === "Ride") {
+    const mph = Number(text)
+    return mph > 0 ? Math.round(3600 / mph) : null
+  }
+  return parsePaceToSec(text)
+}
+
 function emptyForm(workout: Workout | null) {
+  const category = deriveCategory(workout)
   return {
     scheduledDate: workout?.scheduledDate ?? "",
-    workoutType: (workout?.workoutType ?? "easy") as WorkoutType,
-    activityType: workout?.activityType ?? "",
+    activityCategory: category,
+    workoutType: (workout?.workoutType ?? WORKOUT_TYPES_BY_CATEGORY[category][0]) as WorkoutType,
     targetDistanceMi: workout?.targetDistanceMi?.toString() ?? "",
-    targetPaceSecPerMi: workout?.targetPaceSecPerMi ? paceStr(workout.targetPaceSecPerMi) : "",
+    targetPaceSecPerMi: paceFieldDisplay(category, workout?.targetPaceSecPerMi),
     targetDurationSec: workout?.targetDurationSec ? String(Math.round(workout.targetDurationSec / 60)) : "",
     notes: workout?.notes ?? "",
   }
@@ -98,7 +149,8 @@ export function WorkoutFormDialog({
   }, [open, workout])
 
   const isEdit = !!workout
-  const isStrength = form.workoutType === "strength"
+  const isStrength = form.activityCategory === "Strength"
+  const isPaceRelevant = form.activityCategory === "Run" || form.activityCategory === "Ride"
 
   function updateStep(i: number, patch: Partial<StrengthStepForm>) {
     setStrengthSteps(strengthSteps.map((s, idx) => (idx === i ? { ...s, ...patch } : s)))
@@ -110,9 +162,9 @@ export function WorkoutFormDialog({
     onSave({
       scheduledDate: form.scheduledDate,
       workoutType: form.workoutType,
-      activityType: form.activityType || null,
+      activityType: categoryToActivityType(form.activityCategory),
       targetDistanceMi: Number(form.targetDistanceMi) || null,
-      targetPaceSecPerMi: parsePaceToSec(form.targetPaceSecPerMi),
+      targetPaceSecPerMi: isPaceRelevant ? paceFieldToSec(form.activityCategory, form.targetPaceSecPerMi) : null,
       targetDurationSec: durationMin ? durationMin * 60 : null,
       notes: form.notes,
       steps: isStrength ? formsToStrengthSteps(strengthSteps) : undefined,
@@ -136,6 +188,32 @@ export function WorkoutFormDialog({
             />
           </div>
           <div className="flex flex-col gap-1.5">
+            <Label>Activity</Label>
+            <Select
+              value={form.activityCategory}
+              onValueChange={(v) => {
+                const activityCategory = v as ActivityCategory
+                const validTypes = WORKOUT_TYPES_BY_CATEGORY[activityCategory]
+                setForm({
+                  ...form,
+                  activityCategory,
+                  workoutType: validTypes.includes(form.workoutType) ? form.workoutType : validTypes[0],
+                })
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ACTIVITY_CATEGORIES.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
             <Label>Type</Label>
             <Select
               value={form.workoutType}
@@ -145,21 +223,13 @@ export function WorkoutFormDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.entries(WORKOUT_TYPE_LABELS).map(([v, label]) => (
+                {WORKOUT_TYPES_BY_CATEGORY[form.activityCategory].map((v) => (
                   <SelectItem key={v} value={v}>
-                    {label}
+                    {WORKOUT_TYPE_LABELS[v]}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label>Activity</Label>
-            <Input
-              placeholder="Run — leave blank for rest/cross-train days that aren't a real run/ride"
-              value={form.activityType}
-              onChange={(e) => setForm({ ...form, activityType: e.target.value })}
-            />
           </div>
           {isStrength ? (
             <div className="flex flex-col gap-2">
@@ -240,14 +310,16 @@ export function WorkoutFormDialog({
                   onChange={(e) => setForm({ ...form, targetDistanceMi: e.target.value })}
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>Target pace (min:sec/mi)</Label>
-                <Input
-                  placeholder="8:00"
-                  value={form.targetPaceSecPerMi}
-                  onChange={(e) => setForm({ ...form, targetPaceSecPerMi: e.target.value })}
-                />
-              </div>
+              {isPaceRelevant && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{form.activityCategory === "Ride" ? "Target speed (mph)" : "Target pace (min:sec/mi)"}</Label>
+                  <Input
+                    placeholder={form.activityCategory === "Ride" ? "16" : "8:00"}
+                    value={form.targetPaceSecPerMi}
+                    onChange={(e) => setForm({ ...form, targetPaceSecPerMi: e.target.value })}
+                  />
+                </div>
+              )}
               <div className="flex flex-col gap-1.5">
                 <Label>Target duration (min)</Label>
                 <Input

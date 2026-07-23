@@ -1647,18 +1647,25 @@ extends that same, already-bounded-v1 pattern rather than building a new system.
 - [ ] Training-plan grouping (collapsible dropdown per plan): **not built this
       phase** — deferred until Phase 13.3 ships.
 
-### 14.5 Frontend: `WorkoutFormDialog` activity-conditional fields
-- [ ] `activityType` becomes a small fixed `Select` (Run/Ride/Strength/Recovery/
+### 14.5 Frontend: `WorkoutFormDialog` activity-conditional fields — done
+- [x] `activityType` becomes a small fixed `Select` (Run/Ride/Strength/Recovery/
       Other) instead of free text, so downstream logic has something reliable to
       key off. The `workoutType` dropdown's options become conditional on it
       (`easy`/`tempo`/`interval`/`long` for Run/Ride; `strength` only for Strength;
-      `rest`/`cross_train` otherwise).
-- [ ] The pace/target field becomes unit-aware: `min:sec/mi` for Run, `mph` for
+      `rest`/`cross_train` otherwise). "Strength"/"Recovery" are UI-only categories
+      (mapped to/from the real `activityType`+`workoutType` at the form's edges) —
+      strength workouts still persist `activityType="Other"`, matching the existing
+      generator convention. Verified live: editing a real Strength workout (Deadlift/
+      Bulgarian Split Squat/... with real logged sets) correctly derives category
+      "Strength" and round-trips the exercise editor; editing a real Garmin-synced
+      Run correctly derives "Run".
+- [x] The pace/target field becomes unit-aware: `min:sec/mi` for Run, `mph` for
       Ride — stored internally however is simplest (e.g. keep
       `targetPaceSecPerMi`'s existing semantics for Run; for Ride, convert the
       entered mph to the equivalent sec-per-mile before saving, so the backend
       keeps one consistent unit and only the *display/entry* layer is
-      activity-aware) rather than adding a second backend field.
+      activity-aware) rather than adding a second backend field. Verified live:
+      switching Activity to Ride relabels the field to "Target speed (mph)".
 - [ ] **Deferred, explicitly out of scope this phase**: full metric-vs-imperial unit
       preference (km, km/h, kg, °C) was raised but is a much larger cross-cutting
       change — this app hardcodes imperial units everywhere today (miles, mph, lb,

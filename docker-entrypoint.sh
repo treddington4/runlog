@@ -6,4 +6,4 @@
 # refuses --dangerously-skip-permissions when running as root/sudo.
 set -e
 chown -R runlog:runlog /data
-exec su -s /bin/sh runlog -c 'exec uvicorn app.main:app --host 0.0.0.0 --port 8000'
+exec su -s /bin/sh runlog -c 'exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"'

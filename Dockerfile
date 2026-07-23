@@ -39,4 +39,11 @@ RUN mkdir -p /data \
 
 EXPOSE 8000
 
+# curl isn't installed in python:3.12-slim, so use urllib instead of adding a
+# dependency just for this. /health has no auth/DB dependency (see app/main.py) so
+# this only ever reflects whether uvicorn itself is up and serving. Reads $PORT to
+# match docker-entrypoint.sh's actual bind port, not the 8000 default.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://localhost:' + os.environ.get('PORT','8000') + '/health', timeout=2)" || exit 1
+
 ENTRYPOINT ["docker-entrypoint.sh"]

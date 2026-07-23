@@ -425,10 +425,18 @@ def _build_tools(user_id: str, is_test: bool = False) -> list:
             # HealthNote/Workout is_test guard, see Phase 12.1.
             return {"content": [{"type": "text", "text": "test mode — not logged"}]}
         from . import self_review
-        _db_call(
-            self_review.append_to_draft, user_id, "User feedback",
-            f"**{args['category']}**: {args['summary']}", "live chat",
-        )
+        # append_to_draft_async, not the sync append_to_draft — this coroutine is
+        # already running inside the SDK's own event loop (we're mid client.query()),
+        # and append_to_draft's asyncio.run() would raise "cannot be called from a
+        # running event loop" if used here. Opens its own session rather than routing
+        # through the sync-only _db_call helper, for the same reason.
+        db = SessionLocal()
+        try:
+            await self_review.append_to_draft_async(
+                db, user_id, "User feedback", f"**{args['category']}**: {args['summary']}", "live chat",
+            )
+        finally:
+            db.close()
         return {"content": [{"type": "text", "text": "Logged."}]}
 
     @tool("get_recovery_tools", "List recovery devices the user owns (e.g. compression boots) and their supported level/duration/zone-boost ranges. Also included automatically in every message's context when the user has any on file — call this directly only if you need the full list again mid-conversation.", {

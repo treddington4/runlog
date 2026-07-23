@@ -14,9 +14,10 @@ lists only our own mcp__runlog__* tools, `disallowed_tools` explicitly blocks
 Claude Code's built-in filesystem/shell tools as a second layer, and `setting_sources`
 is empty so no local .claude/settings.json in the container can grant anything back.
 Write access is narrowly and deliberately scoped: only HealthNote and Workout rows
-(via coach.py) can be written by any tool here — never Run, Goal, ProviderCredential,
-or anything filesystem/shell-adjacent. Every stats.py-backed tool remains a plain
-SELECT.
+(via coach.py), plus CoachIssueDraft (via self_review.py, Phase 12.5 — a rolling
+draft-only note-to-self, never posted anywhere) can be written by any tool here —
+never Run, Goal, ProviderCredential, or anything filesystem/shell-adjacent. Every
+stats.py-backed tool remains a plain SELECT.
 """
 import json
 import os
@@ -46,7 +47,7 @@ _TOOL_NAMES = [
     "get_pace_trend", "get_training_load_trend", "get_readiness", "get_daily_steps", "query_runs", "get_run_detail",
     "get_health_history", "find_related_health_history", "log_health_note", "update_health_status",
     "get_scheduled_workouts", "schedule_workout", "update_workout", "record_workout_completion",
-    "get_exercise_progress",
+    "get_exercise_progress", "log_product_feedback",
     "render_chart", "get_goals",
     "get_recovery_tools", "recommend_recovery_session", "get_recovery_sessions",
 ]
@@ -410,6 +411,26 @@ def _build_tools(user_id: str, is_test: bool = False) -> list:
             return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
+    @tool("log_product_feedback", "Call this INSTEAD OF a coaching answer when the user's message is a bug report, feature request, or general product/UX feedback about the HALE app itself — not a question about their own training/health/data. Summarize what they're asking for/reporting in your own words, specific enough to act on later. Do not deflect back to the user asking what they actually want or whether this is a coaching question — log it and move on. If a message mixes a real coaching question with product feedback, still answer the coaching part normally and also call this for the feedback part.", {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "enum": ["bug", "feature_request", "feedback"]},
+            "summary": {"type": "string", "description": "What they're asking for/reporting — specific enough that someone reading it later (not you) understands the request without needing the original message."},
+        },
+        "required": ["category", "summary"],
+    })
+    async def log_product_feedback(args):
+        if is_test:
+            # Never pollutes the real draft with verification traffic — mirrors the
+            # HealthNote/Workout is_test guard, see Phase 12.1.
+            return {"content": [{"type": "text", "text": "test mode — not logged"}]}
+        from . import self_review
+        _db_call(
+            self_review.append_to_draft, user_id, "User feedback",
+            f"**{args['category']}**: {args['summary']}", "live chat",
+        )
+        return {"content": [{"type": "text", "text": "Logged."}]}
+
     @tool("get_recovery_tools", "List recovery devices the user owns (e.g. compression boots) and their supported level/duration/zone-boost ranges. Also included automatically in every message's context when the user has any on file — call this directly only if you need the full list again mid-conversation.", {
         "type": "object", "properties": {},
     })
@@ -487,7 +508,7 @@ def _build_tools(user_id: str, is_test: bool = False) -> list:
         get_pace_trend, get_training_load_trend, get_readiness, get_daily_steps, query_runs, get_run_detail,
         get_health_history, find_related_health_history, log_health_note, update_health_status,
         get_scheduled_workouts, schedule_workout, update_workout, record_workout_completion,
-        get_exercise_progress,
+        get_exercise_progress, log_product_feedback,
         render_chart, get_goals,
         get_recovery_tools, recommend_recovery_session, get_recovery_sessions,
     ]

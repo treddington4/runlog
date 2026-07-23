@@ -67,6 +67,13 @@ def startup():
         from .util import APP_TIMEZONE
         scheduler.add_job(_run_generator, "cron", hour=4, minute=0, timezone=APP_TIMEZONE)
         log.info(f"Workout generator scheduled daily at 04:00 {APP_TIMEZONE}")
+
+        def _run_self_review():
+            from .coach import self_review
+            self_review.run_for_all_users()
+
+        scheduler.add_job(_run_self_review, "cron", hour=4, minute=30, timezone=APP_TIMEZONE)
+        log.info(f"Coach self-review scheduled daily at 04:30 {APP_TIMEZONE}")
     scheduler.start()
 
 

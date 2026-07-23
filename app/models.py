@@ -417,6 +417,31 @@ class WeeklyPlan(Base):
     frozen = Column(Boolean, default=False)
 
 
+class CoachIssueDraft(Base):
+    """Phase 12.5 — one rolling draft GitHub issue per user, accumulated from two
+    sources: the periodic self_review job (scans real, non-test ChatMessage history
+    for coach bugs/gaps like date confusion) and the live log_product_feedback chat
+    tool (a message classified as a bug report/feature request/product feedback about
+    HALE itself, not a coaching question, gets appended immediately rather than
+    waiting for the next scheduled review). Both append a new dated markdown section
+    via coach.self_review.append_to_draft rather than overwriting — deliberately
+    never auto-posted to github.com (see CLAUDE.md); fetched via GET /api/coach-issue,
+    downloaded as .md from Settings, and cleared (this row deleted) once pulled, at
+    which point the next finding starts a fresh draft."""
+    __tablename__ = "coach_issue_drafts"
+
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    title = Column(String, nullable=True)
+    body_markdown = Column(Text, nullable=True)
+    frustration_count = Column(Integer, default=0)
+    updated_at = Column(String, nullable=True)
+    last_reviewed_chat_message_id = Column(Integer, nullable=True)  # checkpoint into
+                                                                       # ChatMessage.id so
+                                                                       # the periodic job
+                                                                       # never reprocesses
+                                                                       # the same messages
+
+
 class RecoveryTool(Base):
     """A recovery device the athlete owns that the coach can factor into
     recommendations — e.g. compression boots. Deliberately concrete/narrow for now

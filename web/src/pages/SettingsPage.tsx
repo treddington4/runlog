@@ -9,7 +9,7 @@ import {
   useTokens,
   useSettingsMutations,
 } from "@/hooks/useSettings"
-import { useCoachPersonality } from "@/hooks/useChat"
+import { useCoachPersonality, useCoachIssue, useClearCoachIssue } from "@/hooks/useChat"
 import { useSteps } from "@/hooks/useSteps"
 import { usePush } from "@/hooks/usePush"
 import { useTrainingConfig, useUpdateTrainingConfig } from "@/hooks/useWorkouts"
@@ -295,6 +295,46 @@ function CoachSection() {
   )
 }
 
+// Phase 12.5 — surfaces the rolling draft GitHub issue (see coach/self_review.py):
+// findings from the periodic chat-history review plus anything the coach logged live
+// via log_product_feedback (bug reports/feature requests it correctly routed instead
+// of trying to answer as a coaching question). Draft-only — downloading/clearing here
+// never posts anything to github.com itself; publishing is a manual step.
+function CoachFeedbackSection() {
+  const { data: draft, isPending } = useCoachIssue()
+  const clearIssue = useClearCoachIssue()
+
+  if (isPending || !draft) return null
+
+  function handleDownload() {
+    if (!draft) return
+    const blob = new Blob([`# ${draft.title}\n\n${draft.body}`], { type: "text/markdown" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `hale-coach-feedback-${new Date().toISOString().slice(0, 10)}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <SettingsSection title="Coach Feedback">
+      <div className="text-hale-faint pb-2 text-xs">
+        {draft.frustrationCount} item{draft.frustrationCount === 1 ? "" : "s"} logged — last updated{" "}
+        {new Date(draft.updatedAt).toLocaleString()}. Draft only; nothing here is posted to GitHub automatically.
+      </div>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={handleDownload}>
+          Download as .md
+        </Button>
+        <Button size="sm" variant="outline" disabled={clearIssue.isPending} onClick={() => clearIssue.mutate()}>
+          {clearIssue.isPending ? "Clearing…" : "Clear"}
+        </Button>
+      </div>
+    </SettingsSection>
+  )
+}
+
 function TrainingSection() {
   const { data: config } = useTrainingConfig()
   const updateConfig = useUpdateTrainingConfig()
@@ -548,6 +588,7 @@ export function SettingsPage() {
       <ConnectionsSection />
       <TokensSection />
       <CoachSection />
+      <CoachFeedbackSection />
       <TrainingSection />
       <PushSection />
       <SyncScheduleSection />

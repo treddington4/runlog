@@ -126,6 +126,16 @@ export interface ChatStatus {
 
 export type CoachPersonality = "encouraging" | "normal" | "spicy" | "insulting"
 
+// Phase 12.5 — one rolling draft GitHub issue per user, accumulated from the
+// periodic self-review job and the live log_product_feedback chat tool. Draft-only,
+// never auto-posted to github.com — see Settings' Coach Feedback section.
+export interface CoachIssueDraft {
+  title: string
+  body: string
+  frustrationCount: number
+  updatedAt: string
+}
+
 // Deliberately never throws — mirrors the legacy send() closure's distinction
 // between an HTTP error (server responded, has a `detail` message) and a
 // network/fetch failure (no response at all), which get different display text.
@@ -596,6 +606,8 @@ export const api = {
   },
   sleepStages: (date?: string) =>
     request<SleepStagesResponse>(`/api/wellness/sleep-stages${date ? `?date=${date}` : ""}`),
+  coachIssue: () => request<CoachIssueDraft | null>("/api/coach-issue"),
+  clearCoachIssue: () => request<{ cleared: true }>("/api/coach-issue/clear", { method: "POST" }),
   updateRun: (id: string, body: RunUpdate) =>
     request<Run>(`/api/runs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
 

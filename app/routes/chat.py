@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Depends
 
-from ..models import SessionLocal, ChatMessage, User, owned_by
+from ..models import SessionLocal, ChatMessage, CoachIssueDraft, User, owned_by
 from ..accounts import auth
 
 router = APIRouter()
@@ -118,3 +118,35 @@ async def set_coach_personality(request: Request, user_id: str = Depends(auth.cu
     # re-read per message — reset so the next chat message rebuilds it with the new tone.
     await assistant.reset_client(user_id)
     return {"personality": personality}
+
+
+# ---------- Coach self-review draft (Phase 12.5) — one rolling draft GitHub issue per
+# user, accumulated by coach/self_review.py's periodic job and the live
+# log_product_feedback chat tool. Draft-only: never posted to github.com from here,
+# see CLAUDE.md. Fetched via GET, cleared via POST once pulled/published elsewhere. ----------
+@router.get("/api/coach-issue")
+def get_coach_issue(user_id: str = Depends(auth.current_user_id)):
+    db = SessionLocal()
+    try:
+        draft = db.get(CoachIssueDraft, user_id)
+        if not draft or not draft.body_markdown:
+            return None
+        return {
+            "title": draft.title, "body": draft.body_markdown,
+            "frustrationCount": draft.frustration_count or 0, "updatedAt": draft.updated_at,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/api/coach-issue/clear")
+def clear_coach_issue(user_id: str = Depends(auth.current_user_id)):
+    db = SessionLocal()
+    try:
+        draft = db.get(CoachIssueDraft, user_id)
+        if draft:
+            db.delete(draft)
+            db.commit()
+        return {"cleared": True}
+    finally:
+        db.close()

@@ -1376,11 +1376,68 @@ tied to where the user actually is.
       workout) — no regression from the schema change.
 - [x] Commit: "Phase 12.3: challenge safety-vetting + strength_exercise chat-tool gap"
 
-### 12.4-12.5 (not started)
+### 12.5 Self-review → rolling draft GitHub issue
+Scope grew mid-implementation: the user hit a real, live example of the exact gap
+this sub-phase exists to close — a detailed workout-UI spec sent to chat got met with
+*"I'm getting a product spec here instead of a coaching question... what's the actual
+ask?"* instead of being captured. That reframed 12.5 from "periodic background review
+only" into two sources feeding the same rolling draft: the periodic historical scan,
+**and** a live in-chat classification tool for exactly this case.
+- [x] New `CoachIssueDraft` table (`user_id` PK, `title`, `body_markdown`,
+      `frustration_count`, `updated_at`, `last_reviewed_chat_message_id` checkpoint) —
+      one rolling draft per user, appended to (never overwritten) until cleared.
+- [x] New `app/coach/self_review.py`: `append_to_draft` (shared upsert both sources
+      below call), `run_for_user`/`run_for_all_users` (periodic path — one-shot
+      ephemeral Claude client, no HALE tools, reviews real non-test `ChatMessage`
+      history since the checkpoint for coach bugs/gaps, drafts a markdown section or
+      "NONE"). First run per user is a full historical scan (no checkpoint yet), by
+      design, so the very first draft captures already-known real problems.
+      Registered on the scheduler at 04:30 local, right after the generator, skipped
+      in demo mode.
+- [x] New live tool `log_product_feedback` (`assistant.py`) + `PRODUCT_FEEDBACK_PROMPT`
+      (`coach/core.py`): the coach now classifies every message — a bug report/
+      feature request/product feedback about HALE itself gets summarized and appended
+      to the same rolling draft immediately, with a brief acknowledgment, instead of
+      deflecting back to the user. Guarded by `is_test` (Phase 12.1) so verification
+      traffic never pollutes the real draft.
+- [x] New endpoints `GET /api/coach-issue` / `POST /api/coach-issue/clear`
+      (`routes/chat.py`); Settings gained a "Coach Feedback" section (pending count +
+      last-updated, "Download as .md" client-side blob download, "Clear").
+- [x] **Real bugs caught during testing, not theoretical** — three, in sequence:
+      (1) the review's one-shot query passed the raw transcript with no framing, so
+      the model treated it as an open-ended request ("I need the actual transcript
+      file...") instead of data to analyze — fixed by explicitly framing it in the
+      query text; (2) against the real ~90-message production transcript, `max_turns=1`
+      cut the model off mid-preamble before it produced any analysis — fixed by
+      raising to `max_turns=8` (same headroom the main coaching client already uses,
+      for the same reason: this is about response room, not tool-call turns, since
+      this client has no tools at all); (3) a leftover preamble sentence ran directly
+      into the markdown heading with no line break — fixed by explicitly forbidding
+      preamble in the prompt.
+- [x] **Small related fix, caught by the user in the same live example**: the coach's
+      reply had said "I use the runlog tools" — `BASE_PROMPT` literally named the
+      internal `mcp__runlog__*` tool prefix, which the model then echoed verbatim.
+      Fixed by describing tools generically in the prompt (the internal MCP server
+      name itself is unchanged — purely a prompt wording fix, not a rename).
+- [x] Verify: every step live-tested against a throwaway container with real
+      credentials, including the exact real user message that prompted this scope
+      change (confirmed `log_product_feedback` fires, no deflection, correct
+      category/summary); confirmed a genuine coaching question does *not* misfire the
+      tool; confirmed `is_test`-tagged feedback never reaches the real draft; confirmed
+      append-not-overwrite across multiple items; confirmed the periodic job correctly
+      returns nothing on a quiet/verification-only transcript (no false positives) and
+      correctly finds and quotes real issues against both a synthetic date-confusion
+      exchange and the real ~90-message production history (the exact date-confusion
+      bugs originally read at the start of this phase, correctly identified and
+      quoted). Screenshotted the real Settings section against live production
+      showing the genuine first real draft. Only after every fix was throwaway-verified
+      was production redeployed and re-run for the real first draft.
+- [x] Commit: "Phase 12.5: self-review + live product-feedback classification"
+
+## Backlog / not designed this phase
 Article/file evaluation (bounded `fetch_article_text` tool + a new file-upload chat
-endpoint), and the periodic self-review job that maintains one rolling draft GitHub
-issue per user — see the approved plan for full design. Video scheduling/casting
-stays a backlog-only bullet, not designed this phase.
+endpoint) — see the approved plan for full design, not built. Video scheduling/
+casting stays a single backlog bullet, not designed at all.
 
 ---
 

@@ -29,6 +29,7 @@ app.include_router(goals.router)
 app.include_router(dashboard.router)
 
 
+@app.get("/health")
 @app.get("/healthz")
 def healthz():
     """Container/orchestrator liveness check — deliberately no auth dependency and no
@@ -37,7 +38,9 @@ def healthz():
     signal: '/' only 200s via the SPA catch-all below, which only gets registered
     when web-dist was actually built, so any host whose health check hits a
     different path (or hits during a broken frontend build) saw a 404 with no way
-    to tell startup succeeded."""
+    to tell startup succeeded. /health is SnapDeploy's documented convention
+    (docs/troubleshooting: "Add a /health endpoint that returns 200 OK"); /healthz
+    kept as an alias since it's the more common convention elsewhere."""
     return {"status": "ok"}
 
 

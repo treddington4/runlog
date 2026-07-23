@@ -1492,6 +1492,102 @@ casting stays a single backlog bullet, not designed at all.
 
 ---
 
+## Phase 13 — Coach quality fixes, Settings/Workouts UX, queryable chat memory
+
+Sourced directly from the Phase 12.5 Coach Feedback draft accumulated on 2026-07-23,
+captured here before clearing it (the draft itself is meant to be pulled and worked
+from, then cleared — see Phase 12.5's design). The three feature requests in that
+draft were one-liners too vague to implement as-is; each was scoped further via
+direct questions before being written up below. Nothing in this phase is built yet.
+
+### 13.1 Coach bug fixes (from the automated behavior review)
+- [ ] **Date/timeline misattribution**: coach repeatedly confuses which day an
+      activity happened on (today vs. yesterday vs. N days ago), and once claimed a
+      scheduled workout was already completed when the user hadn't gone yet. Phase
+      12.2's per-user timezone fix addresses part of the underlying root cause
+      (wrong timezone → wrong "today"); this item is about the coach's own date
+      reasoning/prompt-level rigor on top of that — worth reconsidering how
+      "today"/"yesterday"/relative-day language gets grounded against real tool data
+      *before* the coach states something as fact, rather than only correcting
+      after the user pushes back.
+- [x] ~~Coach used a test health note as real medical context~~ — already fixed by
+      Phase 12.1's `is_test` flagging plus the 5-row real-production cleanup; no
+      further action needed, kept here only for the historical record.
+- [ ] **Body-side confusion**: coach mixed left/right shin references without
+      acknowledging the switch, despite the user reporting bilateral soreness.
+      Needs care in how `bodyArea` gets tracked/surfaced across a multi-message
+      conversation about a genuinely bilateral issue.
+- [ ] **Direct data misreading** ("Coach can't count"): a general accuracy gap
+      reading tool output correctly. No specific mechanism identified yet — needs
+      more real examples before a targeted fix is possible.
+- [ ] **Recovery-tool (Normatec) scheduling mismatch**: a scheduled compression
+      level didn't match what was actually logged for a nearby date, and the coach
+      accepted the mismatch without reconciling it. `recommend_recovery_session`
+      should cross-check existing scheduled/logged sessions (`get_recovery_sessions`)
+      before accepting new stated info at face value.
+- [ ] **Ambiguous input misinterpreted**: user said "Doing 30 min zone boost on 2 (26
+      min remain)" and the coach assumed "2" meant compression level without
+      confirming — it could just as plausibly have meant zone or something else.
+      Coach should ask rather than assume when a bare number's referent is
+      genuinely ambiguous.
+- [ ] **Within-session context loss**: coach confused workout mileage with Normatec
+      compression settings mid-conversation (both get expressed as small integers
+      like "4"), losing track of which domain the conversation was actually about.
+      Related to but distinct from 13.4 below — this is losing track *within* one
+      active session, not *across* separate sessions.
+
+### 13.2 Settings UI: collapsible section grouping
+Confirmed with the user: keep the single Settings page (not a split into sub-tabs,
+not just a reorder) — group the existing cards under collapsible/accordion headers
+so less-used ones can stay closed by default.
+- [ ] Design the actual groupings (which existing `SettingsSection` components in
+      `SettingsPage.tsx` belong under which header — e.g. Connections, Training,
+      Coach, Account) and add a simple accordion/collapsible wrapper. Pure frontend
+      reorganization, no backend changes needed.
+
+### 13.3 Goal-tied multi-week training plan view (Workouts tab)
+Confirmed with the user: **not** about relocating the existing Settings → Training
+card (the flat per-user `UserTrainingConfig` — max HR, ramp %, mesocycle pattern,
+etc.) — this is a new structured "plan" concept tied to a specific goal, surfaced
+directly on the Workouts tab with a way to start a new one from there.
+- **Likely builds on existing infrastructure rather than starting from scratch**:
+  Phase 4.3 already has a `WeeklyPlan` table (`user_id, week_start,
+  target_tss`/`actual_tss`, `is_deload`, `frozen`) and a generator that derives
+  weekly mileage budgets from a race goal's phase (base/build/peak/taper). This
+  request is plausibly about surfacing *that* existing data as a real visual plan
+  (a week-by-week view showing target vs. actual, current phase, deload weeks)
+  rather than inventing a second, competing planning concept.
+- [ ] Needs a real design pass at implementation time to confirm that framing and
+      work out the actual UI (calendar view? phase timeline? per-week cards?) — not
+      scoped further here.
+
+### 13.4 Queryable chat memory (cross-session context continuity)
+Confirmed with the user: explicitly **not** a blanket "re-seed everything on session
+reset" (too crude) and **not** full semantic/embedding-based recall either —
+speed, token cost, reliability, and a bounded context window were all called out as
+important, in that order of emphasis.
+- **Proposed direction**: SQLite's built-in FTS5 full-text search extension over
+  `ChatMessage.content` (real, non-test history only) — zero new dependencies, no
+  embeddings API calls (directly addresses the token-cost/reliability concern an
+  external embeddings call would introduce), fast via SQLite's native index, and
+  naturally bounded (a query returns a handful of matching messages, not the whole
+  history dumped into context). Exposed as a new **on-demand** read-only assistant
+  tool (e.g. `search_chat_history(query, limit)`) the coach calls only when it
+  actually needs older context — not force-injected into every message the way the
+  current per-message health/recovery context blocks are, so a typical turn's token
+  cost is unaffected.
+- **"Linking things together"**: worth designing the search results to reference
+  related entities where relevant (e.g. a matched message about a health issue
+  surfacing the linked `HealthNote` id, reusable via the existing
+  `get_health_history` tool) rather than just returning raw matched text — exact
+  shape needs a real design pass, not detailed further here.
+- [ ] Design + implementation not started — deliberately its own future phase item
+      rather than rushed into this entry, given the real trade-off decisions
+      (FTS5 schema/indexing approach, exactly what the tool returns, how
+      aggressively the coach gets prompted to use it) it still needs.
+
+---
+
 ## Phase 2 — Telemetry ingest API
 
 ### 2.1 Schema

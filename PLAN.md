@@ -977,105 +977,6 @@ countdown then starts the actual countdown"). Only meaningful once 4.4's
 
 ---
 
-## Phase 6 — Training-load analytics
-
-### 6.1 Per-activity metrics (sync-time, stored on Run)
-- [ ] `tss` (hrTSS from avg HR vs threshold_hr; fallback rTSS from existing GAP),
-      `efficiency_factor`; rides with power: `normalized_power` (30s rolling 4th-power
-      mean), `intensity_factor`, `variability_index`, `aerobic_decoupling`
-- [ ] Backfill command for existing activities (one-shot, container-run)
-- [ ] Commit: "Phase 6.1: per-activity TSS/NP/EF/decoupling"
-
-### 6.2 PMC pipeline
-- [ ] `DailyMetrics` table: `(user_id, date) PK, trimp, ctl, atl, tsb,
-      hrv_baseline_ms, readiness_score, time_in_zone_json, computed_at`
-- [ ] `app/pipeline.py` nightly job: TRIMP→CTL (42d) / ATL (7d) / TSB; weekly
-      actual_tss into `weekly_plan`; `stats.readiness` switches acuteChronicRatio
-      to ATL/CTL; strength tonnage → TRIMP via fixed intensity factor (documented
-      v1 approximation)
-- [ ] `GET /api/metrics?days=` + Insights CTL/ATL/TSB chart
-- [ ] Verify: hand-check CTL/ATL recursion on a known 5-day window
-- [ ] Commit: "Phase 6.2: PMC pipeline (CTL/ATL/TSB)"
-
-### 6.3 Gear tracking
-- [ ] `Gear` table (`id, user_id, name, kind shoe|bike|bike_component,
-      parent_gear_id?, start_date, retired_date?, replace_at_mi?`) +
-      `Run.gear_id`; default-gear-per-type rule at sync; `stats.gear_summary`
-      (read-time mileage); CRUD + Settings UI + wear on dashboard
-- [ ] Commit: "Phase 6.3: gear lifecycle tracking"
-
----
-
-## Phase 7 — Geospatial pipeline
-
-- [ ] 7.1 `h3` dep + `RouteHex` table (`(user_id, hex_id, res) PK, sport, first_visited,
-      visit_count, sum_speed/sum_hr/sum_sec/n`); sync-time hex upsert (run→res 9,
-      ride→res 7, both→res 8) + one-shot backfill over existing activities
-- [ ] 7.2 `GET /api/spatial/heatmap?sport&year&metric&bbox&zoom` → GeoJSON from
-      aggregates (precomputed = fast; no tile server)
-- [ ] 7.3 Map layers: separate toggleable Run (crimson/orange) vs Ride (cyan/blue)
-      heatmaps; weight = speed (ride) / time-in-cell or HR (run)
-- [ ] 7.4 Fog of War: `GET /api/spatial/exploration?region` (unique res-9 hexes / region
-      bbox) + cleared-fog map layer + dashboard stat
-- [ ] 7.5 Climb detection at sync: smoothed elevation, ≥3% sustained ≥300m segments,
-      length×grade → Cat 4…HC → `Run.climbs_json`; rolling-grade histogram ×
-      speed/HR/power → `Run.grade_analysis_json`; surface in run expand + Insights
-- [ ] 7.6 OSM surface tags (Overpass, throttled + cached, degrade-to-null) →
-      `Run.surface_json`
-- [ ] 7.7 Wind: extend existing Open-Meteo call with wind speed/direction; mean
-      route bearing vs wind → `Run.wind_json {headwindPct, avgHeadwindMph}`
-- [ ] 7.8 Privacy zones: table + Settings CRUD; **read-time** redaction in route
-      output (raw stays stored)
-- [ ] Verify each: backfill on DB copy; screenshot heatmap layers; spot-check a known
-      hilly run's climbs against Strava's segment data
-- [ ] Commit per sub-task
-
----
-
-## Phase 8 — Configurable dashboard
-
-- [ ] Layout config in `sync_meta` (`user_key(uid,"dashboard_config")`) —
-      `{widgets:[{id, pos, visible}]}`; `GET/PUT /api/dashboard/config`
-- [ ] Extend `/api/dashboard/summary` with per-widget keys (readiness, pmc,
-      todayWorkout+push state, weeklyRamp, gear, exploration, wellness, goals,
-      records) — compute only active widgets
-- [ ] Frontend: widget rendering from config, visibility toggles + reorder (up/down
-      v1, no drag-grid)
-- [ ] Verify: toggle/reorder round-trip; screenshot
-- [ ] Commit: "Phase 8: configurable widget dashboard"
-
----
-
-## Phase 9 — Credentials & nutrition
-
-- [ ] 9.1 `app/crypto.py` (AESGCM, `ENCRYPTION_KEY` env, plaintext fallback with
-      startup warning); migrate `ProviderCredential.password` to encrypted-at-rest
-- [ ] 9.2 Per-user LLM keys (`provider="anthropic"|"openai"` rows, encrypted);
-      `assistant.py` prefers user key over system env; Settings UI (masked)
-- [ ] 9.3 Nutrition schema: `NutritionLog (id, user_id, ts, meal_name, calories,
-      protein_g, carbs_g, fat_g, source)`, `MacroTarget (user_id PK, …)`,
-      `DeliveryImport (id, user_id, provider, imported_at, item_manifest_json)`
-- [ ] 9.4 `POST /api/nutrition/import` manifest upload parser (CSV/HTML — best-effort,
-      Garmin-ZIP-import pattern) + manual log CRUD + daily macro summary in stats
-- [ ] 9.5 LEA flag in `stats.readiness`: 7d intake < 0.85 × (BMR est + activity kcal),
-      only when logging coverage ≥5/7 days; generator treats as one flag; two
-      consecutive weeks → cap freeze
-- [ ] Commit per sub-task
-
----
-
-## Phase 10 — Vitals & biomarkers
-
-- [ ] 10.1 (done in 2.1/2.2 + 3.3 — glucose ingest end-to-end; verify here and mark)
-- [ ] 10.2 `LabPanel` table (`id, user_id, lab_date, source, markers_json`); manual
-      CRUD + Settings UI (PDF parsing explicitly deferred)
-- [ ] 10.3 Sticky lab flags in readiness (`ferritin_low`, `crp_elevated`,
-      `glucose_instability` TIR<70% 7d) — act as ramp-cap ceilings (0% increase),
-      not daily downgrades; persist until next panel; rationale named in notes
-- [ ] Commit per sub-task
-
----
-
 ## Phase 11 — Interactive Ephemeral Demo Environment
 
 Meant for a separate, disposable cloud deployment (Koyeb's free tier — see 11.4) —
@@ -1485,6 +1386,8 @@ Three more real-usage findings after initial ship, each addressed directly:
       refresh on Preview click, not just the daily job", "Coach Feedback: generalize
       recurring findings, fix real data-loss bug"
 
+---
+
 ## Backlog / not designed this phase
 Article/file evaluation (bounded `fetch_article_text` tool + a new file-upload chat
 endpoint) — see the approved plan for full design, not built. Video scheduling/
@@ -1585,6 +1488,280 @@ important, in that order of emphasis.
       rather than rushed into this entry, given the real trade-off decisions
       (FTS5 schema/indexing approach, exactly what the tool returns, how
       aggressively the coach gets prompted to use it) it still needs.
+
+---
+
+## Phase 14 — Workouts UX: icon-driven Quick Generate + calendar view
+
+The current Workouts tab is entirely form-driven: the only way to get a workout is
+either wait for the nightly generator or fill out `WorkoutFormDialog`'s text-heavy
+manual form (date picker, a `workoutType` dropdown that always shows every type
+regardless of activity, a free-text activity field). The user wants a much friendlier
+"press a button, get today's workout" flow instead — icon buttons per activity (Run,
+Bike, Strength, Recovery this pass; Yoga deferred, it doesn't fit any existing data
+shape yet), no future scheduling from these buttons (today only), plus a calendar-
+style view of what's already scheduled/done. Training-plan grouping (mentioned by the
+user) is explicitly deferred — it depends on Phase 13.3's goal-tied plan concept,
+which isn't built yet.
+
+Confirmed directly with the user across several rounds of scoping:
+- **Buttons ship now**: Run, Bike, Strength, Recovery.
+- **Generation respects real periodization**: pressing a button produces a properly
+  periodization-aware prescription (Phase 4.3's weekly-budget/phase/readiness-gate
+  logic), not an ad-hoc guess — it's "give me today's, right now," never future dates.
+- **Calendar is additive**: a List/Calendar toggle; calendar is the default view.
+- **Pace/target units are activity-dependent**: min/mi for Run, mph for Bike (not a
+  full metric-vs-imperial app-wide toggle this phase — see 14.5 below).
+- **Per-activity historical tracking, and a real cold-start problem**: distance/
+  speed/HR baselines must be tracked *per activity type*, and a user experienced at
+  one activity (e.g. a marathoner) but brand new to another (their first-ever bike
+  ride) must not get a prescription sized for an established athlete in that
+  activity — needs a real build-up/beginner ramp, not the existing phase-ceiling math.
+- **Strength targeting**: quick-generated strength shouldn't always be the same
+  generic full-body rotation — either complementary to the user's other training, or
+  an explicit user-chosen focus (their example: "back and legs").
+
+### 14.0 Real bug found while scoping this (not Bike-specific, not theoretical)
+`generator._get_or_create_weekly_plan`'s existing budget calc:
+```python
+ceiling = last_week_mileage * PHASE_CEILING_MULTIPLIER.get(phase, 1.15) if last_week_mileage > 0 else 20.0
+budget = min(uncapped, ceiling) if last_week_mileage > 0 else ceiling
+```
+When `last_week_mileage` is `0` (genuinely no history in that activity — not just a
+rest week), the ceiling silently defaults to a **flat 20 miles**, regardless of phase
+or actual experience — exactly the "handing a brand-new rider a 20-mile first ride"
+failure the user described, and not specific to the new Bike domain either: a
+genuinely new HALE user with zero synced running history hits the same fallback
+today. `_week_mileage` also hardcodes `Run.activity_type == "Run"`, so it can't
+currently distinguish "no run last week but a real running history" from "no history
+in this activity at all."
+- [ ] Distinguish those two cases explicitly: an *established athlete with just no
+      mileage last week* (real history exists in this activity_type over a longer
+      lookback) keeps today's ceiling-multiplier behavior, based off the most recent
+      *nonzero* week instead of a hardcoded 20; a *genuine cold start* (near-zero
+      history in this activity_type at all) gets a small fixed conservative starting
+      budget (e.g. 2–3 mi or ~20–30 min) with a defined linear weekly increment
+      (matching the user's own framing, "should build up or time based increases" —
+      the same "start small, ramp by a fixed amount" philosophy Phase 12.3's
+      strength challenge-safety logic already established, just as deterministic
+      generator math instead of chat/LLM-driven) rather than multiplying off zero.
+      Benefits Run and Ride equally and is a prerequisite for Ride even existing as
+      a sane quick-generate option.
+
+### 14.1 Backend: `run_quick_generate` + cold-start fix + endpoint
+- [ ] Generalize `_week_mileage`/`_get_or_create_weekly_plan` to take `activity_type`,
+      implementing the cold-start-vs-established distinction from 14.0.
+- [ ] Thread `activity_type` consistently through the `stats.py` functions the
+      endurance path leans on — `weekly_mileage`/`monthly_mileage`/`personal_records`/
+      `run_summary` already accept it; `rolling_pace_trend` and `training_load_trend`
+      currently don't (confirmed via direct read, not assumed) and need it added so a
+      per-activity pace/load baseline is actually possible.
+- [ ] New `run_quick_generate(db, user_id, domain, date=None) -> dict`, `domain` in
+      `{"run", "ride", "strength", "recovery"}`:
+      - `"run"`/`"ride"`: calls `_generate_endurance` (generalized to accept
+        `activity_type`, using the fixed cold-start-aware budget logic) forcing
+        **today** regardless of the day-of-week skeleton — the button overrides
+        *which* day gets a session; the actual prescription (type/distance/pace-or-
+        speed target) still comes from the real phase/budget/readiness-gate/cold-
+        start logic.
+      - `"strength"`: calls `_generate_strength`, forcing today's occurrence
+        regardless of `WEEKDAY_STRENGTH_SLOTS`, with an optional `template_override`
+        param (see 14.2).
+      - `"recovery"`: new thin wrapper around `coach.recommend_recovery_session` —
+        auto-picks the user's only/most-recently-used `RecoveryTool` (via
+        `list_recovery_tools`) and a level/duration scaled by the current
+        `stats.readiness()` flag count (more flags → higher level/duration, within
+        that tool's supported range/increment), mirroring
+        `RECOVERY_GUIDANCE_PROMPT`'s existing escalation logic for the coach itself.
+      - Idempotent per (user, date, domain) via the existing
+        `_upsert_generator_workout`/domain-keyed pattern — pressing a button twice in
+        one day regenerates that domain's entry rather than duplicating it.
+- [ ] New endpoint `POST /api/generator/quick/{domain}` (`routes/workouts.py`) — no
+      date param exposed; always today, matching "I don't want to future-schedule it."
+
+### 14.2 Strength targeting — activity-complementary default + explicit override
+`STRENGTH_TEMPLATES` (`generator.py`) already supports multiple named templates keyed
+by a target area, each exercise already tagged with a `category` (squat/push/pull/
+core/hinge, which the existing progression-increment logic already keys off) — this
+extends that same, already-bounded-v1 pattern rather than building a new system.
+- [ ] Add 2–3 more named templates reusing the existing categories (no new increment
+      logic needed) — e.g. a runner/rider-complementary template (glute/hip/core/
+      hinge-heavy, supporting running/cycling economy and injury prevention) and a
+      "back and legs" template (pull + hinge + squat-focused). Exact exercise picks
+      are a content decision at implementation time, same as how `full_body_ab`'s
+      original 10 exercises were chosen.
+- [ ] `run_quick_generate`'s `"strength"` domain accepts an optional
+      `template_override` — when omitted, auto-picks based on the user's recent
+      Run/Ride volume (real cardio history in the trailing few weeks → the
+      complementary template; otherwise the existing `full_body_ab` default) rather
+      than always defaulting to full-body.
+- [ ] Frontend: the Strength quick-generate button offers a lightweight target
+      picker (a small chip/dropdown row — Full Body / Runner Focus / Back & Legs /
+      …) shown right after tapping it, pre-selected to the auto-picked default, so
+      the common case is still nearly one-tap while explicit choice stays available.
+
+### 14.3 Frontend: `QuickGenerateBar`
+- [ ] New `web/src/components/workouts/QuickGenerateBar.tsx` — icon+label buttons
+      (lucide-react, already in use elsewhere: `Footprints` Run, `Bike` Ride,
+      `Dumbbell` Strength, an icon for Recovery), each POSTs to the new endpoint for
+      today and invalidates the workouts/recovery-sessions queries on success.
+      Per-button loading state. No second manual "which type" step for Run/Ride —
+      the backend already picks easy/tempo/interval/long via the real periodization
+      logic; overriding the result still goes through the existing
+      `WorkoutFormDialog` edit flow.
+
+### 14.4 Frontend: `WorkoutsCalendar` + List/Calendar toggle
+- [ ] New `web/src/components/workouts/WorkoutsCalendar.tsx` — month-grid view, each
+      day cell showing small activity icons (same icon set as 14.3) colored by
+      `WORKOUT_STATUS_COLORS`. Clicking a day expands that day's items, reusing the
+      existing `WorkoutCard`/`RecoverySessionCard` and `WorkoutsPage.tsx`'s existing
+      workout-vs-recovery-session `Item` union type. A List/Calendar segmented
+      toggle sits above it; Calendar is the default.
+- [ ] Training-plan grouping (collapsible dropdown per plan): **not built this
+      phase** — deferred until Phase 13.3 ships.
+
+### 14.5 Frontend: `WorkoutFormDialog` activity-conditional fields
+- [ ] `activityType` becomes a small fixed `Select` (Run/Ride/Strength/Recovery/
+      Other) instead of free text, so downstream logic has something reliable to
+      key off. The `workoutType` dropdown's options become conditional on it
+      (`easy`/`tempo`/`interval`/`long` for Run/Ride; `strength` only for Strength;
+      `rest`/`cross_train` otherwise).
+- [ ] The pace/target field becomes unit-aware: `min:sec/mi` for Run, `mph` for
+      Ride — stored internally however is simplest (e.g. keep
+      `targetPaceSecPerMi`'s existing semantics for Run; for Ride, convert the
+      entered mph to the equivalent sec-per-mile before saving, so the backend
+      keeps one consistent unit and only the *display/entry* layer is
+      activity-aware) rather than adding a second backend field.
+- [ ] **Deferred, explicitly out of scope this phase**: full metric-vs-imperial unit
+      preference (km, km/h, kg, °C) was raised but is a much larger cross-cutting
+      change — this app hardcodes imperial units everywhere today (miles, mph, lb,
+      °F), not just in Workouts. This phase stays imperial (mph for Ride); the
+      metric toggle is its own future backlog item, not silently dropped.
+
+### Verification (all sub-phases)
+- 14.1: force-call the new endpoint for each of the 4 domains against a throwaway
+  container across synthetic states — a true cold-start account (no Ride history at
+  all) must get the small conservative starting distance, not a flat 20mi; an
+  established-runner account pressing "Run" must still get real phase/budget-driven
+  output unchanged from before this change; confirm idempotency (pressing twice same
+  day doesn't duplicate).
+- 14.2-14.5: `tsc -b`/`oxlint`/`npm run build`; Playwright click-through of each
+  Quick Generate button + the resulting workout appearing correctly; calendar view
+  screenshotted at desktop+mobile; confirm the activity-conditional dropdown and
+  mph-vs-min/mi field behave correctly per activity in `WorkoutFormDialog`.
+- Standard discipline throughout: throwaway container first, never touch the real
+  production container until verified; update this section as each sub-phase lands.
+
+### Critical files
+- `app/coach/generator.py` (`_week_mileage`/`_get_or_create_weekly_plan` cold-start
+  fix, generalized `_generate_endurance`, new `run_quick_generate`, new strength
+  templates)
+- `app/stats.py` (`activity_type` added to `rolling_pace_trend`/`training_load_trend`)
+- `app/coach/core.py` (small adjustment for the Recovery auto-default wrapper, if any)
+- `app/routes/workouts.py` (new endpoint)
+- `web/src/components/workouts/QuickGenerateBar.tsx` (new),
+  `web/src/components/workouts/WorkoutsCalendar.tsx` (new),
+  `web/src/components/workouts/WorkoutFormDialog.tsx`,
+  `web/src/pages/WorkoutsPage.tsx`, `web/src/lib/api.ts`, `web/src/hooks/useWorkouts.ts`
+
+---
+
+## Phase 6 — Training-load analytics
+
+### 6.1 Per-activity metrics (sync-time, stored on Run)
+- [ ] `tss` (hrTSS from avg HR vs threshold_hr; fallback rTSS from existing GAP),
+      `efficiency_factor`; rides with power: `normalized_power` (30s rolling 4th-power
+      mean), `intensity_factor`, `variability_index`, `aerobic_decoupling`
+- [ ] Backfill command for existing activities (one-shot, container-run)
+- [ ] Commit: "Phase 6.1: per-activity TSS/NP/EF/decoupling"
+
+### 6.2 PMC pipeline
+- [ ] `DailyMetrics` table: `(user_id, date) PK, trimp, ctl, atl, tsb,
+      hrv_baseline_ms, readiness_score, time_in_zone_json, computed_at`
+- [ ] `app/pipeline.py` nightly job: TRIMP→CTL (42d) / ATL (7d) / TSB; weekly
+      actual_tss into `weekly_plan`; `stats.readiness` switches acuteChronicRatio
+      to ATL/CTL; strength tonnage → TRIMP via fixed intensity factor (documented
+      v1 approximation)
+- [ ] `GET /api/metrics?days=` + Insights CTL/ATL/TSB chart
+- [ ] Verify: hand-check CTL/ATL recursion on a known 5-day window
+- [ ] Commit: "Phase 6.2: PMC pipeline (CTL/ATL/TSB)"
+
+### 6.3 Gear tracking
+- [ ] `Gear` table (`id, user_id, name, kind shoe|bike|bike_component,
+      parent_gear_id?, start_date, retired_date?, replace_at_mi?`) +
+      `Run.gear_id`; default-gear-per-type rule at sync; `stats.gear_summary`
+      (read-time mileage); CRUD + Settings UI + wear on dashboard
+- [ ] Commit: "Phase 6.3: gear lifecycle tracking"
+
+---
+
+## Phase 7 — Geospatial pipeline
+
+- [ ] 7.1 `h3` dep + `RouteHex` table (`(user_id, hex_id, res) PK, sport, first_visited,
+      visit_count, sum_speed/sum_hr/sum_sec/n`); sync-time hex upsert (run→res 9,
+      ride→res 7, both→res 8) + one-shot backfill over existing activities
+- [ ] 7.2 `GET /api/spatial/heatmap?sport&year&metric&bbox&zoom` → GeoJSON from
+      aggregates (precomputed = fast; no tile server)
+- [ ] 7.3 Map layers: separate toggleable Run (crimson/orange) vs Ride (cyan/blue)
+      heatmaps; weight = speed (ride) / time-in-cell or HR (run)
+- [ ] 7.4 Fog of War: `GET /api/spatial/exploration?region` (unique res-9 hexes / region
+      bbox) + cleared-fog map layer + dashboard stat
+- [ ] 7.5 Climb detection at sync: smoothed elevation, ≥3% sustained ≥300m segments,
+      length×grade → Cat 4…HC → `Run.climbs_json`; rolling-grade histogram ×
+      speed/HR/power → `Run.grade_analysis_json`; surface in run expand + Insights
+- [ ] 7.6 OSM surface tags (Overpass, throttled + cached, degrade-to-null) →
+      `Run.surface_json`
+- [ ] 7.7 Wind: extend existing Open-Meteo call with wind speed/direction; mean
+      route bearing vs wind → `Run.wind_json {headwindPct, avgHeadwindMph}`
+- [ ] 7.8 Privacy zones: table + Settings CRUD; **read-time** redaction in route
+      output (raw stays stored)
+- [ ] Verify each: backfill on DB copy; screenshot heatmap layers; spot-check a known
+      hilly run's climbs against Strava's segment data
+- [ ] Commit per sub-task
+
+---
+
+## Phase 8 — Configurable dashboard
+
+- [ ] Layout config in `sync_meta` (`user_key(uid,"dashboard_config")`) —
+      `{widgets:[{id, pos, visible}]}`; `GET/PUT /api/dashboard/config`
+- [ ] Extend `/api/dashboard/summary` with per-widget keys (readiness, pmc,
+      todayWorkout+push state, weeklyRamp, gear, exploration, wellness, goals,
+      records) — compute only active widgets
+- [ ] Frontend: widget rendering from config, visibility toggles + reorder (up/down
+      v1, no drag-grid)
+- [ ] Verify: toggle/reorder round-trip; screenshot
+- [ ] Commit: "Phase 8: configurable widget dashboard"
+
+---
+
+## Phase 9 — Credentials & nutrition
+
+- [ ] 9.1 `app/crypto.py` (AESGCM, `ENCRYPTION_KEY` env, plaintext fallback with
+      startup warning); migrate `ProviderCredential.password` to encrypted-at-rest
+- [ ] 9.2 Per-user LLM keys (`provider="anthropic"|"openai"` rows, encrypted);
+      `assistant.py` prefers user key over system env; Settings UI (masked)
+- [ ] 9.3 Nutrition schema: `NutritionLog (id, user_id, ts, meal_name, calories,
+      protein_g, carbs_g, fat_g, source)`, `MacroTarget (user_id PK, …)`,
+      `DeliveryImport (id, user_id, provider, imported_at, item_manifest_json)`
+- [ ] 9.4 `POST /api/nutrition/import` manifest upload parser (CSV/HTML — best-effort,
+      Garmin-ZIP-import pattern) + manual log CRUD + daily macro summary in stats
+- [ ] 9.5 LEA flag in `stats.readiness`: 7d intake < 0.85 × (BMR est + activity kcal),
+      only when logging coverage ≥5/7 days; generator treats as one flag; two
+      consecutive weeks → cap freeze
+- [ ] Commit per sub-task
+
+---
+
+## Phase 10 — Vitals & biomarkers
+
+- [ ] 10.1 (done in 2.1/2.2 + 3.3 — glucose ingest end-to-end; verify here and mark)
+- [ ] 10.2 `LabPanel` table (`id, user_id, lab_date, source, markers_json`); manual
+      CRUD + Settings UI (PDF parsing explicitly deferred)
+- [ ] 10.3 Sticky lab flags in readiness (`ferritin_low`, `crp_elevated`,
+      `glucose_instability` TIR<70% 7d) — act as ramp-cap ceilings (0% increase),
+      not daily downgrades; persist until next panel; rationale named in notes
+- [ ] Commit per sub-task
 
 ---
 
@@ -1798,3 +1975,5 @@ shouldnt rely on it").
 - Meal-delivery live API sync (no official APIs; manifest import only)
 - BLE sensors (interface reserved in 3.5)
 - Local path / container / volume renames to `hale` (maintenance window; ROADMAP)
+
+---

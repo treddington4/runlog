@@ -6,6 +6,8 @@ data/
 .verify.sh
 .screenshots/
 .claude/
+Thumbs.db
+desktop.ini
 
 # Frontend (Node / Vite)
 web/node_modules/

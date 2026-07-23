@@ -1434,6 +1434,57 @@ only" into two sources feeding the same rolling draft: the periodic historical s
       was production redeployed and re-run for the real first draft.
 - [x] Commit: "Phase 12.5: self-review + live product-feedback classification"
 
+### 12.5 follow-up — Preview refresh, topic-organized document, data-loss fix
+Three more real-usage findings after initial ship, each addressed directly:
+- [x] **Mobile Preview UX** (user feedback): downloading as `.md` just triggers a
+      save on mobile with no easy way to read it. Added a "Preview" dialog rendering
+      the same content in place — first as raw pre-wrapped text, then upgraded to a
+      small custom lightweight markdown renderer (`web/src/lib/markdownLite.tsx`,
+      covering just the narrow subset this document ever uses — headings, bold,
+      bullets, blockquotes — not a full markdown library) once the user pointed out
+      the raw `##`/`**` syntax wasn't actually formatted. Added a "Copy all" button
+      too, which caught a real bug on its own: `navigator.clipboard` is entirely
+      undefined (not just permission-denied) on HALE's actual plain-`http://`
+      deployment, since the Clipboard API requires a secure context — fixed with a
+      textarea+`execCommand` fallback (`web/src/lib/clipboard.ts`), verified working
+      specifically in the no-clipboard-API scenario that matches production.
+- [x] **On-demand refresh** (user feedback): the draft previously only updated via
+      the once-daily 04:30 job. Opening Preview now also fires
+      `POST /api/coach-issue/refresh` (reuses `run_for_user` exactly) so anything
+      said since the last check is picked up before it's read — cheap on repeat
+      clicks since the existing checkpoint short-circuits before any LLM call
+      (confirmed ~0.03s, no duplicate sections, in testing).
+- [x] **Generalize recurring findings + a real data-loss bug** (user feedback:
+      *"if the same type of thing is logged... the specific log could be
+      generalized"*): redesigned the document as topic-organized and meant to be
+      handed to an LLM to act on, not a chronological log — a new `_merge_finding`
+      LLM step folds a new finding into an existing topic section when it's the same
+      underlying issue recurring, synthesized in clear language rather than
+      preserving the reporter's exact wording or piling up near-duplicate dated
+      entries. **Testing this immediately surfaced a real, serious bug**: this
+      session's own heavy testing had exhausted the real Claude subscription's usage
+      limit, and the resulting "You've hit your session limit" response came back as
+      ordinary-looking reply text — with nothing checking for that, it got trusted
+      as the new document body and **silently destroyed the real existing draft**.
+      Fixed with explicit `msg.error` checking (mirroring `send_message`'s own
+      pattern, which `self_review`'s one-shot calls had never had) plus a content
+      sanity check (`_looks_like_real_content` — rejects known limit/error phrasing
+      and replies drastically shorter than what they replaced) as defense in depth,
+      falling back to a safe append on any failure rather than trusting a suspicious
+      response. Verified deterministically (no live LLM call needed) that the exact
+      failing message is now rejected and that the no-credentials fallback degrades
+      cleanly across repeated calls with zero data loss; the merge mechanism itself
+      (send prompt, use reply as new body) was already confirmed working end-to-end
+      against a real call earlier in this same testing pass, before the limit hit.
+- [x] `log_product_feedback` now `await`s `append_to_draft_async` directly instead of
+      routing through the sync-only `_db_call` — the first place in this codebase
+      running a second, nested `ClaudeSDKClient` from inside an already-active SDK
+      tool-call context (confirmed working live before the rate limit hit).
+- [x] Commits: "Coach Feedback: add mobile-friendly Preview dialog", "Coach Feedback
+      preview: real markdown rendering + working copy button", "Coach Feedback:
+      refresh on Preview click, not just the daily job", "Coach Feedback: generalize
+      recurring findings, fix real data-loss bug"
+
 ## Backlog / not designed this phase
 Article/file evaluation (bounded `fetch_article_text` tool + a new file-upload chat
 endpoint) — see the approved plan for full design, not built. Video scheduling/

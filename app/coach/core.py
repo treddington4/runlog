@@ -8,7 +8,7 @@ validate differently.
 """
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from .. import stats
 from ..models import (
@@ -839,10 +839,17 @@ def _find_and_link_workout_run(db, workout: Workout, user_id: str = DEFAULT_USER
     matching in this codebase. Strict on activity type (normalized via
     stats._normalize_activity_type, so Garmin's lowercase "running" still matches a
     "Run"-typed workout) — a run workout never links to a Ride and vice versa.
-    Permissive on distance/duration: prefers the closest match among same-day (+/-1
-    day), same-type, not-already-claimed candidates, with no hard rejection threshold —
-    a run that was cut short still links to its planned session rather than being
-    ignored, same principle as the race-goal matcher tolerating an imperfect match."""
+    Strict on date too (exact scheduled_date match only) — a real bug this used to
+    have: a +/-1 day tolerance window meant a not-yet-attempted "today" workout
+    could claim *yesterday's* already-logged run the moment it became eligible for
+    linking, since list_workouts() tries to link any planned workout whose date is
+    today-or-earlier on every single read. Caught live: a real evening run got
+    claimed by two separate next-day workouts before either had a real run of
+    their own to match. Permissive on distance/duration within that one day:
+    prefers the closest match among same-type, not-already-claimed candidates,
+    with no hard rejection threshold — a run that was cut short still links to
+    its planned session rather than being ignored, same principle as the
+    race-goal matcher tolerating an imperfect match."""
     if workout.linked_run_id:
         return db.get(Run, workout.linked_run_id)
     try:
@@ -855,10 +862,7 @@ def _find_and_link_workout_run(db, workout: Workout, user_id: str = DEFAULT_USER
         row[0] for row in db.query(Workout.linked_run_id).filter(Workout.linked_run_id.isnot(None)).all()
     }
 
-    candidates = []
-    for offset in (0, -1, 1):
-        d = (target + timedelta(days=offset)).isoformat()
-        candidates.extend(db.query(Run).filter(Run.date == d).filter(owned_by(Run.user_id, user_id)).all())
+    candidates = db.query(Run).filter(Run.date == target.isoformat()).filter(owned_by(Run.user_id, user_id)).all()
     candidates = [
         r for r in candidates
         if stats._normalize_activity_type(r.activity_type) == wanted and r.id not in already_claimed

@@ -9,7 +9,7 @@ import {
   useTokens,
   useSettingsMutations,
 } from "@/hooks/useSettings"
-import { useCoachPersonality, useCoachIssue, useClearCoachIssue } from "@/hooks/useChat"
+import { useCoachPersonality, useCoachIssue, useRefreshCoachIssue, useClearCoachIssue } from "@/hooks/useChat"
 import { useSteps } from "@/hooks/useSteps"
 import { usePush } from "@/hooks/usePush"
 import { useTrainingConfig, useUpdateTrainingConfig } from "@/hooks/useWorkouts"
@@ -305,6 +305,7 @@ function CoachSection() {
 // never posts anything to github.com itself; publishing is a manual step.
 function CoachFeedbackSection() {
   const { data: draft, isPending } = useCoachIssue()
+  const refreshIssue = useRefreshCoachIssue()
   const clearIssue = useClearCoachIssue()
   const [previewOpen, setPreviewOpen] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -331,6 +332,15 @@ function CoachFeedbackSection() {
     })
   }
 
+  function handlePreview() {
+    // Opens immediately with what's already cached, then re-checks for anything said
+    // since the last review — cheap when nothing's new (the backend's own checkpoint
+    // short-circuits before any LLM call), so this doesn't feel wasteful on repeat
+    // clicks. The dialog's content swaps in place if the refresh finds something.
+    setPreviewOpen(true)
+    refreshIssue.mutate()
+  }
+
   return (
     <SettingsSection title="Coach Feedback">
       <div className="text-hale-faint pb-2 text-xs">
@@ -340,7 +350,7 @@ function CoachFeedbackSection() {
       <div className="flex flex-wrap gap-2">
         {/* Downloading a .md just triggers a save on most mobile browsers with no easy
             way to actually read it — this reads the same content in place instead. */}
-        <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}>
+        <Button size="sm" variant="outline" onClick={handlePreview}>
           Preview
         </Button>
         <Button size="sm" onClick={handleDownload}>
@@ -356,6 +366,9 @@ function CoachFeedbackSection() {
           <DialogHeader>
             <DialogTitle>{draft.title}</DialogTitle>
           </DialogHeader>
+          {refreshIssue.isPending && (
+            <div className="text-hale-faint text-xs">Checking for anything new…</div>
+          )}
           <div className="max-h-[60vh] overflow-y-auto text-xs">
             <div className="text-muted-foreground">{renderMarkdownLite(draft.body)}</div>
             <Button size="sm" variant="outline" className="mt-3" onClick={handleCopy}>

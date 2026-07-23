@@ -123,18 +123,39 @@ async def set_coach_personality(request: Request, user_id: str = Depends(auth.cu
 # ---------- Coach self-review draft (Phase 12.5) — one rolling draft GitHub issue per
 # user, accumulated by coach/self_review.py's periodic job and the live
 # log_product_feedback chat tool. Draft-only: never posted to github.com from here,
-# see CLAUDE.md. Fetched via GET, cleared via POST once pulled/published elsewhere. ----------
+# see CLAUDE.md. Fetched via GET, refreshed on-demand via POST /refresh (e.g. when the
+# user opens the Preview dialog — see SettingsPage.tsx), cleared via POST /clear once
+# pulled/published elsewhere. ----------
+def _draft_to_dict(draft: CoachIssueDraft | None):
+    if not draft or not draft.body_markdown:
+        return None
+    return {
+        "title": draft.title, "body": draft.body_markdown,
+        "frustrationCount": draft.frustration_count or 0, "updatedAt": draft.updated_at,
+    }
+
+
 @router.get("/api/coach-issue")
 def get_coach_issue(user_id: str = Depends(auth.current_user_id)):
     db = SessionLocal()
     try:
-        draft = db.get(CoachIssueDraft, user_id)
-        if not draft or not draft.body_markdown:
-            return None
-        return {
-            "title": draft.title, "body": draft.body_markdown,
-            "frustrationCount": draft.frustration_count or 0, "updatedAt": draft.updated_at,
-        }
+        return _draft_to_dict(db.get(CoachIssueDraft, user_id))
+    finally:
+        db.close()
+
+
+@router.post("/api/coach-issue/refresh")
+def refresh_coach_issue(user_id: str = Depends(auth.current_user_id)):
+    """On-demand incremental review — reuses the exact same run_for_user the daily
+    scheduled job calls, so a click here never duplicates or re-reviews anything the
+    daily job already covered. Cheap when there's nothing new: run_for_user's own
+    checkpoint check short-circuits before any LLM call if no messages have landed
+    since the last review (scheduled or on-demand)."""
+    from ..coach import self_review
+    db = SessionLocal()
+    try:
+        self_review.run_for_user(db, user_id)
+        return _draft_to_dict(db.get(CoachIssueDraft, user_id))
     finally:
         db.close()
 

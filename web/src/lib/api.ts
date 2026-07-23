@@ -607,6 +607,7 @@ export const api = {
   sleepStages: (date?: string) =>
     request<SleepStagesResponse>(`/api/wellness/sleep-stages${date ? `?date=${date}` : ""}`),
   coachIssue: () => request<CoachIssueDraft | null>("/api/coach-issue"),
+  refreshCoachIssue: () => request<CoachIssueDraft | null>("/api/coach-issue/refresh", { method: "POST" }),
   clearCoachIssue: () => request<{ cleared: true }>("/api/coach-issue/clear", { method: "POST" }),
   updateRun: (id: string, body: RunUpdate) =>
     request<Run>(`/api/runs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

@@ -1634,13 +1634,16 @@ extends that same, already-bounded-v1 pattern rather than building a new system.
       reach the LAN): auto-pick, explicit override, and idempotent re-press all
       confirmed correct on real account data.
 
-### 14.4 Frontend: `WorkoutsCalendar` + List/Calendar toggle
-- [ ] New `web/src/components/workouts/WorkoutsCalendar.tsx` — month-grid view, each
+### 14.4 Frontend: `WorkoutsCalendar` + List/Calendar toggle — done
+- [x] New `web/src/components/workouts/WorkoutsCalendar.tsx` — month-grid view, each
       day cell showing small activity icons (same icon set as 14.3) colored by
       `WORKOUT_STATUS_COLORS`. Clicking a day expands that day's items, reusing the
       existing `WorkoutCard`/`RecoverySessionCard` and `WorkoutsPage.tsx`'s existing
       workout-vs-recovery-session `Item` union type. A List/Calendar segmented
-      toggle sits above it; Calendar is the default.
+      toggle sits above it; Calendar is the default. Verified live against
+      production data (NAS-hosted Vite dev server + Playwright click-through):
+      month prev/next navigation, day selection, today's default selection, and
+      the List toggle all confirmed working.
 - [ ] Training-plan grouping (collapsible dropdown per plan): **not built this
       phase** — deferred until Phase 13.3 ships.
 

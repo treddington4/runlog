@@ -6,6 +6,7 @@ import { WorkoutCard } from "@/components/workouts/WorkoutCard"
 import { RecoverySessionCard } from "@/components/workouts/RecoverySessionCard"
 import { WorkoutFormDialog } from "@/components/workouts/WorkoutFormDialog"
 import { QuickGenerateBar } from "@/components/workouts/QuickGenerateBar"
+import { WorkoutsCalendar } from "@/components/workouts/WorkoutsCalendar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -24,6 +25,9 @@ export function WorkoutsPage() {
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingWorkout, setEditingWorkout] = useState<Workout | null>(null)
+  // Calendar is the default view (confirmed with the user) — List stays available
+  // via the toggle for anyone who prefers a flat chronological scan.
+  const [view, setView] = useState<"calendar" | "list">("calendar")
 
   if (!workouts || !recoverySessions || !recoveryTools) {
     return <Skeleton className="h-64 w-full" />
@@ -77,7 +81,7 @@ export function WorkoutsPage() {
     <div className="flex flex-col gap-6">
       <QuickGenerateBar />
 
-      <div>
+      <div className="flex items-center justify-between gap-3">
         <Button
           variant="outline"
           onClick={() => {
@@ -87,22 +91,46 @@ export function WorkoutsPage() {
         >
           + New Workout
         </Button>
-      </div>
-
-      <div>
-        <h2 className="mb-3 text-sm font-semibold">Upcoming</h2>
-        {upcoming.length ? (
-          <div className="flex flex-col gap-3">{upcoming.map(renderItem)}</div>
-        ) : (
-          <EmptyState icon={Dumbbell} title="Nothing scheduled" message="Ask the coach in Chat, or add one here." />
-        )}
-      </div>
-
-      {past.length > 0 && (
-        <div>
-          <h2 className="mb-3 text-sm font-semibold">Past</h2>
-          <div className="flex flex-col gap-3">{past.map(renderItem)}</div>
+        <div className="flex rounded-md border p-0.5">
+          <Button
+            variant={view === "calendar" ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7"
+            onClick={() => setView("calendar")}
+          >
+            Calendar
+          </Button>
+          <Button
+            variant={view === "list" ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7"
+            onClick={() => setView("list")}
+          >
+            List
+          </Button>
         </div>
+      </div>
+
+      {view === "calendar" ? (
+        <WorkoutsCalendar items={items} renderItem={renderItem} />
+      ) : (
+        <>
+          <div>
+            <h2 className="mb-3 text-sm font-semibold">Upcoming</h2>
+            {upcoming.length ? (
+              <div className="flex flex-col gap-3">{upcoming.map(renderItem)}</div>
+            ) : (
+              <EmptyState icon={Dumbbell} title="Nothing scheduled" message="Ask the coach in Chat, or add one here." />
+            )}
+          </div>
+
+          {past.length > 0 && (
+            <div>
+              <h2 className="mb-3 text-sm font-semibold">Past</h2>
+              <div className="flex flex-col gap-3">{past.map(renderItem)}</div>
+            </div>
+          )}
+        </>
       )}
 
       <WorkoutFormDialog

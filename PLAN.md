@@ -1700,6 +1700,113 @@ extends that same, already-bounded-v1 pattern rather than building a new system.
 
 ---
 
+## Phase 15 — Backend test suite + CI (high priority)
+
+### Context
+No test suite exists in this repo (see STATUS.md/CLAUDE.md's "no test suite" note)
+— every bug this session found (the cold-start budget math defaulting to a flat
+20mi ceiling, `day_share` re-slicing an already-single-session cold-start budget
+down to 0.3mi, Run/Ride quick-generate silently overwriting each other via a
+shared upsert key, the `oneOf` JSON Schema ambiguity that silently broke every
+chat-scheduled strength workout, and the `_find_and_link_workout_run` +/-1-day
+window that let yesterday's real run get claimed by two different next-day
+workouts) was caught by hand, live, often against real production data. A test
+suite is the obvious fix for "how many more of these are already sitting
+undetected." Confirmed with the user: start backend-only (pytest unit + API
+integration tests, no frontend/E2E yet), running via GitHub Actions.
+
+While scoping this, found `.github/workflows/docker-publish.yml` triggers on
+`branches: [main]`, but this repo's actual default branch is `master` — that
+workflow has likely never fired on a real push. Fixed alongside the new
+workflow's own (correct) branch targeting.
+
+`app/models.py`'s `DB_PATH = os.environ.get("DB_PATH", "/data/runlog.db")` is
+read once at module-import time to build `engine`/`SessionLocal` — confirmed
+(not assumed) this means a test process can point every route/module at an
+isolated temp-file SQLite DB just by setting `DB_PATH` before `app.models` is
+first imported, no dependency-injection rework needed in `main.py`/`routes/*.py`.
+
+### 15.1 Test infra setup
+- [ ] New `requirements-dev.txt` (kept separate from `requirements.txt`/the
+      `pyproject.toml` runtime deps, since these never need to ship in the running
+      container): `pytest`, `pytest-cov`, `httpx` (FastAPI `TestClient`'s transport
+      dependency).
+- [ ] `tests/` directory at repo root, mirroring `app/`'s sub-package layout
+      (`tests/coach/`, `tests/sync/`, `tests/routes/`, etc.) so a new test's home is
+      unambiguous.
+- [ ] `conftest.py`: a session/function-scoped fixture that sets `DB_PATH` to a
+      fresh temp file *before* importing `app.models`/`app.main`, calls
+      `init_db()`, and yields a `TestClient`. Each test function gets a clean DB
+      (either a fresh temp file per test, or a transaction-rollback pattern —
+      exact choice is an implementation-time call, not fixed here).
+- [ ] Mock/stub external services at the boundary — `strava.py`'s HTTP calls,
+      `garmin_sync.py`'s `garminconnect` client, `weather.py`'s Open-Meteo calls,
+      `coach/assistant.py`'s Claude Agent SDK client — via `unittest.mock`/
+      `monkeypatch`. CI must never make real network calls, need real
+      credentials, or depend on third-party uptime/quota.
+
+### 15.2 Unit tests — pure logic first (highest ROI, no mocking needed)
+- [ ] `util.py`: GAP/Minetti cost calculation, run-type/interval classifier —
+      pin specific input/output pairs that also cross-check against
+      `web/src/lib/gap.ts`'s independently-duplicated formula (CLAUDE.md already
+      flags this pair as hand-sync'd and prone to silent drift).
+- [ ] `stats.py`: `weekly_mileage`/`monthly_mileage`/`personal_records`/
+      `rolling_pace_trend`/`training_load_trend`/`readiness`/`goal_progress` —
+      deterministic aggregations over synthetic `Run`/wellness rows.
+- [ ] `generator.py`: explicit regression tests for each of this session's three
+      real bugs by name/scenario — cold-start vs. established-athlete budget
+      (`_last_nonzero_week_mileage`/`_compute_weekly_budget`), the `day_share`
+      cold-start branch, and Run/Ride's separately-keyed upsert
+      (`_existing_generator_workout`/`_upsert_generator_workout`) — plus
+      `_auto_pick_strength_template`.
+- [ ] `coach/core.py`: `_find_and_link_workout_run`'s exact-day matching (the bug
+      just fixed) — a synthetic "real run yesterday, not-yet-attempted workout
+      today" scenario must never link, and "real run today" must still link
+      correctly.
+
+### 15.3 API integration tests (FastAPI `TestClient` + temp SQLite)
+- [ ] Workouts: `POST`/`PATCH`/`DELETE /api/workouts`, all four
+      `POST /api/generator/quick/{domain}` domains against both a cold-start and
+      an established-athlete synthetic account, `POST /api/generator/run`.
+- [ ] Goals: create/update/list, `goal_progress()` for all three goal types.
+- [ ] Chat: `is_test` flagging round-trip — the exact Phase 12.1 concern; this
+      suite can never accidentally pollute real data by construction, since it
+      never touches anything but its own temp DB.
+- [ ] Recovery: tool/session CRUD + `_generate_recovery`'s level/duration scaling.
+
+### 15.4 GitHub Actions workflow
+- [ ] New `.github/workflows/test.yml` — `on: push`/`pull_request` targeting
+      `master` (the real default branch), `runs-on: ubuntu-latest`,
+      `pip install -r requirements.txt -r requirements-dev.txt`,
+      `pytest --cov=app`. No Docker build step needed here (unlike
+      `docker-publish.yml`) — tests run directly against the installed package.
+- [ ] Fix `docker-publish.yml`'s stale `branches: [main]` → `master`.
+
+### Explicitly out of scope this phase (deferred, not dropped)
+- Frontend unit tests (Vitest) for `web/src/lib/` — deferred to a follow-up
+  phase; `gap.ts`'s duplicated GAP formula stays only informally guarded by
+  CLAUDE.md's warning comment until then.
+- E2E/Playwright in CI — deferred; the existing local `scripts/screenshot.py`
+  workflow (see `.RUNBOOK.md`) remains the only visual-verification tool.
+- Garmin/Strava real-credential integration tests hitting the actual
+  third-party APIs — never planned; CI must never depend on live third-party
+  accounts, uptime, or spend real API quota.
+
+### Verification
+- Every real bug caught by hand this session gets an explicit, named regression
+  test — not just generic coverage of the surrounding function.
+- The workflow itself gets verified by actually pushing/opening a PR and
+  confirming Actions runs and reports pass/fail correctly, not just that the
+  YAML parses.
+
+### Critical files
+- `requirements-dev.txt` (new), `tests/` (new), `.github/workflows/test.yml`
+  (new), `.github/workflows/docker-publish.yml` (branch fix)
+- `app/util.py`, `app/stats.py`, `app/coach/generator.py`, `app/coach/core.py`
+  (the modules under initial test)
+
+---
+
 ## Phase 6 — Training-load analytics
 
 ### 6.1 Per-activity metrics (sync-time, stored on Run)

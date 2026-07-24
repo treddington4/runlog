@@ -1692,43 +1692,51 @@ important, in that order of emphasis.
       (FTS5 schema/indexing approach, exactly what the tool returns, how
       aggressively the coach gets prompted to use it) it still needs.
 
-### 13.5 Workout runner: per-set feedback + copy-to-chat session summary
-The user shared a standalone mockup of a strength-session logging flow (routine
-setup → per-set weight/reps entry → a qualitative "how did that set feel"
-rating → a session summary screen with a "Copy Summary" button meant to be
-pasted into a chat as extra context). Most of it is already solved differently
-in HALE's real `WorkoutRunnerPage` (Phase 4.5, already shipped) — the routine
-picker doesn't apply (HALE already solves "which workout to start" via Quick
-Generate/the Workouts list before the runner ever opens), and "auto-fill last
-weight" is already handled server-side by `ExerciseProgress.current_weight_lb`
-(confirmed by reading `models.py`/`core.get_exercise_progress`), not a client-side
-`localStorage` map. Visual styling doesn't need to match the mockup either — the
-user confirmed HALE's existing dark/HAL-E theme (`DashBar`, the `--hale-good`/
-`--hale-hot`/`--hale-faint` vars already in use) should stay, just extended to
-these new pieces. Two ideas from it are genuinely new, though:
-- [ ] **Per-set qualitative feedback**: after logging reps/weight for a rep-based
-      set (or after a hold-based set completes) in `WorkoutRunnerPage.tsx`, offer
-      a quick "Too Easy / Just Right / Too Hard" tag (optionally a form-quality
-      note too, e.g. "Clean"/"Broke down") before advancing to rest — HALE
-      currently only ever records `actualReps`/`actualHoldSec`/`actualWeightLb`,
-      no subjective difficulty signal at all. Needs a real design pass on where
-      this is stored (a new field on `StrengthSet`? a separate note appended to
-      the workout?) and how/whether `apply_strength_progression`
-      (`generator.py`) should factor it in alongside the existing "did every set
-      hit target" rule — e.g. a session tagged "Too Easy" across the board could
-      justify a bigger jump than the current fixed increment, not fixed here.
-- [ ] **Session summary + copy-to-clipboard for Chat**: on the runner's existing
-      "Workout complete" card, generate a compact human-readable summary (per
-      exercise: sets, weight×reps, and the new feedback tags) and offer a "Copy
-      Summary" button — reusing `web/src/lib/clipboard.ts`'s existing
-      `execCommand`-fallback copy helper (built in Phase 12.5 for exactly this
-      "plain-HTTP has no `navigator.clipboard`" problem) rather than a new
-      implementation. Lets the user paste a real, concrete session recap
-      straight into a Chat message as context, without needing a new backend
-      tool call — a smaller, immediately-available complement to 13.4's
-      queryable-memory idea above, not a replacement for it.
-- [ ] Not scoped further here — needs its own design pass (exact feedback-tag
-      storage shape, whether/how progression logic uses it) before implementation.
+### 13.5 Workout runner: progress indicators, mobile landscape, add-set, faster skip
+Follow-up from a shared strength-session-logging mockup. Two ideas from the
+original read of that mockup didn't survive user follow-up and are **dropped**:
+copy-to-clipboard-for-Chat (the actual set-by-set data is already logged to the
+`Workout`/`ExerciseProgress` tables and usable for real progression directly —
+no manual copy-paste round-trip needed), and per-set qualitative feedback tags
+(not raised again once the user clarified what they actually wanted — cut for
+now rather than carried forward speculatively). What's actually wanted,
+confirmed directly:
+- [ ] **Per-exercise progress indicator**: `WorkoutRunnerPage.tsx` currently only
+      shows "Set {position+1} of {totalSets}" — `totalSets` is every set across
+      *every* exercise flattened together (a real 5-exercise/3-set session reads
+      "Set 1 of 15", giving no sense of which exercise you're on or how far
+      through it you are). Add a real "Exercise X of N" indicator plus a
+      progress bar/dots — closer to the mockup's `exProgressRow` (dots, one per
+      exercise, filled as each completes) and `setProgressRow` (a bar for
+      progress through the current exercise's sets) — computed from
+      `runnerSets`' existing `stepIndex` grouping, no new data needed.
+- [ ] **Mobile landscape layout is bad**: confirmed by screenshot (844×390
+      viewport) — the session card stays fixed at `max-w-md`, centered, so
+      landscape wastes most of the screen width as empty margin on both sides
+      instead of using it. Portrait (390×844) looks fine by comparison. Needs a
+      real landscape-specific layout (e.g. a wider card, or a two-column
+      layout putting the reps/weight inputs beside the exercise name/target
+      instead of stacked) rather than just the same portrait layout stretched.
+- [ ] **"Add Set" button**: once an exercise's prescribed sets are all logged,
+      offer a way to log one more set beyond what was prescribed before moving
+      to the next exercise — for a day the user wants to push past the
+      generated prescription. Needs a design decision on how an extra set
+      affects `apply_strength_progression`'s "did every set hit target" check
+      (`generator.py`) — presumably the extra set shouldn't count against/for
+      the progression rule at all, since it wasn't part of the actual
+      prescription, but not fixed here.
+- [ ] **Skip on the "Get ready" countdown**: `hold` and `rest` sub-phases both
+      already have a working Skip/Skip Rest button; the `getReady` sub-phase (the
+      5-second countdown before a hold-based set begins) is the one place in
+      `WorkoutRunnerPage.tsx` that doesn't — add the same skip affordance there
+      for consistency, so every timed phase can be fast-forwarded the same way.
+- [ ] **Deferred (explicitly, not dropped): per-exercise demo GIFs.** Confirmed
+      with the user this needs "building a space for it" first — i.e. some real
+      exercise-media asset storage/hosting (keyed by exercise name, matching
+      `STRENGTH_TEMPLATES`' names) rather than just adding an `<img>` tag to an
+      existing step — a real infra decision (where assets live, how they're
+      keyed/served) needed before this is buildable at all. Revisit once that
+      exists; not blocking the four items above.
 
 ---
 

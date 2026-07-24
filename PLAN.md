@@ -1692,6 +1692,44 @@ important, in that order of emphasis.
       (FTS5 schema/indexing approach, exactly what the tool returns, how
       aggressively the coach gets prompted to use it) it still needs.
 
+### 13.5 Workout runner: per-set feedback + copy-to-chat session summary
+The user shared a standalone mockup of a strength-session logging flow (routine
+setup → per-set weight/reps entry → a qualitative "how did that set feel"
+rating → a session summary screen with a "Copy Summary" button meant to be
+pasted into a chat as extra context). Most of it is already solved differently
+in HALE's real `WorkoutRunnerPage` (Phase 4.5, already shipped) — the routine
+picker doesn't apply (HALE already solves "which workout to start" via Quick
+Generate/the Workouts list before the runner ever opens), and "auto-fill last
+weight" is already handled server-side by `ExerciseProgress.current_weight_lb`
+(confirmed by reading `models.py`/`core.get_exercise_progress`), not a client-side
+`localStorage` map. Visual styling doesn't need to match the mockup either — the
+user confirmed HALE's existing dark/HAL-E theme (`DashBar`, the `--hale-good`/
+`--hale-hot`/`--hale-faint` vars already in use) should stay, just extended to
+these new pieces. Two ideas from it are genuinely new, though:
+- [ ] **Per-set qualitative feedback**: after logging reps/weight for a rep-based
+      set (or after a hold-based set completes) in `WorkoutRunnerPage.tsx`, offer
+      a quick "Too Easy / Just Right / Too Hard" tag (optionally a form-quality
+      note too, e.g. "Clean"/"Broke down") before advancing to rest — HALE
+      currently only ever records `actualReps`/`actualHoldSec`/`actualWeightLb`,
+      no subjective difficulty signal at all. Needs a real design pass on where
+      this is stored (a new field on `StrengthSet`? a separate note appended to
+      the workout?) and how/whether `apply_strength_progression`
+      (`generator.py`) should factor it in alongside the existing "did every set
+      hit target" rule — e.g. a session tagged "Too Easy" across the board could
+      justify a bigger jump than the current fixed increment, not fixed here.
+- [ ] **Session summary + copy-to-clipboard for Chat**: on the runner's existing
+      "Workout complete" card, generate a compact human-readable summary (per
+      exercise: sets, weight×reps, and the new feedback tags) and offer a "Copy
+      Summary" button — reusing `web/src/lib/clipboard.ts`'s existing
+      `execCommand`-fallback copy helper (built in Phase 12.5 for exactly this
+      "plain-HTTP has no `navigator.clipboard`" problem) rather than a new
+      implementation. Lets the user paste a real, concrete session recap
+      straight into a Chat message as context, without needing a new backend
+      tool call — a smaller, immediately-available complement to 13.4's
+      queryable-memory idea above, not a replacement for it.
+- [ ] Not scoped further here — needs its own design pass (exact feedback-tag
+      storage shape, whether/how progression logic uses it) before implementation.
+
 ---
 
 ## Phase 14 — Workouts UX: icon-driven Quick Generate + calendar view

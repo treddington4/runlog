@@ -148,13 +148,17 @@ export function WorkoutCard({
   // Garmin instead, so "Start" only ever shows up here, and only while still planned.
   const hasStrengthSteps = workout.steps?.some((s) => s.stepType === "strength_exercise") ?? false
   const canStart = !preview && hasStrengthSteps && workout.status === "planned"
+  // Rest/cross-train aren't really "a Run"/"a Ride" (see generator.py's matching
+  // normalization) — showing an activity type next to them is never meaningful,
+  // so the card just reads "Rest"/"Cross-train" with nothing in parentheses.
+  const showActivityType = workout.workoutType !== "rest" && workout.workoutType !== "cross_train"
 
   return (
     <Card className="gap-2">
       <div className="flex items-baseline justify-between gap-3 text-sm">
         <span className="text-muted-foreground">
-          {workout.scheduledDate} · {WORKOUT_TYPE_LABELS[workout.workoutType] || workout.workoutType} (
-          {workout.activityType})
+          {workout.scheduledDate} · {WORKOUT_TYPE_LABELS[workout.workoutType] || workout.workoutType}
+          {showActivityType && ` (${workout.activityType})`}
           {workout.source === "garmin" && (
             <span className="border-border bg-secondary text-muted-foreground ml-2 rounded border px-1.5 py-0.5 text-[10px]">
               Garmin Suggested

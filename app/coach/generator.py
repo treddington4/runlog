@@ -380,7 +380,10 @@ def _generate_endurance(db, user_id, date, readiness_result, config, activity_ty
             share = day_share.get(workout_type, 0.10)
             target_distance_mi = round(budget * share, 1)
 
-    result_activity_type = activity_type if workout_type != "cross_train" else "Other"
+    # Neither "rest" nor "cross_train" are really "a Run"/"a Ride" — normalizing both
+    # to "Other" avoids a rest day (nothing done at all) misleadingly reading as
+    # "Rest (Run)" just because the Run-domain generator happened to produce it.
+    result_activity_type = "Other" if workout_type in ("rest", "cross_train") else activity_type
     notes = " ".join(trigger_notes) or None
 
     # "endurance" stays the key for Run (the nightly auto-generator's only activity,

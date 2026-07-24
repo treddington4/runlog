@@ -577,13 +577,19 @@ def _race_goal_progress(db, goal, types, user_id):
 
 
 def _find_and_link_race_run(db, goal, types, user_id):
-    """Once a race's date has passed, find the actual matching Run (target date ±1 day,
-    to absorb a timezone-edge mismatch between the goal's calendar date and the run's
-    locally-derived date) and persist the link — so the goal shows its real result
-    instead of a stale "Race day!" that would otherwise repeat forever if the user never
-    manually marks it completed. Auto-completes the goal on a confirmed match (a real
+    """Once a race's date has passed, find the actual matching Run (exact target_date
+    match only) and persist the link — so the goal shows its real result instead of a
+    stale "Race day!" that would otherwise repeat forever if the user never manually
+    marks it completed. Auto-completes the goal on a confirmed match (a real
     correlated event, not a fabricated verdict); leaves it "active" with no invented
-    implication of success if nothing matches, since the race may simply not be logged."""
+    implication of success if nothing matches, since the race may simply not be logged.
+
+    Previously used a target_date +/-1 day tolerance window — the same class of bug
+    fixed in coach/core.py's _find_and_link_workout_run: a goal with no real distance
+    target (goal.target_value None) falls through to "just pick the largest nearby
+    run," which could auto-complete a placeholder/test goal against an unrelated
+    ordinary training run a day off from its target date. Tightened to the exact
+    date only; a real off-by-a-day race mismatch can still be linked manually."""
     if goal.linked_run_id:
         return db.get(Run, goal.linked_run_id)
 
@@ -593,12 +599,7 @@ def _find_and_link_race_run(db, goal, types, user_id):
         return None
 
     wanted = {_normalize_activity_type(t) for t in types}
-    candidates = []
-    for offset in (0, -1, 1):
-        d = (target + timedelta(days=offset)).isoformat()
-        candidates.extend(
-            db.query(Run).filter(Run.date == d).filter(owned_by(Run.user_id, user_id)).all()
-        )
+    candidates = db.query(Run).filter(Run.date == target.isoformat()).filter(owned_by(Run.user_id, user_id)).all()
     candidates = [r for r in candidates if _normalize_activity_type(r.activity_type) in wanted]
     if not candidates:
         return None

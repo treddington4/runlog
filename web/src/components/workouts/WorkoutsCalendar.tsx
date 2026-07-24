@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Footprints, Bike, Dumbbell, HeartPulse, ChevronLeft, ChevronRight } from "lucide-react"
+import { Footprints, Bike, Dumbbell, HeartPulse, Moon, ChevronLeft, ChevronRight } from "lucide-react"
 import type { Workout, RecoverySession } from "@/lib/api"
 import { WORKOUT_STATUS_COLORS } from "@/lib/workouts"
 import { todayLocalDateString } from "@/lib/format"
@@ -12,6 +12,7 @@ const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 function iconForItem(item: Item) {
   if (item._kind === "recovery") return HeartPulse
+  if (item.workoutType === "rest") return Moon
   if (item.workoutType === "strength") return Dumbbell
   if (item.activityType === "Ride") return Bike
   return Footprints

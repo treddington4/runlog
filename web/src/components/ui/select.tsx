@@ -32,7 +32,14 @@ function SelectContent({ className, children, ...props }: React.ComponentProps<t
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
-          "bg-popover text-popover-foreground border-border relative z-50 max-h-60 min-w-32 overflow-hidden rounded-md border shadow-md",
+          // z-[1100]: Leaflet's own controls/panes (.leaflet-top/.leaflet-bottom,
+          // popup pane, etc.) default up to z-index 1000 — a Select rendered near a
+          // MapPage Leaflet instance was getting rendered underneath it at the
+          // stock z-50 despite portaling to <body>, since both compete in the same
+          // stacking context. A dropdown should always render above page content
+          // (including an embedded map), so this is raised globally, not just on
+          // MapPage.
+          "bg-popover text-popover-foreground border-border relative z-[1100] max-h-60 min-w-32 overflow-hidden rounded-md border shadow-md",
           className,
         )}
         position="popper"

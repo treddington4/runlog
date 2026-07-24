@@ -25,7 +25,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: "/activities", label: "Activities", icon: Activity },
   { path: "/insights", label: "Insights", icon: LineChart },
   { path: "/map", label: "Map", icon: Map },
-  { path: "/chat", label: "Chat", icon: MessageCircle },
+  { path: "/chat", label: "Coach", icon: MessageCircle },
   { path: "/workouts", label: "Workouts", icon: Dumbbell },
   { path: "/settings", label: "Settings", icon: Settings },
 ]

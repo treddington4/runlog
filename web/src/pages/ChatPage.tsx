@@ -3,7 +3,6 @@ import { useQueryClient } from "@tanstack/react-query"
 import { MessageCircle } from "lucide-react"
 import { api, type ChatMessage } from "@/lib/api"
 import { useChatStatus, useChatHistory, useCoachPersonality } from "@/hooks/useChat"
-import { DashboardCards } from "@/pages/HomePage"
 import { ChatBubble, type DisplayMessage } from "@/components/chat/ChatBubble"
 import { ChatInputBar } from "@/components/chat/ChatInputBar"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -72,11 +71,9 @@ export function ChatPage() {
   const persona = personaQuery.data ? PERSONA_LABELS[personaQuery.data.personality] : null
 
   return (
-    <div className="flex flex-col gap-4">
-      <DashboardCards />
-
+    <div className="flex h-full flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-bold">Chat</div>
+        <div className="text-sm font-bold">Coach</div>
         {historyQuery.data && historyQuery.data.length > 0 && (
           <button className="text-hale-faint text-xs hover:text-foreground" onClick={handleReset}>
             Clear conversation
@@ -88,7 +85,7 @@ export function ChatPage() {
         <Skeleton className="h-64 w-full" />
       ) : (
         <>
-          <div className="flex max-h-[55vh] flex-col gap-2.5 overflow-y-auto">
+          <div className="flex flex-1 flex-col justify-end gap-2.5 overflow-y-auto">
             {allMessages.length === 0 ? (
               <EmptyState
                 icon={MessageCircle}

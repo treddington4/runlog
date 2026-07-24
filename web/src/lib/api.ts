@@ -342,9 +342,10 @@ export interface RecoverySession {
   createdAt: string
 }
 
-// Phase 14 — Quick Generate buttons. "run"/"ride" resolve to a Workout in the
-// response, "recovery" to a RecoverySession — QuickGenerateBar just invalidates
-// both query keys after any of these rather than branching on the shape.
+// Phase 14 — Quick Generate (via NewWorkoutDialog). "run"/"ride" resolve to a
+// Workout in the response, "recovery" to a RecoverySession — useQuickGenerate
+// just invalidates both query keys after a real (non-dry-run) call rather than
+// branching on the shape.
 export type QuickGenerateDomain = "run" | "ride" | "strength" | "recovery"
 
 export interface QuickGenerateResult {
@@ -649,11 +650,13 @@ export const api = {
   updateTrainingConfig: (body: Partial<TrainingConfig>) =>
     request<TrainingConfig>("/api/training-config", { method: "PATCH", body: JSON.stringify(body) }),
 
-  quickGenerate: (domain: QuickGenerateDomain, templateOverride?: string) =>
-    request<QuickGenerateResult>(
-      `/api/generator/quick/${domain}${templateOverride ? `?template_override=${encodeURIComponent(templateOverride)}` : ""}`,
-      { method: "POST" },
-    ),
+  quickGenerate: (domain: QuickGenerateDomain, templateOverride?: string, dryRun?: boolean) => {
+    const params = new URLSearchParams()
+    if (templateOverride) params.set("template_override", templateOverride)
+    if (dryRun) params.set("dry_run", "true")
+    const qs = params.toString()
+    return request<QuickGenerateResult>(`/api/generator/quick/${domain}${qs ? `?${qs}` : ""}`, { method: "POST" })
+  },
 
   recoveryTools: () => request<RecoveryTool[]>("/api/recovery-tools"),
   recoverySessions: () => request<RecoverySession[]>("/api/recovery-sessions"),

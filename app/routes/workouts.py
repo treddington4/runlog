@@ -115,17 +115,20 @@ def run_generator_endpoint(date: str = None, user_id: str = Depends(auth.current
 
 
 @router.post("/api/generator/quick/{domain}")
-def run_quick_generate_endpoint(domain: str, template_override: str = None,
+def run_quick_generate_endpoint(domain: str, template_override: str = None, dry_run: bool = False,
                                   user_id: str = Depends(auth.current_user_id)):
     """Phase 14 — the Quick Generate button's entry point. Always today — no date
     param exposed here, unlike /api/generator/run above (that one's a verification/
     backfill tool; this one is deliberately "give me one right now, never future").
     `template_override` only matters for domain="strength" — the target picker chip
-    row lets the user override the auto-picked template (see run_quick_generate)."""
+    row lets the user override the auto-picked template (see run_quick_generate).
+    `dry_run=True` (Phase 14.6's New Workout preview step) computes and returns the
+    exact same result without writing anything — the frontend calls this once with
+    dry_run=true to preview, then again without it (on Confirm) to actually save."""
     from ..coach import generator
     db = SessionLocal()
     try:
-        return generator.run_quick_generate(db, user_id, domain, template_override=template_override)
+        return generator.run_quick_generate(db, user_id, domain, template_override=template_override, dry_run=dry_run)
     except ValueError as e:
         raise HTTPException(400, str(e))
     finally:

@@ -5,7 +5,7 @@ import { todayLocalDateString } from "@/lib/format"
 import { WorkoutCard } from "@/components/workouts/WorkoutCard"
 import { RecoverySessionCard } from "@/components/workouts/RecoverySessionCard"
 import { WorkoutFormDialog } from "@/components/workouts/WorkoutFormDialog"
-import { QuickGenerateBar } from "@/components/workouts/QuickGenerateBar"
+import { NewWorkoutDialog } from "@/components/workouts/NewWorkoutDialog"
 import { WorkoutsCalendar } from "@/components/workouts/WorkoutsCalendar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -24,6 +24,7 @@ export function WorkoutsPage() {
     useWorkoutMutations()
 
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [newWorkoutOpen, setNewWorkoutOpen] = useState(false)
   const [editingWorkout, setEditingWorkout] = useState<Workout | null>(null)
   // Calendar is the default view (confirmed with the user) — List stays available
   // via the toggle for anyone who prefers a flat chronological scan.
@@ -79,16 +80,8 @@ export function WorkoutsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <QuickGenerateBar />
-
       <div className="flex items-center justify-between gap-3">
-        <Button
-          variant="outline"
-          onClick={() => {
-            setEditingWorkout(null)
-            setDialogOpen(true)
-          }}
-        >
+        <Button variant="outline" onClick={() => setNewWorkoutOpen(true)}>
           + New Workout
         </Button>
         <div className="flex rounded-md border p-0.5">
@@ -132,6 +125,15 @@ export function WorkoutsPage() {
           )}
         </>
       )}
+
+      <NewWorkoutDialog
+        open={newWorkoutOpen}
+        onOpenChange={setNewWorkoutOpen}
+        onCustom={() => {
+          setEditingWorkout(null)
+          setDialogOpen(true)
+        }}
+      />
 
       <WorkoutFormDialog
         open={dialogOpen}

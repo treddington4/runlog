@@ -1921,6 +1921,45 @@ extends that same, already-bounded-v1 pattern rather than building a new system.
       °F), not just in Workouts. This phase stays imperial (mph for Ride); the
       metric toggle is its own future backlog item, not silently dropped.
 
+### 14.6 New Workout flow: unify entry points, preview before confirm — done
+The old always-visible `QuickGenerateBar` fired immediately on click (nothing to
+back out of), and the separate "+ New Workout" button jumped straight to the
+free-form manual dialog — two different entry points for "create a workout."
+Confirmed with the user: one flow instead — pick a type (or Custom) → preview
+the real computed prescription → Confirm actually saves it, Cancel/Back discards
+nothing-was-written.
+- [x] **Backend**: threaded `dry_run: bool = False` through `run_quick_generate`
+      → `_generate_endurance`/`_generate_strength`/`_generate_recovery` →
+      `_upsert_generator_workout`. `dry_run=True` skips the DB entirely (no
+      existing-row lookup, no create/update) and returns the same dict shape a
+      real call would, so the frontend renders an identical preview either way.
+      `POST /api/generator/quick/{domain}?dry_run=true` added as a query param on
+      the existing endpoint — no new endpoint needed. Verified: all 4 domains'
+      dry-run preview writes nothing (confirmed via `GET /api/workouts`/
+      `/api/recovery-sessions` staying empty), and a dry-run preview followed
+      immediately by a real call produces byte-identical field values (minus
+      `id`/`createdAt`), proving the preview isn't lying about what Confirm will do.
+- [x] **`WorkoutCard`/`RecoverySessionCard`** gained an optional `preview` prop
+      (default `false`, fully backward-compatible) that hides the status badge
+      and all actions (Start/Edit/Delete/Mark Done/Skip) — reused for rendering
+      the preview step instead of duplicating their step-rendering logic in a
+      separate component.
+- [x] **New `NewWorkoutDialog.tsx`** replaces `QuickGenerateBar.tsx` (deleted)
+      and the old direct "+ New Workout" → `WorkoutFormDialog` wiring. Two steps:
+      "pick" (Run/Ride/Strength/Recovery buttons; Strength expands the existing
+      template chip row inline, any chip pick — including "Auto" — fires the
+      preview fetch; a "Custom" button closes this dialog and opens the existing
+      `WorkoutFormDialog` unchanged, skipping preview entirely since the manual
+      form's own Save button *is* the confirm step) and "preview" (renders the
+      dry-run result via `WorkoutCard`/`RecoverySessionCard` with `preview`,
+      Back returns to "pick" preserving the chosen type/template, Confirm fires
+      the real `dry_run=false` call and closes on success).
+- [x] Verified live end-to-end against production via Playwright: pick→preview
+      for Run and for Strength-with-template-chips, Back preserving selection,
+      a real Confirm (via the idempotent Recovery domain, low-risk to test for
+      real) actually saving and refreshing the calendar, and Custom correctly
+      opening the manual form.
+
 ### Verification (all sub-phases)
 - 14.1: force-call the new endpoint for each of the 4 domains against a throwaway
   container across synthetic states — a true cold-start account (no Ride history at

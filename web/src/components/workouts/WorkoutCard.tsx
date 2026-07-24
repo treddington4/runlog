@@ -128,10 +128,15 @@ export function WorkoutCard({
   workout,
   onEdit,
   onDelete,
+  preview = false,
 }: {
   workout: Workout
-  onEdit: () => void
-  onDelete: () => void
+  onEdit?: () => void
+  onDelete?: () => void
+  // Phase 14.6 — renders a generator dry-run result (no real id/createdAt) the
+  // same way a real card renders, minus any action that assumes a persisted row
+  // (Start/Edit/Delete all need a real workout id to act on).
+  preview?: boolean
 }) {
   const targetParts = []
   if (workout.targetDistanceMi) targetParts.push(`${workout.targetDistanceMi} mi`)
@@ -142,7 +147,7 @@ export function WorkoutCard({
   // hold/rep logging) — an endurance workout is GPS-tracked externally via Strava/
   // Garmin instead, so "Start" only ever shows up here, and only while still planned.
   const hasStrengthSteps = workout.steps?.some((s) => s.stepType === "strength_exercise") ?? false
-  const canStart = hasStrengthSteps && workout.status === "planned"
+  const canStart = !preview && hasStrengthSteps && workout.status === "planned"
 
   return (
     <Card className="gap-2">
@@ -156,7 +161,7 @@ export function WorkoutCard({
             </span>
           )}
         </span>
-        <span style={{ color: WORKOUT_STATUS_COLORS[workout.status] }}>{workout.status}</span>
+        {!preview && <span style={{ color: WORKOUT_STATUS_COLORS[workout.status] }}>{workout.status}</span>}
       </div>
       {targetParts.length > 0 && <Row label="Target" value={targetParts.join(" · ")} />}
       {workout.notes && <Row label="Notes" value={<span className="font-normal whitespace-pre-line">{workout.notes}</span>} />}
@@ -168,19 +173,21 @@ export function WorkoutCard({
         </ol>
       )}
       {workout.critiqueText && <Row label="Critique" value={<span className="font-normal">{workout.critiqueText}</span>} />}
-      <div className="mt-1 flex gap-3">
-        {canStart && (
-          <Button asChild size="sm" className="h-auto py-1">
-            <Link to={`/workouts/${workout.id}/run`}>Start</Link>
+      {!preview && (
+        <div className="mt-1 flex gap-3">
+          {canStart && (
+            <Button asChild size="sm" className="h-auto py-1">
+              <Link to={`/workouts/${workout.id}/run`}>Start</Link>
+            </Button>
+          )}
+          <Button variant="link" size="sm" className="h-auto p-0" onClick={onEdit}>
+            Edit
           </Button>
-        )}
-        <Button variant="link" size="sm" className="h-auto p-0" onClick={onEdit}>
-          Edit
-        </Button>
-        <Button variant="link" size="sm" className="text-hale-hot h-auto p-0" onClick={onDelete}>
-          Delete
-        </Button>
-      </div>
+          <Button variant="link" size="sm" className="text-hale-hot h-auto p-0" onClick={onDelete}>
+            Delete
+          </Button>
+        </div>
+      )}
     </Card>
   )
 }

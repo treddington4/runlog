@@ -68,13 +68,17 @@ export function useWorkoutMutations() {
 
 // Phase 14 — Quick Generate. Invalidates both lists unconditionally rather than
 // branching on domain, since "recovery" touches recoverySessions and the other
-// three touch workouts, and running both invalidations is cheap.
+// three touch workouts, and running both invalidations is cheap. `dryRun` (Phase
+// 14.6's New Workout preview step) skips invalidation entirely — nothing changed
+// server-side to refetch.
 export function useQuickGenerate() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ domain, templateOverride }: { domain: QuickGenerateDomain; templateOverride?: string }) =>
-      api.quickGenerate(domain, templateOverride),
-    onSuccess: () => {
+    mutationFn: ({ domain, templateOverride, dryRun }: {
+      domain: QuickGenerateDomain; templateOverride?: string; dryRun?: boolean
+    }) => api.quickGenerate(domain, templateOverride, dryRun),
+    onSuccess: (_result, variables) => {
+      if (variables.dryRun) return
       qc.invalidateQueries({ queryKey: ["workouts"] })
       qc.invalidateQueries({ queryKey: ["recoverySessions"] })
     },

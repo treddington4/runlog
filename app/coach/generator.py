@@ -101,12 +101,33 @@ def _existing_generator_workout(db, user_id, date_str, domain: str):
     return q.first()
 
 
-def _upsert_generator_workout(db, user_id, date_str, domain: str, **fields) -> dict:
+def _preview_workout_dict(date_str: str, **fields) -> dict:
+    """Same key shape as coach._workout_to_dict, but describing a workout that
+    hasn't been (and — for a pure preview — won't be) written to the DB: no id,
+    no createdAt, nothing else that implies a real persisted row exists yet."""
+    return {
+        "id": None, "scheduledDate": date_str, "workoutType": fields.get("workout_type"),
+        "activityType": fields.get("activity_type"), "targetDistanceMi": fields.get("target_distance_mi"),
+        "targetPaceSecPerMi": fields.get("target_pace_sec_per_mi"), "targetDurationSec": fields.get("target_duration_sec"),
+        "notes": fields.get("notes"), "steps": fields.get("steps"), "status": "planned",
+        "linkedRunId": None, "critiqueText": None, "createdAt": None,
+        "source": GENERATOR_SOURCE, "scheduledTime": fields.get("scheduled_time"),
+    }
+
+
+def _upsert_generator_workout(db, user_id, date_str, domain: str, dry_run: bool = False, **fields) -> dict:
     """Idempotent per (user, date, domain): a `planned` row from a prior run of this
     same date is recomputed/overwritten in place (rerunning the generator for an
     already-generated day is a no-op-if-nothing-changed, not a duplicate); a row
     that's since been completed/skipped is left alone entirely — history is
-    immutable, matching sync_garmin_suggested_workouts' own rule."""
+    immutable, matching sync_garmin_suggested_workouts' own rule.
+
+    `dry_run=True` (Phase 14's New Workout preview-before-confirm flow) skips the
+    DB entirely — no existing-row lookup, no create/update — and just echoes back
+    what *would* be written, in the same dict shape a real call returns, so the
+    frontend can render an identical preview either way."""
+    if dry_run:
+        return _preview_workout_dict(date_str, **fields)
     existing = _existing_generator_workout(db, user_id, date_str, domain)
     if existing and existing.status != "planned":
         return coach._workout_to_dict(existing)
@@ -272,7 +293,7 @@ def _distribution_would_break(db, user_id, date, candidate_hard: bool) -> bool:
 
 
 def _generate_endurance(db, user_id, date, readiness_result, config, activity_type: str = "Run",
-                         ignore_schedule: bool = False) -> dict | None:
+                         ignore_schedule: bool = False, dry_run: bool = False) -> dict | None:
     """`activity_type="Run"` is the original nightly-periodization path (persisted
     WeeklyPlan, real deload/frozen/two-a-day semantics). Any other activity_type
     (currently only "Ride", via Phase 14's Quick Generate button) uses the same
@@ -369,7 +390,7 @@ def _generate_endurance(db, user_id, date, readiness_result, config, activity_ty
     endurance_domain = "endurance" if activity_type == "Run" else f"endurance_{activity_type.lower()}"
 
     result = _upsert_generator_workout(
-        db, user_id, date_str, domain=endurance_domain,
+        db, user_id, date_str, domain=endurance_domain, dry_run=dry_run,
         workout_type=workout_type, activity_type=result_activity_type,
         target_distance_mi=target_distance_mi, notes=notes,
     )
@@ -379,7 +400,7 @@ def _generate_endurance(db, user_id, date, readiness_result, config, activity_ty
     if (activity_type == "Run" and phase in ("build", "peak") and not flags and not severe_health
             and workout_type in ("tempo", "interval", "long")):
         second = _upsert_generator_workout(
-            db, user_id, date_str, domain="endurance_second",
+            db, user_id, date_str, domain="endurance_second", dry_run=dry_run,
             workout_type="cross_train", activity_type="Other",
             notes="Second session — easy recovery-intensity, modality split from the main session.",
             scheduled_time="18:00",
@@ -497,7 +518,7 @@ def _auto_pick_strength_template(db, user_id, date) -> str:
 
 
 def _generate_strength(db, user_id, date, readiness_result, config, template_override: str = None,
-                        ignore_schedule: bool = False) -> dict | None:
+                        ignore_schedule: bool = False, dry_run: bool = False) -> dict | None:
     """`ignore_schedule` (Phase 14's Quick Generate button) forces today's occurrence
     regardless of WEEKDAY_STRENGTH_SLOTS — the button is an explicit "give me one
     now" action, not bound to the nightly rotation's day assignment."""
@@ -534,7 +555,7 @@ def _generate_strength(db, user_id, date, readiness_result, config, template_ove
         notes = f"{template_name.replace('_', ' ').title()} {half} — prescribed from current progression."
 
     return _upsert_generator_workout(
-        db, user_id, date.isoformat(), domain="strength",
+        db, user_id, date.isoformat(), domain="strength", dry_run=dry_run,
         workout_type="strength", activity_type="Other", steps=steps, notes=notes,
     )
 
@@ -598,14 +619,16 @@ def _pick_recovery_tool(db, user_id) -> dict | None:
     return tools[0]
 
 
-def _generate_recovery(db, user_id, date, readiness_result) -> dict | None:
+def _generate_recovery(db, user_id, date, readiness_result, dry_run: bool = False) -> dict | None:
     """Level/duration scale with the current readiness flag count, within the
     tool's own supported range/increment — mirrors RECOVERY_GUIDANCE_PROMPT's
     existing escalation logic for the coach itself. Idempotent per (user, date),
     matching the Workout quick-generate domains — a second press the same day
     updates the existing planned session in place rather than creating a duplicate
     (recommend_recovery_session itself always creates fresh, since its other caller,
-    the chat tool, has no such day-collision concern)."""
+    the chat tool, has no such day-collision concern). `dry_run=True` skips the DB
+    entirely (no existing-row lookup, no create/update), same contract as
+    _upsert_generator_workout."""
     tool = _pick_recovery_tool(db, user_id)
     if not tool:
         return None
@@ -622,6 +645,13 @@ def _generate_recovery(db, user_id, date, readiness_result) -> dict | None:
         f"Quick-generated — {flag_count} readiness flag{'s' if flag_count != 1 else ''}, scaled level/duration accordingly."
         if flag_count else "Quick-generated — readiness looks clean, moderate session."
     )
+
+    if dry_run:
+        return {
+            "id": None, "toolId": tool["id"], "scheduledDate": date_str,
+            "level": level, "durationMin": duration, "zoneBoost": False,
+            "rationale": rationale, "status": "planned", "createdAt": None,
+        }
 
     existing = (
         db.query(RecoverySession)
@@ -646,14 +676,20 @@ def _generate_recovery(db, user_id, date, readiness_result) -> dict | None:
 QUICK_GENERATE_DOMAINS = ("run", "ride", "strength", "recovery")
 
 
-def run_quick_generate(db, user_id: str, domain: str, date=None, template_override: str = None) -> dict:
+def run_quick_generate(db, user_id: str, domain: str, date=None, template_override: str = None,
+                        dry_run: bool = False) -> dict:
     """Phase 14 — the Quick Generate button's entry point. Forces generation of
     exactly the requested domain for `date` (defaults to today), overriding whatever
     the day-of-week/strength schedule would otherwise decide for that day — the
     button is an explicit "give me one right now" action, not a scheduling action.
     Still uses the real phase/budget/readiness-gate (and, for run/ride, cold-start-
     aware) logic underneath; only *which* day gets a session is overridden, not how
-    it's computed."""
+    it's computed.
+
+    `dry_run=True` (Phase 14.6's preview-before-confirm New Workout flow) computes
+    the exact same result without writing anything to the DB — calling again with
+    `dry_run=False` right after must reproduce the identical prescription, since
+    nothing about the underlying computation is randomized or preview-specific."""
     if domain not in QUICK_GENERATE_DOMAINS:
         raise ValueError(f"domain must be one of {QUICK_GENERATE_DOMAINS}")
     target = date or local_today(user_id)
@@ -664,16 +700,16 @@ def run_quick_generate(db, user_id: str, domain: str, date=None, template_overri
 
     if domain == "run":
         result = _generate_endurance(db, user_id, target, readiness_result, config,
-                                      activity_type="Run", ignore_schedule=True)
+                                      activity_type="Run", ignore_schedule=True, dry_run=dry_run)
     elif domain == "ride":
         result = _generate_endurance(db, user_id, target, readiness_result, config,
-                                      activity_type="Ride", ignore_schedule=True)
+                                      activity_type="Ride", ignore_schedule=True, dry_run=dry_run)
     elif domain == "strength":
         chosen_template = template_override or _auto_pick_strength_template(db, user_id, target)
         result = _generate_strength(db, user_id, target, readiness_result, config,
-                                     template_override=chosen_template, ignore_schedule=True)
+                                     template_override=chosen_template, ignore_schedule=True, dry_run=dry_run)
     else:  # "recovery"
-        result = _generate_recovery(db, user_id, target, readiness_result)
+        result = _generate_recovery(db, user_id, target, readiness_result, dry_run=dry_run)
 
     return {"date": target.isoformat(), "domain": domain, "readiness": readiness_result, "result": result}
 

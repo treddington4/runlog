@@ -11,12 +11,14 @@ export function RecoverySessionCard({
   onComplete,
   onSkip,
   onDelete,
+  preview = false,
 }: {
   session: RecoverySession
   tool?: RecoveryTool
-  onComplete: () => void
-  onSkip: () => void
-  onDelete: () => void
+  onComplete?: () => void
+  onSkip?: () => void
+  onDelete?: () => void
+  preview?: boolean
 }) {
   const toolName = tool ? tool.name : "Recovery tool"
   return (
@@ -25,7 +27,7 @@ export function RecoverySessionCard({
         <span className="text-muted-foreground">
           {session.scheduledDate} · {toolName}
         </span>
-        <span style={{ color: WORKOUT_STATUS_COLORS[session.status] }}>{session.status}</span>
+        {!preview && <span style={{ color: WORKOUT_STATUS_COLORS[session.status] }}>{session.status}</span>}
       </div>
       <div className="flex items-baseline justify-between gap-3 text-sm">
         <span className="text-muted-foreground">Session</span>
@@ -39,21 +41,23 @@ export function RecoverySessionCard({
           <span className="text-right font-normal whitespace-pre-line">{session.rationale}</span>
         </div>
       )}
-      <div className="mt-1 flex gap-3">
-        {session.status === "planned" && (
-          <>
-            <Button variant="link" size="sm" className="h-auto p-0" onClick={onComplete}>
-              Mark Done
-            </Button>
-            <Button variant="link" size="sm" className="h-auto p-0" onClick={onSkip}>
-              Skip
-            </Button>
-          </>
-        )}
-        <Button variant="link" size="sm" className="text-hale-hot h-auto p-0" onClick={onDelete}>
-          Delete
-        </Button>
-      </div>
+      {!preview && (
+        <div className="mt-1 flex gap-3">
+          {session.status === "planned" && (
+            <>
+              <Button variant="link" size="sm" className="h-auto p-0" onClick={onComplete}>
+                Mark Done
+              </Button>
+              <Button variant="link" size="sm" className="h-auto p-0" onClick={onSkip}>
+                Skip
+              </Button>
+            </>
+          )}
+          <Button variant="link" size="sm" className="text-hale-hot h-auto p-0" onClick={onDelete}>
+            Delete
+          </Button>
+        </div>
+      )}
     </Card>
   )
 }

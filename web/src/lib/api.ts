@@ -406,6 +406,18 @@ export interface DemoStatus {
   enabled: boolean
 }
 
+// Body-metric profile fields — separate from Config (app-level settings).
+// Currently just the four fields Phase 9.5's planned BMR estimate needs;
+// nothing reads these yet, but Settings lets the user fill them in ahead of time.
+export type Sex = "male" | "female" | "other"
+
+export interface Profile {
+  heightIn: number | null
+  weightLb: number | null
+  dateOfBirth: string | null
+  sex: Sex | null
+}
+
 export interface DemoSessionResponse {
   token: string
   userId: string
@@ -516,6 +528,9 @@ export const api = {
   config: () => request<Config>("/api/config"),
   updateConfig: (body: { timezone: string }) =>
     request<{ timezone: string }>("/api/config", { method: "PATCH", body: JSON.stringify(body) }),
+  profile: () => request<Profile>("/api/profile"),
+  updateProfile: (body: Partial<Profile>) =>
+    request<Profile>("/api/profile", { method: "PATCH", body: JSON.stringify(body) }),
   goals: () => request<Goal[]>("/api/goals"),
   createGoal: (body: GoalInput) => request<Goal>("/api/goals", { method: "POST", body: JSON.stringify(body) }),
   updateGoal: (id: string, body: Partial<GoalInput> & { status?: GoalStatus }) =>

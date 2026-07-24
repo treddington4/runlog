@@ -168,6 +168,68 @@ async def update_config(request: Request, user_id: str = Depends(auth.current_us
         db.close()
 
 
+def _profile_to_dict(user: User | None) -> dict:
+    return {
+        "heightIn": user.height_in if user else None,
+        "weightLb": user.weight_lb if user else None,
+        "dateOfBirth": user.date_of_birth if user else None,
+        "sex": user.sex if user else None,
+    }
+
+
+_VALID_SEX = ("male", "female", "other")
+
+
+@router.get("/api/profile")
+def get_profile(user_id: str = Depends(auth.current_user_id)):
+    """Body-metric profile fields — separate from GET/PATCH /api/config (that's
+    app-level settings: sync interval, push, timezone). Currently just the four
+    fields Phase 9.5's planned BMR estimate needs (see models.py's User columns);
+    nothing reads these yet, but Settings lets the user fill them in ahead of time."""
+    db = SessionLocal()
+    try:
+        return _profile_to_dict(db.get(User, user_id))
+    finally:
+        db.close()
+
+
+@router.patch("/api/profile")
+async def update_profile(request: Request, user_id: str = Depends(auth.current_user_id)):
+    body = await request.json()
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if not user:
+            raise HTTPException(404, "user not found")
+        if "heightIn" in body:
+            v = body["heightIn"]
+            if v is not None and (not isinstance(v, (int, float)) or v <= 0):
+                raise HTTPException(400, "heightIn must be a positive number or null")
+            user.height_in = v
+        if "weightLb" in body:
+            v = body["weightLb"]
+            if v is not None and (not isinstance(v, (int, float)) or v <= 0):
+                raise HTTPException(400, "weightLb must be a positive number or null")
+            user.weight_lb = v
+        if "dateOfBirth" in body:
+            v = body["dateOfBirth"]
+            if v is not None:
+                try:
+                    datetime.strptime(v, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(400, "dateOfBirth must be YYYY-MM-DD or null")
+            user.date_of_birth = v
+        if "sex" in body:
+            v = body["sex"]
+            if v is not None and v not in _VALID_SEX:
+                raise HTTPException(400, f"sex must be one of {_VALID_SEX} or null")
+            user.sex = v
+        db.commit()
+        return _profile_to_dict(user)
+    finally:
+        db.close()
+
+
 # ---------- Geocoding (for the Map tab's location labels) ----------
 _last_nominatim_call = 0.0
 

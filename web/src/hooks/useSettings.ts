@@ -25,6 +25,18 @@ export function useConfig() {
   return useQuery({ queryKey: ["config"], queryFn: api.config })
 }
 
+export function useProfile() {
+  return useQuery({ queryKey: ["profile"], queryFn: api.profile })
+}
+
+export function useUpdateProfile() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Partial<import("@/lib/api").Profile>) => api.updateProfile(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["profile"] }),
+  })
+}
+
 export function useTokens() {
   return useQuery({ queryKey: ["tokens"], queryFn: api.tokens })
 }

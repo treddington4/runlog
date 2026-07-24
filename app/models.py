@@ -193,6 +193,18 @@ class User(Base):
                                                 # auto-detected browser-side and PATCHed up once via
                                                 # /api/config; NULL means "fall back to the global
                                                 # APP_TIMEZONE env var," see util.local_today()
+    height_in = Column(Float, nullable=True)  # inches — matches this app's imperial-first convention
+                                                # (miles, mph, lb, °F elsewhere). Prerequisite for Phase
+                                                # 9.5's planned BMR estimate (LEA readiness flag), which
+                                                # also needs weight_lb/date_of_birth/sex below — all four
+                                                # added together rather than piecemeal, editable via
+                                                # GET/PATCH /api/profile (see routes/settings.py)
+    weight_lb = Column(Float, nullable=True)
+    date_of_birth = Column(String, nullable=True)  # "YYYY-MM-DD", same string-date convention as Run.date
+    sex = Column(String, nullable=True)  # "male"|"female"|"other" — Mifflin-St Jeor (Phase 9.5's likely
+                                           # BMR formula) only has male/female coefficients; how "other"
+                                           # should be handled there is an open question for whoever
+                                           # implements 9.5, not resolved here
 
 
 class ProviderCredential(Base):

@@ -8,12 +8,14 @@ import {
   useConfig,
   useTokens,
   useSettingsMutations,
+  useProfile,
+  useUpdateProfile,
 } from "@/hooks/useSettings"
 import { useCoachPersonality, useCoachIssue, useRefreshCoachIssue, useClearCoachIssue } from "@/hooks/useChat"
 import { useSteps } from "@/hooks/useSteps"
 import { usePush } from "@/hooks/usePush"
 import { useTrainingConfig, useUpdateTrainingConfig } from "@/hooks/useWorkouts"
-import type { CoachPersonality, SyncMetaInfo, ApiTokenCreated } from "@/lib/api"
+import type { CoachPersonality, SyncMetaInfo, ApiTokenCreated, Sex } from "@/lib/api"
 import { SyncControls } from "@/components/settings/SyncControls"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -381,6 +383,97 @@ function CoachFeedbackSection() {
   )
 }
 
+// Height is entered as feet+inches (matching this app's imperial-first
+// convention elsewhere) but stored/sent as total inches — same "one internal
+// unit, activity/context-aware entry layer" pattern as WorkoutFormDialog's
+// Ride mph<->sec/mi conversion.
+function ProfileSection() {
+  const { data: profile } = useProfile()
+  const updateProfile = useUpdateProfile()
+  const [heightFt, setHeightFt] = useState("")
+  const [heightIn, setHeightIn] = useState("")
+  const [weightLb, setWeightLb] = useState("")
+  const [dateOfBirth, setDateOfBirth] = useState("")
+  const [sex, setSex] = useState<Sex | "">("")
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    if (!profile) return
+    if (profile.heightIn) {
+      setHeightFt(String(Math.floor(profile.heightIn / 12)))
+      setHeightIn(String(Math.round(profile.heightIn % 12)))
+    } else {
+      setHeightFt("")
+      setHeightIn("")
+    }
+    setWeightLb(profile.weightLb?.toString() ?? "")
+    setDateOfBirth(profile.dateOfBirth ?? "")
+    setSex(profile.sex ?? "")
+  }, [profile])
+
+  function handleSave() {
+    const ft = Number(heightFt) || 0
+    const inches = Number(heightIn) || 0
+    const totalIn = ft || inches ? ft * 12 + inches : null
+    updateProfile.mutate(
+      {
+        heightIn: totalIn,
+        weightLb: weightLb ? Number(weightLb) : null,
+        dateOfBirth: dateOfBirth || null,
+        sex: sex || null,
+      },
+      { onSuccess: () => { setSaved(true); setTimeout(() => setSaved(false), 1500) } },
+    )
+  }
+
+  return (
+    <SettingsSection title="Profile">
+      <div className="text-hale-faint pb-2 text-xs">
+        Body-metric fields for future features (e.g. an energy-availability
+        estimate) — nothing reads these yet.
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label>Height</Label>
+          <div className="flex gap-2">
+            <div className="flex flex-1 items-center gap-1">
+              <Input type="number" placeholder="ft" value={heightFt} onChange={(e) => setHeightFt(e.target.value)} />
+              <span className="text-muted-foreground text-xs">ft</span>
+            </div>
+            <div className="flex flex-1 items-center gap-1">
+              <Input type="number" placeholder="in" value={heightIn} onChange={(e) => setHeightIn(e.target.value)} />
+              <span className="text-muted-foreground text-xs">in</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Weight (lb)</Label>
+          <Input type="number" value={weightLb} onChange={(e) => setWeightLb(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Date of birth</Label>
+          <Input type="date" value={dateOfBirth} onChange={(e) => setDateOfBirth(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Sex</Label>
+          <Select value={sex} onValueChange={(v) => setSex(v as Sex)}>
+            <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="male">Male</SelectItem>
+              <SelectItem value="female">Female</SelectItem>
+              <SelectItem value="other">Other</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <Button size="sm" className="mt-3" disabled={updateProfile.isPending} onClick={handleSave}>
+        {updateProfile.isPending ? "Saving…" : "Save"}
+      </Button>
+      {saved && <div className="text-hale-good mt-1.5 text-xs">Saved</div>}
+    </SettingsSection>
+  )
+}
+
 function TrainingSection() {
   const { data: config } = useTrainingConfig()
   const updateConfig = useUpdateTrainingConfig()
@@ -635,6 +728,7 @@ export function SettingsPage() {
       <TokensSection />
       <CoachSection />
       <CoachFeedbackSection />
+      <ProfileSection />
       <TrainingSection />
       <PushSection />
       <SyncScheduleSection />

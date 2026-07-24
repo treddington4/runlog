@@ -1150,10 +1150,19 @@ between requests, not just an always-on one.
       published automatically for whenever a solid free option turns up or for
       self-hosting on your own infra, and no further-hours were spent debugging a
       third-party platform's own opaque backend error
-- [ ] **Verify (yours — real external-account actions, out of reach from here)**:
-      confirm the GHCR Action actually runs and publishes on your next push to
-      `main`/a version tag. Public demo hosting itself is deliberately unresolved —
-      revisit if/when a genuinely reliable free (or cheap) option comes up
+- [x] **Verify**: confirmed the GHCR Action actually runs and publishes — though not
+      on the first attempt. `docker-publish.yml` had `branches: [main]` while this
+      repo's actual default branch is `master`, so the workflow had likely never
+      fired on a real push until that mismatch was found and fixed. Also caught
+      (same investigation): a later "try debug?" commit had pushed a Dockerfile
+      regression (`USER runlog` conflicting with `docker-entrypoint.sh`'s
+      root-required `chown`, plus a reverted `$PORT`-aware HEALTHCHECK) that had
+      already published as `ghcr.io/treddington4/hale:latest` once the branch fix
+      made the workflow start firing — fixed and republished; `gh run list
+      --workflow=docker-publish.yml` now shows a real `completed success` run
+      against the corrected Dockerfile. Public demo hosting itself is deliberately
+      unresolved — revisit if/when a genuinely reliable free (or cheap) option
+      comes up.
 - [x] Commit: "Phase 11.4: GHCR automated publishing and 1-click cloud deploy hooks"
 
 ---
@@ -1392,6 +1401,200 @@ Three more real-usage findings after initial ship, each addressed directly:
 Article/file evaluation (bounded `fetch_article_text` tool + a new file-upload chat
 endpoint) — see the approved plan for full design, not built. Video scheduling/
 casting stays a single backlog bullet, not designed at all.
+
+---
+
+## Phase 16 — Local AI fallback (Ollama) for Claude usage-limit resilience
+
+**Goal:** stop a Claude usage/rate limit from breaking a live demo or the Chat
+tab mid-conversation, without giving up anything about how Claude is used today.
+
+**Real motivation:** a live demo broke because the Chat tab hit a Claude usage
+limit mid-conversation — corroborated in production logs the same day this was
+scoped (`self_review one-shot call returned an error: rate_limit`).
+
+**Confirmed direction, after weighing a larger alternative:** a full
+OpenAI-compatible multi-provider gateway (LiteLLM sidecar, generic
+`ai_endpoint_url`/`ai_model_name`/`ai_api_key` settings, removing
+`claude-agent-sdk` entirely) was considered and explicitly **rejected** — this
+deployment authenticates via `CLAUDE_CODE_OAUTH_TOKEN` (a Claude Pro/Max
+subscription, included usage, no metered billing — confirmed via the running
+container's real `.env`), which is specifically what `claude-agent-sdk`'s
+bundled Claude Code CLI unlocks (see CLAUDE.md's Chat Assistant section). A
+generic gateway's Anthropic provider only supports `ANTHROPIC_API_KEY` (metered,
+pay-per-token) — there is no way to route a subscription's included usage
+through it. Trading non-metered subscription usage for pay-per-token billing
+runs directly counter to "don't run out of usage," so instead: **keep
+`claude-agent-sdk` and its subscription billing exactly as-is for normal
+operation; add Ollama as a same-session automatic fallback that only ever
+activates on a real Claude rate-limit/quota error**, not a routing preference.
+
+### 16.1 Docker sidecar
+- [ ] Add an optional `ollama` service — its own compose file/profile (e.g.
+      `docker-compose.ollama.yml`) so it's opt-in, not a hard dependency for
+      anyone who doesn't want a local model running — exposing port `11434`,
+      with a small CPU-feasible default model (this NAS has no GPU passthrough
+      confirmed available; pick a small model like `llama3.2:3b` at
+      implementation time based on real hardware constraints, not assumed here)
+      pulled at first run.
+- [ ] `app/coach/assistant.py` gets a small Ollama client wrapper — a plain
+      `httpx`/`openai`-package call to `http://ollama:11434/v1` (Ollama's own
+      built-in OpenAI-compatible endpoint). No LiteLLM/gateway layer needed for
+      a single, always-known fallback target — that indirection only earns its
+      keep with multiple interchangeable providers, which this phase deliberately
+      doesn't need.
+
+### 16.2 Fallback trigger + degraded tool access
+- [ ] Detect a real Claude rate-limit/quota error from the Agent SDK response
+      (mirroring the `msg.error` check Phase 12.5 already added for exactly this
+      failure mode) in `send_message` — on that specific condition only (not any
+      other error), retry the same user turn against the local Ollama client
+      instead of surfacing a raw error to the user.
+- [ ] Decide + implement the fallback's tool-access scope — a real design call,
+      not fixed here, bounded by two options: (a) no tools at all (degraded,
+      text-only; likely acceptable since rate-limit windows are the exception,
+      not routine), or (b) a minimal hand-rolled subset of *read-only* `stats.py`
+      tools via Ollama's own tool-calling support. Either way, the fallback must
+      never be more capable than Claude's existing tool set, and must never be
+      given any write-capable tool.
+- [ ] Visibly mark any fallback-generated chat response (a small inline note,
+      e.g. "answered via local fallback — Claude usage limit reached") so the
+      user always knows when output quality may be reduced, rather than
+      silently assuming it's Claude's normal answer — matches this app's
+      existing "never let generated content pass as something it isn't"
+      discipline (e.g. `goal_progress()` never inventing an "on track" verdict).
+
+### 16.3 Self-review job's own rate-limit handling
+- [ ] Decide whether the daily self-review job (`app/coach/self_review.py`)
+      should also fall back to Ollama on a rate limit, or simply skip that day's
+      run with a clear log line instead — self-review isn't demo-facing, so it
+      doesn't need the same urgency as the live Chat path. A real design call at
+      implementation time, not fixed here.
+
+### Explicitly out of scope this phase (deferred, not dropped)
+- The full OpenAI-compatible multi-provider gateway described above — revisit
+  only if a genuinely different/non-Anthropic primary provider is ever needed
+  for its own sake, not as a side effect of wanting a local fallback.
+
+### Verification
+- Force a real (or mocked) rate-limit condition and confirm: Chat falls back to
+  a real Ollama response instead of surfacing a raw error; the fallback response
+  is visibly marked as such; normal (non-rate-limited) usage is completely
+  unaffected — no added latency or behavior change when Claude succeeds
+  normally.
+
+### Critical files
+- `app/coach/assistant.py` (fallback wrapper, degraded tool scope)
+- `app/coach/self_review.py` (rate-limit handling decision)
+- `docker-compose.ollama.yml` (new, optional sidecar service)
+- `web/src/components/chat/` (fallback-response visual marker)
+
+---
+
+## Phase 15 — Backend test suite + CI (high priority)
+
+### Context
+No test suite exists in this repo (see STATUS.md/CLAUDE.md's "no test suite" note)
+— every bug this session found (the cold-start budget math defaulting to a flat
+20mi ceiling, `day_share` re-slicing an already-single-session cold-start budget
+down to 0.3mi, Run/Ride quick-generate silently overwriting each other via a
+shared upsert key, the `oneOf` JSON Schema ambiguity that silently broke every
+chat-scheduled strength workout, and the `_find_and_link_workout_run` +/-1-day
+window that let yesterday's real run get claimed by two different next-day
+workouts) was caught by hand, live, often against real production data. A test
+suite is the obvious fix for "how many more of these are already sitting
+undetected." Confirmed with the user: start backend-only (pytest unit + API
+integration tests, no frontend/E2E yet), running via GitHub Actions.
+
+While scoping this, found `.github/workflows/docker-publish.yml` triggers on
+`branches: [main]`, but this repo's actual default branch is `master` — that
+workflow has likely never fired on a real push. Fixed alongside the new
+workflow's own (correct) branch targeting.
+
+`app/models.py`'s `DB_PATH = os.environ.get("DB_PATH", "/data/runlog.db")` is
+read once at module-import time to build `engine`/`SessionLocal` — confirmed
+(not assumed) this means a test process can point every route/module at an
+isolated temp-file SQLite DB just by setting `DB_PATH` before `app.models` is
+first imported, no dependency-injection rework needed in `main.py`/`routes/*.py`.
+
+### 15.1 Test infra setup
+- [ ] New `requirements-dev.txt` (kept separate from `requirements.txt`/the
+      `pyproject.toml` runtime deps, since these never need to ship in the running
+      container): `pytest`, `pytest-cov`, `httpx` (FastAPI `TestClient`'s transport
+      dependency).
+- [ ] `tests/` directory at repo root, mirroring `app/`'s sub-package layout
+      (`tests/coach/`, `tests/sync/`, `tests/routes/`, etc.) so a new test's home is
+      unambiguous.
+- [ ] `conftest.py`: a session/function-scoped fixture that sets `DB_PATH` to a
+      fresh temp file *before* importing `app.models`/`app.main`, calls
+      `init_db()`, and yields a `TestClient`. Each test function gets a clean DB
+      (either a fresh temp file per test, or a transaction-rollback pattern —
+      exact choice is an implementation-time call, not fixed here).
+- [ ] Mock/stub external services at the boundary — `strava.py`'s HTTP calls,
+      `garmin_sync.py`'s `garminconnect` client, `weather.py`'s Open-Meteo calls,
+      `coach/assistant.py`'s Claude Agent SDK client — via `unittest.mock`/
+      `monkeypatch`. CI must never make real network calls, need real
+      credentials, or depend on third-party uptime/quota.
+
+### 15.2 Unit tests — pure logic first (highest ROI, no mocking needed)
+- [ ] `util.py`: GAP/Minetti cost calculation, run-type/interval classifier —
+      pin specific input/output pairs that also cross-check against
+      `web/src/lib/gap.ts`'s independently-duplicated formula (CLAUDE.md already
+      flags this pair as hand-sync'd and prone to silent drift).
+- [ ] `stats.py`: `weekly_mileage`/`monthly_mileage`/`personal_records`/
+      `rolling_pace_trend`/`training_load_trend`/`readiness`/`goal_progress` —
+      deterministic aggregations over synthetic `Run`/wellness rows.
+- [ ] `generator.py`: explicit regression tests for each of this session's three
+      real bugs by name/scenario — cold-start vs. established-athlete budget
+      (`_last_nonzero_week_mileage`/`_compute_weekly_budget`), the `day_share`
+      cold-start branch, and Run/Ride's separately-keyed upsert
+      (`_existing_generator_workout`/`_upsert_generator_workout`) — plus
+      `_auto_pick_strength_template`.
+- [ ] `coach/core.py`: `_find_and_link_workout_run`'s exact-day matching (the bug
+      just fixed) — a synthetic "real run yesterday, not-yet-attempted workout
+      today" scenario must never link, and "real run today" must still link
+      correctly.
+
+### 15.3 API integration tests (FastAPI `TestClient` + temp SQLite)
+- [ ] Workouts: `POST`/`PATCH`/`DELETE /api/workouts`, all four
+      `POST /api/generator/quick/{domain}` domains against both a cold-start and
+      an established-athlete synthetic account, `POST /api/generator/run`.
+- [ ] Goals: create/update/list, `goal_progress()` for all three goal types.
+- [ ] Chat: `is_test` flagging round-trip — the exact Phase 12.1 concern; this
+      suite can never accidentally pollute real data by construction, since it
+      never touches anything but its own temp DB.
+- [ ] Recovery: tool/session CRUD + `_generate_recovery`'s level/duration scaling.
+
+### 15.4 GitHub Actions workflow
+- [ ] New `.github/workflows/test.yml` — `on: push`/`pull_request` targeting
+      `master` (the real default branch), `runs-on: ubuntu-latest`,
+      `pip install -r requirements.txt -r requirements-dev.txt`,
+      `pytest --cov=app`. No Docker build step needed here (unlike
+      `docker-publish.yml`) — tests run directly against the installed package.
+- [ ] Fix `docker-publish.yml`'s stale `branches: [main]` → `master`.
+
+### Explicitly out of scope this phase (deferred, not dropped)
+- Frontend unit tests (Vitest) for `web/src/lib/` — deferred to a follow-up
+  phase; `gap.ts`'s duplicated GAP formula stays only informally guarded by
+  CLAUDE.md's warning comment until then.
+- E2E/Playwright in CI — deferred; the existing local `scripts/screenshot.py`
+  workflow (see `.RUNBOOK.md`) remains the only visual-verification tool.
+- Garmin/Strava real-credential integration tests hitting the actual
+  third-party APIs — never planned; CI must never depend on live third-party
+  accounts, uptime, or spend real API quota.
+
+### Verification
+- Every real bug caught by hand this session gets an explicit, named regression
+  test — not just generic coverage of the surrounding function.
+- The workflow itself gets verified by actually pushing/opening a PR and
+  confirming Actions runs and reports pass/fail correctly, not just that the
+  YAML parses.
+
+### Critical files
+- `requirements-dev.txt` (new), `tests/` (new), `.github/workflows/test.yml`
+  (new), `.github/workflows/docker-publish.yml` (branch fix)
+- `app/util.py`, `app/stats.py`, `app/coach/generator.py`, `app/coach/core.py`
+  (the modules under initial test)
 
 ---
 
@@ -1700,113 +1903,6 @@ extends that same, already-bounded-v1 pattern rather than building a new system.
 
 ---
 
-## Phase 15 — Backend test suite + CI (high priority)
-
-### Context
-No test suite exists in this repo (see STATUS.md/CLAUDE.md's "no test suite" note)
-— every bug this session found (the cold-start budget math defaulting to a flat
-20mi ceiling, `day_share` re-slicing an already-single-session cold-start budget
-down to 0.3mi, Run/Ride quick-generate silently overwriting each other via a
-shared upsert key, the `oneOf` JSON Schema ambiguity that silently broke every
-chat-scheduled strength workout, and the `_find_and_link_workout_run` +/-1-day
-window that let yesterday's real run get claimed by two different next-day
-workouts) was caught by hand, live, often against real production data. A test
-suite is the obvious fix for "how many more of these are already sitting
-undetected." Confirmed with the user: start backend-only (pytest unit + API
-integration tests, no frontend/E2E yet), running via GitHub Actions.
-
-While scoping this, found `.github/workflows/docker-publish.yml` triggers on
-`branches: [main]`, but this repo's actual default branch is `master` — that
-workflow has likely never fired on a real push. Fixed alongside the new
-workflow's own (correct) branch targeting.
-
-`app/models.py`'s `DB_PATH = os.environ.get("DB_PATH", "/data/runlog.db")` is
-read once at module-import time to build `engine`/`SessionLocal` — confirmed
-(not assumed) this means a test process can point every route/module at an
-isolated temp-file SQLite DB just by setting `DB_PATH` before `app.models` is
-first imported, no dependency-injection rework needed in `main.py`/`routes/*.py`.
-
-### 15.1 Test infra setup
-- [ ] New `requirements-dev.txt` (kept separate from `requirements.txt`/the
-      `pyproject.toml` runtime deps, since these never need to ship in the running
-      container): `pytest`, `pytest-cov`, `httpx` (FastAPI `TestClient`'s transport
-      dependency).
-- [ ] `tests/` directory at repo root, mirroring `app/`'s sub-package layout
-      (`tests/coach/`, `tests/sync/`, `tests/routes/`, etc.) so a new test's home is
-      unambiguous.
-- [ ] `conftest.py`: a session/function-scoped fixture that sets `DB_PATH` to a
-      fresh temp file *before* importing `app.models`/`app.main`, calls
-      `init_db()`, and yields a `TestClient`. Each test function gets a clean DB
-      (either a fresh temp file per test, or a transaction-rollback pattern —
-      exact choice is an implementation-time call, not fixed here).
-- [ ] Mock/stub external services at the boundary — `strava.py`'s HTTP calls,
-      `garmin_sync.py`'s `garminconnect` client, `weather.py`'s Open-Meteo calls,
-      `coach/assistant.py`'s Claude Agent SDK client — via `unittest.mock`/
-      `monkeypatch`. CI must never make real network calls, need real
-      credentials, or depend on third-party uptime/quota.
-
-### 15.2 Unit tests — pure logic first (highest ROI, no mocking needed)
-- [ ] `util.py`: GAP/Minetti cost calculation, run-type/interval classifier —
-      pin specific input/output pairs that also cross-check against
-      `web/src/lib/gap.ts`'s independently-duplicated formula (CLAUDE.md already
-      flags this pair as hand-sync'd and prone to silent drift).
-- [ ] `stats.py`: `weekly_mileage`/`monthly_mileage`/`personal_records`/
-      `rolling_pace_trend`/`training_load_trend`/`readiness`/`goal_progress` —
-      deterministic aggregations over synthetic `Run`/wellness rows.
-- [ ] `generator.py`: explicit regression tests for each of this session's three
-      real bugs by name/scenario — cold-start vs. established-athlete budget
-      (`_last_nonzero_week_mileage`/`_compute_weekly_budget`), the `day_share`
-      cold-start branch, and Run/Ride's separately-keyed upsert
-      (`_existing_generator_workout`/`_upsert_generator_workout`) — plus
-      `_auto_pick_strength_template`.
-- [ ] `coach/core.py`: `_find_and_link_workout_run`'s exact-day matching (the bug
-      just fixed) — a synthetic "real run yesterday, not-yet-attempted workout
-      today" scenario must never link, and "real run today" must still link
-      correctly.
-
-### 15.3 API integration tests (FastAPI `TestClient` + temp SQLite)
-- [ ] Workouts: `POST`/`PATCH`/`DELETE /api/workouts`, all four
-      `POST /api/generator/quick/{domain}` domains against both a cold-start and
-      an established-athlete synthetic account, `POST /api/generator/run`.
-- [ ] Goals: create/update/list, `goal_progress()` for all three goal types.
-- [ ] Chat: `is_test` flagging round-trip — the exact Phase 12.1 concern; this
-      suite can never accidentally pollute real data by construction, since it
-      never touches anything but its own temp DB.
-- [ ] Recovery: tool/session CRUD + `_generate_recovery`'s level/duration scaling.
-
-### 15.4 GitHub Actions workflow
-- [ ] New `.github/workflows/test.yml` — `on: push`/`pull_request` targeting
-      `master` (the real default branch), `runs-on: ubuntu-latest`,
-      `pip install -r requirements.txt -r requirements-dev.txt`,
-      `pytest --cov=app`. No Docker build step needed here (unlike
-      `docker-publish.yml`) — tests run directly against the installed package.
-- [ ] Fix `docker-publish.yml`'s stale `branches: [main]` → `master`.
-
-### Explicitly out of scope this phase (deferred, not dropped)
-- Frontend unit tests (Vitest) for `web/src/lib/` — deferred to a follow-up
-  phase; `gap.ts`'s duplicated GAP formula stays only informally guarded by
-  CLAUDE.md's warning comment until then.
-- E2E/Playwright in CI — deferred; the existing local `scripts/screenshot.py`
-  workflow (see `.RUNBOOK.md`) remains the only visual-verification tool.
-- Garmin/Strava real-credential integration tests hitting the actual
-  third-party APIs — never planned; CI must never depend on live third-party
-  accounts, uptime, or spend real API quota.
-
-### Verification
-- Every real bug caught by hand this session gets an explicit, named regression
-  test — not just generic coverage of the surrounding function.
-- The workflow itself gets verified by actually pushing/opening a PR and
-  confirming Actions runs and reports pass/fail correctly, not just that the
-  YAML parses.
-
-### Critical files
-- `requirements-dev.txt` (new), `tests/` (new), `.github/workflows/test.yml`
-  (new), `.github/workflows/docker-publish.yml` (branch fix)
-- `app/util.py`, `app/stats.py`, `app/coach/generator.py`, `app/coach/core.py`
-  (the modules under initial test)
-
----
-
 ## Phase 6 — Training-load analytics
 
 ### 6.1 Per-activity metrics (sync-time, stored on Run)
@@ -2105,51 +2201,6 @@ shouldnt rely on it").
       per-source backoff; verify Garmin auto-retry/batch-pause on a real streak;
       deeper strength-training tracking (progression charts per exercise from
       `exercise_sets_json`)
-
----
-
-## Phase 16 — AI Endpoint Architecture (Gateway Model)
-
-**Goal:** Decouple HALE from proprietary LLM SDKs (Anthropic). Convert HALE's coach into a standard OpenAI-compatible client that gracefully degrades when offline, or points to an optional local AI Gateway (LiteLLM) to handle advanced routing, local GPU execution, and cloud fallbacks without complicating HALE's codebase.
-
-### 16.1 Client Abstraction & Graceful Degradation
-- [ ] **Dependency Swap:** Remove `claude-agent-sdk==0.2.116` from `requirements.txt` and `pyproject.toml`. Add the official `openai` Python package.
-- [ ] **Database & Config Update:** Update `app/models.py` (`User` or `ProviderCredential` tables) and the `/api/config` endpoints to replace Anthropic-specific keys with generic fields: `ai_endpoint_url`, `ai_model_name`, and `ai_api_key`. Provide sensible defaults (e.g., empty/disabled).
-- [ ] **UI Graceful State:** In the frontend (`web/src/components/chat/...`), check if the AI endpoint is configured. If not, disable the chat input and display a clean "Coach Offline: Configure an AI endpoint in Settings to enable chat" placeholder.
-- [ ] **Verify:** `pip install -r requirements.txt` passes without the old SDK. The UI cleanly handles the missing AI configuration without crashing.
-
-### 16.2 Standardized Tool Calling Loop
-- [ ] **Tool Schema Definition:** In `app/coach/assistant.py`, remove all `@tool` decorators from `stats.py` imports. Explicitly define the available tools using the standard OpenAI JSON schema array format (`[{"type": "function", "function": {"name": "...", "description": "..."}}]`).
-- [ ] **Function Dispatcher:** Create a Python dictionary mapping the string tool names directly to their target Python functions.
-- [ ] **The Generic Loop:** Rewrite the `send_message` function using `openai.OpenAI(base_url=..., api_key=...)`. Implement a standard `while` loop (max 8 turns):
-  1. Call `client.chat.completions.create(..., tools=TOOLS)`.
-  2. If a `tool_calls` array is returned, parse the JSON, execute the mapped dispatcher function, append a `tool_result` message to the history, and loop.
-  3. **Local Fallback Defense:** Wrap the JSON argument parsing in a `try/except json.JSONDecodeError` block. If a local model hallucinates bad JSON, append a system prompt asking it to fix the format, preventing a hard crash.
-  4. Break and return when standard text content is generated.
-- [ ] **Verify:** Hardcode an OpenAI or Anthropic (via compatibility URL) key temporarily to verify the standard loop successfully executes a tool and returns a response.
-
-### 16.3 Settings UI Expansion
-- [ ] **Universal AI Config:** Update `web/src/components/settings/SettingsPage.tsx` to feature an "AI Endpoint Configuration" section.
-- [ ] **Fields:** Include inputs for "Endpoint URL" (defaulting to a placeholder like `http://localhost:4000/v1` or `https://api.openai.com/v1`), "Model Name" (e.g., `hale-coach`), and "API Key / Auth Token". Ensure saving `PATCH`es the backend.
-- [ ] **Verify:** `npm run build` passes. The settings successfully persist to the backend and activate the Chat UI.
-
-### 16.4 The Gateway Tier (Docker Sidecar)
-- [ ] **Create `docker-compose.ai.yml`:** Add an optional sidecar stack file in the repository root containing a `lite-llm-proxy` service (exposing port `4000`) and an optional `ollama` service (exposing port `11434`) for local GPU inference.
-- [ ] **Gateway Routing Config:** Create `litellm_config.yaml` to define the model alias and fallback routing:
-  ```yaml
-  model_list:
-    - model_name: hale-coach
-      litellm_params:
-        model: ollama/llama3.1
-        api_base: [http://host.docker.internal:11434](http://host.docker.internal:11434)
-    - model_name: hale-coach-fallback
-      litellm_params:
-        model: anthropic/claude-3-5-sonnet-20240620
-        api_key: os.environ/ANTHROPIC_API_KEY
-  router_settings:
-    routing_strategy: latency-based-routing
-    fallbacks:
-      - {"hale-coach": ["hale-coach-fallback"]}
 
 ---
 
